@@ -133,8 +133,8 @@ import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
 import org.apache.hadoop.hbase.quotas.MasterQuotaManager;
 import org.apache.hadoop.hbase.quotas.QuotaObserverChore;
 import org.apache.hadoop.hbase.quotas.QuotaUtil;
-import org.apache.hadoop.hbase.quotas.SpaceQuotaViolationNotifier;
-import org.apache.hadoop.hbase.quotas.SpaceQuotaViolationNotifierFactory;
+import org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshotNotifier;
+import org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshotNotifierFactory;
 import org.apache.hadoop.hbase.regionserver.DefaultStoreEngine;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.HStore;
@@ -375,7 +375,7 @@ public class HMaster extends HRegionServer implements MasterServices {
 
   // it is assigned after 'initialized' guard set to true, so should be volatile
   private volatile MasterQuotaManager quotaManager;
-  private SpaceQuotaViolationNotifier spaceQuotaViolationNotifier;
+  private SpaceQuotaSnapshotNotifier spaceQuotaSnapshotNotifier;
   private QuotaObserverChore quotaObserverChore;
 
   private ProcedureExecutor<MasterProcedureEnv> procedureExecutor;
@@ -865,10 +865,14 @@ public class HMaster extends HRegionServer implements MasterServices {
 
     status.setStatus("Starting quota manager");
     initQuotaManager();
-    this.spaceQuotaViolationNotifier = createQuotaViolationNotifier();
-    this.quotaObserverChore = new QuotaObserverChore(this);
-    // Start the chore to read the region FS space reports and act on them
-    getChoreService().scheduleChore(quotaObserverChore);
+    if (QuotaUtil.isQuotaEnabled(conf)) {
+      // Create the quota snapshot notifier
+      spaceQuotaSnapshotNotifier = createQuotaSnapshotNotifier();
+      spaceQuotaSnapshotNotifier.initialize(getClusterConnection());
+      this.quotaObserverChore = new QuotaObserverChore(this);
+      // Start the chore to read the region FS space reports and act on them
+      getChoreService().scheduleChore(quotaObserverChore);
+    }
 
     // clear the dead servers with same host name and port of online server because we are not
     // removing dead server with same hostname and port of rs which is trying to check in before
@@ -956,10 +960,9 @@ public class HMaster extends HRegionServer implements MasterServices {
     this.quotaManager = quotaManager;
   }
 
-  SpaceQuotaViolationNotifier createQuotaViolationNotifier() {
-    SpaceQuotaViolationNotifier notifier =
-        SpaceQuotaViolationNotifierFactory.getInstance().create(getConfiguration());
-    notifier.initialize(getClusterConnection());
+  SpaceQuotaSnapshotNotifier createQuotaSnapshotNotifier() {
+    SpaceQuotaSnapshotNotifier notifier =
+        SpaceQuotaSnapshotNotifierFactory.getInstance().create(getConfiguration());
     return notifier;
   }
 
@@ -3290,7 +3293,7 @@ public class HMaster extends HRegionServer implements MasterServices {
     return this.quotaObserverChore;
   }
 
-  public SpaceQuotaViolationNotifier getSpaceQuotaViolationNotifier() {
-    return this.spaceQuotaViolationNotifier;
+  public SpaceQuotaSnapshotNotifier getSpaceQuotaSnapshotNotifier() {
+    return this.spaceQuotaSnapshotNotifier;
   }
 }
