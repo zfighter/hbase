@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hbase.wal;
 
+import static org.apache.hadoop.hbase.wal.WALFactory.META_WAL_PROVIDER;
+import static org.apache.hadoop.hbase.wal.WALFactory.WAL_PROVIDER;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -57,8 +59,10 @@ import org.apache.hadoop.hbase.regionserver.wal.WALCoprocessorHost;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Threads;
+import org.apache.hadoop.hbase.wal.WALFactory.Providers;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
@@ -105,7 +109,7 @@ public class TestWALFactory {
     fs = cluster.getFileSystem();
     dir = new Path(hbaseDir, currentTest.getMethodName());
     this.currentServername = ServerName.valueOf(currentTest.getMethodName(), 16010, 1);
-    wals = new WALFactory(conf, null, this.currentServername.toString());
+    wals = new WALFactory(conf, this.currentServername.toString());
   }
 
   @After
@@ -126,6 +130,7 @@ public class TestWALFactory {
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
+    CommonFSUtils.setWALRootDir(TEST_UTIL.getConfiguration(), new Path("file:///tmp/wal"));
     // Make block sizes small.
     TEST_UTIL.getConfiguration().setInt("dfs.blocksize", 1024 * 1024);
     // needed for testAppendClose()
@@ -176,7 +181,7 @@ public class TestWALFactory {
     final MultiVersionConcurrencyControl mvcc = new MultiVersionConcurrencyControl(1);
     final int howmany = 3;
     RegionInfo[] infos = new RegionInfo[3];
-    Path tabledir = FSUtils.getTableDir(hbaseWALDir, tableName);
+    Path tabledir = FSUtils.getWALTableDir(conf, tableName);
     fs.mkdirs(tabledir);
     for (int i = 0; i < howmany; i++) {
       infos[i] = RegionInfoBuilder.newBuilder(tableName).setStartKey(Bytes.toBytes("" + i))
@@ -368,7 +373,7 @@ public class TestWALFactory {
    *              [FSNamesystem.nextGenerationStampForBlock])
    * 3. HDFS-142 (on restart, maintain pendingCreates)
    */
-  @Test (timeout=300000)
+  @Test
   public void testAppendClose() throws Exception {
     TableName tableName =
         TableName.valueOf(currentTest.getMethodName());
@@ -494,7 +499,7 @@ public class TestWALFactory {
     int colCount = 10;
     TableDescriptor htd =
         TableDescriptorBuilder.newBuilder(TableName.valueOf(currentTest.getMethodName()))
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of("column")).build();
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of("column")).build();
     NavigableMap<byte[], Integer> scopes = new TreeMap<byte[], Integer>(Bytes.BYTES_COMPARATOR);
     for (byte[] fam : htd.getColumnFamilyNames()) {
       scopes.put(fam, 0);
@@ -536,7 +541,7 @@ public class TestWALFactory {
         WALKey key = entry.getKey();
         WALEdit val = entry.getEdit();
         assertTrue(Bytes.equals(info.getEncodedNameAsBytes(), key.getEncodedRegionName()));
-        assertTrue(htd.getTableName().equals(key.getTablename()));
+        assertTrue(htd.getTableName().equals(key.getTableName()));
         Cell cell = val.getCells().get(0);
         assertTrue(Bytes.equals(row, 0, row.length, cell.getRowArray(), cell.getRowOffset(),
           cell.getRowLength()));
@@ -555,7 +560,7 @@ public class TestWALFactory {
     int colCount = 10;
     TableDescriptor htd =
         TableDescriptorBuilder.newBuilder(TableName.valueOf(currentTest.getMethodName()))
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of("column")).build();
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of("column")).build();
     NavigableMap<byte[], Integer> scopes = new TreeMap<byte[], Integer>(Bytes.BYTES_COMPARATOR);
     for (byte[] fam : htd.getColumnFamilyNames()) {
       scopes.put(fam, 0);
@@ -592,7 +597,7 @@ public class TestWALFactory {
       for (Cell val : entry.getEdit().getCells()) {
         assertTrue(Bytes.equals(hri.getEncodedNameAsBytes(),
           entry.getKey().getEncodedRegionName()));
-        assertTrue(htd.getTableName().equals(entry.getKey().getTablename()));
+        assertTrue(htd.getTableName().equals(entry.getKey().getTableName()));
         assertTrue(Bytes.equals(row, 0, row.length, val.getRowArray(), val.getRowOffset(),
           val.getRowLength()));
         assertEquals((byte) (idx + '0'), CellUtil.cloneValue(val)[0]);
@@ -670,5 +675,95 @@ public class TestWALFactory {
       // Templates.
       increments++;
     }
+  }
+
+  @Test
+  public void testWALProviders() throws IOException {
+    Configuration conf = new Configuration();
+    // if providers are not set but enable SyncReplicationWALProvider by default for master node
+    // with not only system tables
+    WALFactory walFactory = new WALFactory(conf, this.currentServername.toString());
+    assertEquals(SyncReplicationWALProvider.class, walFactory.getWALProvider().getClass());
+    WALProvider wrappedWALProvider = ((SyncReplicationWALProvider) walFactory.getWALProvider())
+        .getWrappedProvider();
+    assertEquals(wrappedWALProvider.getClass(), walFactory.getMetaProvider().getClass());
+
+    // if providers are not set and do not enable SyncReplicationWALProvider
+    walFactory = new WALFactory(conf, this.currentServername.toString(), false);
+    assertEquals(walFactory.getWALProvider().getClass(), walFactory.getMetaProvider().getClass());
+  }
+
+  @Test
+  public void testOnlySetWALProvider() throws IOException {
+    Configuration conf = new Configuration();
+    conf.set(WAL_PROVIDER, WALFactory.Providers.multiwal.name());
+    WALFactory walFactory = new WALFactory(conf, this.currentServername.toString());
+    WALProvider wrappedWALProvider = ((SyncReplicationWALProvider) walFactory.getWALProvider())
+        .getWrappedProvider();
+
+    assertEquals(SyncReplicationWALProvider.class, walFactory.getWALProvider().getClass());
+    // class of WALProvider and metaWALProvider are the same when metaWALProvider is not set
+    assertEquals(WALFactory.Providers.multiwal.clazz, wrappedWALProvider.getClass());
+    assertEquals(WALFactory.Providers.multiwal.clazz, walFactory.getMetaProvider().getClass());
+  }
+
+  @Test
+  public void testOnlySetMetaWALProvider() throws IOException {
+    Configuration conf = new Configuration();
+    conf.set(META_WAL_PROVIDER, WALFactory.Providers.asyncfs.name());
+    WALFactory walFactory = new WALFactory(conf, this.currentServername.toString());
+    WALProvider wrappedWALProvider = ((SyncReplicationWALProvider) walFactory.getWALProvider())
+        .getWrappedProvider();
+
+    assertEquals(SyncReplicationWALProvider.class, walFactory.getWALProvider().getClass());
+    assertEquals(WALFactory.Providers.defaultProvider.clazz, wrappedWALProvider.getClass());
+    assertEquals(WALFactory.Providers.asyncfs.clazz, walFactory.getMetaProvider().getClass());
+  }
+
+  @Test
+  public void testDefaultProvider() throws IOException {
+    final Configuration conf = new Configuration();
+    // AsyncFSWal is the default, we should be able to request any WAL.
+    final WALFactory normalWalFactory = new WALFactory(conf, this.currentServername.toString());
+    Class<? extends WALProvider> fshLogProvider = normalWalFactory.getProviderClass(
+        WALFactory.WAL_PROVIDER, Providers.filesystem.name());
+    assertEquals(Providers.filesystem.clazz, fshLogProvider);
+
+    // Imagine a world where MultiWAL is the default
+    final WALFactory customizedWalFactory = new WALFactory(
+        conf, this.currentServername.toString())  {
+      @Override
+      Providers getDefaultProvider() {
+        return Providers.multiwal;
+      }
+    };
+    // If we don't specify a WALProvider, we should get the default implementation.
+    Class<? extends WALProvider> multiwalProviderClass = customizedWalFactory.getProviderClass(
+        WALFactory.WAL_PROVIDER, Providers.multiwal.name());
+    assertEquals(Providers.multiwal.clazz, multiwalProviderClass);
+  }
+
+  @Test
+  public void testCustomProvider() throws IOException {
+    final Configuration config = new Configuration();
+    config.set(WALFactory.WAL_PROVIDER, IOTestProvider.class.getName());
+    final WALFactory walFactory = new WALFactory(config, this.currentServername.toString());
+    Class<? extends WALProvider> walProvider = walFactory.getProviderClass(
+        WALFactory.WAL_PROVIDER, Providers.filesystem.name());
+    assertEquals(IOTestProvider.class, walProvider);
+    WALProvider metaWALProvider = walFactory.getMetaProvider();
+    assertEquals(IOTestProvider.class, metaWALProvider.getClass());
+  }
+
+  @Test
+  public void testCustomMetaProvider() throws IOException {
+    final Configuration config = new Configuration();
+    config.set(WALFactory.META_WAL_PROVIDER, IOTestProvider.class.getName());
+    final WALFactory walFactory = new WALFactory(config, this.currentServername.toString());
+    Class<? extends WALProvider> walProvider = walFactory.getProviderClass(
+        WALFactory.WAL_PROVIDER, Providers.filesystem.name());
+    assertEquals(Providers.filesystem.clazz, walProvider);
+    WALProvider metaWALProvider = walFactory.getMetaProvider();
+    assertEquals(IOTestProvider.class, metaWALProvider.getClass());
   }
 }

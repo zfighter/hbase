@@ -996,7 +996,9 @@ public class StripeStoreFileManager
 
   @Override
   public List<byte[]> getStripeBoundaries() {
-    if (this.state.stripeFiles.isEmpty()) return new ArrayList<>();
+    if (this.state.stripeFiles.isEmpty()) {
+      return Collections.emptyList();
+    }
     ArrayList<byte[]> result = new ArrayList<>(this.state.stripeEndRows.length + 2);
     result.add(OPEN_KEY);
     Collections.addAll(result, this.state.stripeEndRows);
@@ -1034,7 +1036,7 @@ public class StripeStoreFileManager
       synchronized (sf) {
         long fileTs = sf.getReader().getMaxTimestamp();
         if (fileTs < maxTs && !filesCompacting.contains(sf)) {
-          LOG.info("Found an expired store file: " + sf.getPath() + " whose maxTimeStamp is "
+          LOG.info("Found an expired store file: " + sf.getPath() + " whose maxTimestamp is "
               + fileTs + ", which is below " + maxTs);
           if (expiredStoreFiles == null) {
             expiredStoreFiles = new ArrayList<>();

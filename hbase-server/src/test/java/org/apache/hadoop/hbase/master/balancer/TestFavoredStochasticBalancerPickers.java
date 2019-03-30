@@ -109,7 +109,7 @@ public class TestFavoredStochasticBalancerPickers extends BalancerTestBase {
     TEST_UTIL.getHBaseCluster().waitForActiveAndReadyMaster(120*1000);
     cluster = TEST_UTIL.getMiniHBaseCluster();
     admin = TEST_UTIL.getAdmin();
-    admin.setBalancerRunning(false, true);
+    admin.balancerSwitch(false, true);
   }
 
   @After
@@ -126,7 +126,7 @@ public class TestFavoredStochasticBalancerPickers extends BalancerTestBase {
         ColumnFamilyDescriptorBuilder.newBuilder(HConstants.CATALOG_FAMILY).build();
     TableDescriptor desc = TableDescriptorBuilder
         .newBuilder(tableName)
-        .addColumnFamily(columnFamilyDescriptor)
+        .setColumnFamily(columnFamilyDescriptor)
         .build();
     admin.createTable(desc, Bytes.toBytes("aaa"), Bytes.toBytes("zzz"), REGIONS);
     TEST_UTIL.waitUntilAllRegionsAssigned(tableName);

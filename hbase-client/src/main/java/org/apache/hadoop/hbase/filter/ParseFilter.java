@@ -93,6 +93,8 @@ public class ParseFilter {
                       "SingleColumnValueExcludeFilter");
     filterHashMap.put("DependentColumnFilter", ParseConstants.FILTER_PACKAGE + "." +
                       "DependentColumnFilter");
+    filterHashMap.put("ColumnValueFilter", ParseConstants.FILTER_PACKAGE + "." +
+                      "ColumnValueFilter");
 
     // Creates the operatorPrecedenceHashMap
     operatorPrecedenceHashMap = new HashMap<>();
@@ -242,27 +244,28 @@ public class ParseFilter {
     throws CharacterCodingException {
 
     String filterName = Bytes.toString(getFilterName(filterStringAsByteArray));
-    ArrayList<byte []> filterArguments = getFilterArguments(filterStringAsByteArray);
+    ArrayList<byte[]> filterArguments = getFilterArguments(filterStringAsByteArray);
     if (!filterHashMap.containsKey(filterName)) {
       throw new IllegalArgumentException("Filter Name " + filterName + " not supported");
     }
+    filterName = filterHashMap.get(filterName);
+    final String methodName = "createFilterFromArguments";
     try {
-      filterName = filterHashMap.get(filterName);
       Class<?> c = Class.forName(filterName);
-      Class<?>[] argTypes = new Class [] {ArrayList.class};
-      Method m = c.getDeclaredMethod("createFilterFromArguments", argTypes);
-      return (Filter) m.invoke(null,filterArguments);
+      Class<?>[] argTypes = new Class[] { ArrayList.class };
+      Method m = c.getDeclaredMethod(methodName, argTypes);
+      return (Filter) m.invoke(null, filterArguments);
     } catch (ClassNotFoundException e) {
-      e.printStackTrace();
+      LOG.error("Could not find class {}", filterName, e);
     } catch (NoSuchMethodException e) {
-      e.printStackTrace();
+      LOG.error("Could not find method {} in {}", methodName, filterName, e);
     } catch (IllegalAccessException e) {
-      e.printStackTrace();
+      LOG.error("Unable to access specified class {}", filterName, e);
     } catch (InvocationTargetException e) {
-      e.printStackTrace();
+      LOG.error("Method {} threw an exception for {}", methodName, filterName, e);
     }
-    throw new IllegalArgumentException("Incorrect filter string " +
-        new String(filterStringAsByteArray, StandardCharsets.UTF_8));
+    throw new IllegalArgumentException(
+        "Incorrect filter string " + new String(filterStringAsByteArray, StandardCharsets.UTF_8));
   }
 
 /**
@@ -769,8 +772,6 @@ public class ParseFilter {
 
   /**
    * Takes a compareOperator symbol as a byte array and returns the corresponding CompareOperator
-   * @deprecated Since 2.0
-   * <p>
    * @param compareOpAsByteArray the comparatorOperator symbol as a byte array
    * @return the Compare Operator
    */

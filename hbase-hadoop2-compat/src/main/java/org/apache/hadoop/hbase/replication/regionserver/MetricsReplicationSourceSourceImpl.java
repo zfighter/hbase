@@ -20,7 +20,9 @@ package org.apache.hadoop.hbase.replication.regionserver;
 import org.apache.hadoop.metrics2.lib.MutableFastCounter;
 import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
 import org.apache.hadoop.metrics2.lib.MutableHistogram;
+import org.apache.yetus.audience.InterfaceAudience;
 
+@InterfaceAudience.Private
 public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSourceSource {
 
   private final MetricsReplicationSourceImpl rms;
@@ -33,6 +35,9 @@ public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSou
   private final String shippedOpsKey;
   private String keyPrefix;
 
+  /**
+   * @deprecated since 1.3.0. Use {@link #shippedBytesKey} instead.
+   */
   @Deprecated
   private final String shippedKBsKey;
   private final String shippedBytesKey;
@@ -43,7 +48,7 @@ public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSou
   private final MutableHistogram ageOfLastShippedOpHist;
   private final MutableGaugeLong sizeOfLogQueueGauge;
   private final MutableFastCounter logReadInEditsCounter;
-  private final MutableFastCounter logEditsFilteredCounter;
+  private final MutableFastCounter walEditsFilteredCounter;
   private final MutableFastCounter shippedBatchesCounter;
   private final MutableFastCounter shippedOpsCounter;
   private final MutableFastCounter shippedKBsCounter;
@@ -97,7 +102,7 @@ public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSou
     logReadInEditsCounter = rms.getMetricsRegistry().getCounter(logReadInEditsKey, 0L);
 
     logEditsFilteredKey = this.keyPrefix + "logEditsFiltered";
-    logEditsFilteredCounter = rms.getMetricsRegistry().getCounter(logEditsFilteredKey, 0L);
+    walEditsFilteredCounter = rms.getMetricsRegistry().getCounter(logEditsFilteredKey, 0L);
 
     shippedHFilesKey = this.keyPrefix + "shippedHFiles";
     shippedHFilesCounter = rms.getMetricsRegistry().getCounter(shippedHFilesKey, 0L);
@@ -144,7 +149,7 @@ public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSou
   }
 
   @Override public void incrLogEditsFiltered(long size) {
-    logEditsFilteredCounter.incr(size);
+    walEditsFilteredCounter.incr(size);
   }
 
   @Override public void incrBatchesShipped(int batches) {
@@ -253,6 +258,9 @@ public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSou
   }
 
   @Override
+  public void incrFailedRecoveryQueue() {/*no op*/}
+
+  @Override
   public void init() {
     rms.init();
   }
@@ -305,5 +313,17 @@ public class MetricsReplicationSourceSourceImpl implements MetricsReplicationSou
   @Override
   public String getMetricsName() {
     return rms.getMetricsName();
+  }
+
+  @Override public long getWALEditsRead() {
+    return this.logReadInEditsCounter.value();
+  }
+
+  @Override public long getShippedOps() {
+    return this.shippedOpsCounter.value();
+  }
+
+  @Override public long getEditsFiltered() {
+    return this.walEditsFilteredCounter.value();
   }
 }

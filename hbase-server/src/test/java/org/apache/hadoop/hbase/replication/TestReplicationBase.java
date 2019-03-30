@@ -1,5 +1,4 @@
-/*
- *
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,11 +23,12 @@ import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
@@ -50,15 +50,17 @@ import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.client.replication.ReplicationAdmin;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.JVMClusterUtil;
-import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.hbase.zookeeper.MiniZooKeeperCluster;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+import org.junit.After;
 import org.junit.AfterClass;
+import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.runners.Parameterized.Parameter;
-import org.junit.runners.Parameterized.Parameters;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
 /**
  * This class is only a base for other integration-level replication tests.
@@ -67,11 +69,6 @@ import org.slf4j.LoggerFactory;
  * All other tests should have their own classes and extend this one
  */
 public class TestReplicationBase {
-/*
-  {
-    ((Log4JLogger) ReplicationSource.LOG).getLogger().setLevel(Level.ALL);
-  }*/
-
   private static final Logger LOG = LoggerFactory.getLogger(TestReplicationBase.class);
 
   protected static Configuration conf1 = HBaseConfiguration.create();
@@ -94,19 +91,20 @@ public class TestReplicationBase {
   protected static final int NB_ROWS_IN_BIG_BATCH =
       NB_ROWS_IN_BATCH * 10;
   protected static final long SLEEP_TIME = 500;
-  protected static final int NB_RETRIES = 10;
+  protected static final int NB_RETRIES = 50;
 
   protected static final TableName tableName = TableName.valueOf("test");
   protected static final byte[] famName = Bytes.toBytes("f");
   protected static final byte[] row = Bytes.toBytes("row");
   protected static final byte[] noRepfamName = Bytes.toBytes("norep");
+  protected static final String PEER_ID2 = "2";
 
-  @Parameter
-  public static boolean seperateOldWALs;
+  protected boolean isSerialPeer() {
+    return false;
+  }
 
-  @Parameters
-  public static List<Boolean> params() {
-    return Arrays.asList(false, true);
+  protected boolean isSyncPeer() {
+    return false;
   }
 
   protected final void cleanUp() throws IOException, InterruptedException {
@@ -166,17 +164,20 @@ public class TestReplicationBase {
   }
 
   protected static void loadData(String prefix, byte[] row) throws IOException {
+    loadData(prefix, row, famName);
+  }
+
+  protected static void loadData(String prefix, byte[] row, byte[] familyName) throws IOException {
     List<Put> puts = new ArrayList<>(NB_ROWS_IN_BATCH);
     for (int i = 0; i < NB_ROWS_IN_BATCH; i++) {
       Put put = new Put(Bytes.toBytes(prefix + Integer.toString(i)));
-      put.addColumn(famName, row, row);
+      put.addColumn(familyName, row, row);
       puts.add(put);
     }
     htable1.put(puts);
   }
 
-  @BeforeClass
-  public static void setUpBeforeClass() throws Exception {
+  protected static void configureClusters(){
     conf1.set(HConstants.ZOOKEEPER_ZNODE_PARENT, "/1");
     // We don't want too many edits per batch sent to the ReplicationEndpoint to trigger
     // sufficient number of events. But we don't want to go too low because
@@ -195,11 +196,20 @@ public class TestReplicationBase {
     conf1.setInt("replication.source.maxretriesmultiplier", 10);
     conf1.setFloat("replication.source.ratio", 1.0f);
     conf1.setBoolean("replication.source.eof.autorecovery", true);
-
-    // Parameter config
-    conf1.setBoolean(AbstractFSWALProvider.SEPARATE_OLDLOGDIR, seperateOldWALs);
+    conf1.setLong("hbase.serial.replication.waiting.ms", 100);
 
     utility1 = new HBaseTestingUtility(conf1);
+
+    // Base conf2 on conf1 so it gets the right zk cluster.
+    conf2 = HBaseConfiguration.create(conf1);
+    conf2.set(HConstants.ZOOKEEPER_ZNODE_PARENT, "/2");
+    conf2.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 6);
+    conf2.setBoolean("hbase.tests.use.shortcircuit.reads", false);
+
+    utility2 = new HBaseTestingUtility(conf2);
+  }
+
+  protected static void startClusters() throws Exception{
     utility1.startMiniZKCluster();
     MiniZooKeeperCluster miniZK = utility1.getZkCluster();
     // Have to reget conf1 in case zk cluster location different
@@ -209,13 +219,6 @@ public class TestReplicationBase {
     admin = new ReplicationAdmin(conf1);
     LOG.info("Setup first Zk");
 
-    // Base conf2 on conf1 so it gets the right zk cluster.
-    conf2 = HBaseConfiguration.create(conf1);
-    conf2.set(HConstants.ZOOKEEPER_ZNODE_PARENT, "/2");
-    conf2.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 6);
-    conf2.setBoolean("hbase.tests.use.shortcircuit.reads", false);
-
-    utility2 = new HBaseTestingUtility(conf2);
     utility2.setZkCluster(miniZK);
     zkw2 = new ZKWatcher(conf2, "cluster2", null, true);
     LOG.info("Setup second Zk");
@@ -226,15 +229,12 @@ public class TestReplicationBase {
     // as a component in deciding maximum number of parallel batches to send to the peer cluster.
     utility2.startMiniCluster(4);
 
-    ReplicationPeerConfig rpc =
-        ReplicationPeerConfig.newBuilder().setClusterKey(utility2.getClusterKey()).build();
     hbaseAdmin = ConnectionFactory.createConnection(conf1).getAdmin();
-    hbaseAdmin.addReplicationPeer("2", rpc);
 
     TableDescriptor table = TableDescriptorBuilder.newBuilder(tableName)
-        .addColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(famName).setMaxVersions(100)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(famName).setMaxVersions(100)
             .setScope(HConstants.REPLICATION_SCOPE_GLOBAL).build())
-        .addColumnFamily(ColumnFamilyDescriptorBuilder.of(noRepfamName)).build();
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(noRepfamName)).build();
     scopes = new TreeMap<>(Bytes.BYTES_COMPARATOR);
     for (ColumnFamilyDescriptor f : table.getColumnFamilies()) {
       scopes.put(f.getName(), f.getScope());
@@ -251,6 +251,42 @@ public class TestReplicationBase {
     utility2.waitUntilAllRegionsAssigned(tableName);
     htable1 = connection1.getTable(tableName);
     htable2 = connection2.getTable(tableName);
+  }
+
+  @BeforeClass
+  public static void setUpBeforeClass() throws Exception {
+    configureClusters();
+    startClusters();
+  }
+
+  private boolean peerExist(String peerId) throws IOException {
+    return hbaseAdmin.listReplicationPeers().stream().anyMatch(p -> peerId.equals(p.getPeerId()));
+  }
+
+  @Before
+  public void setUpBase() throws Exception {
+    if (!peerExist(PEER_ID2)) {
+      ReplicationPeerConfigBuilder builder = ReplicationPeerConfig.newBuilder()
+        .setClusterKey(utility2.getClusterKey()).setSerial(isSerialPeer());
+      if (isSyncPeer()) {
+        FileSystem fs2 = utility2.getTestFileSystem();
+        // The remote wal dir is not important as we do not use it in DA state, here we only need to
+        // confirm that a sync peer in DA state can still replicate data to remote cluster
+        // asynchronously.
+        builder.setReplicateAllUserTables(false)
+          .setTableCFsMap(ImmutableMap.of(tableName, ImmutableList.of()))
+          .setRemoteWALDir(new Path("/RemoteWAL")
+            .makeQualified(fs2.getUri(), fs2.getWorkingDirectory()).toUri().toString());
+      }
+      hbaseAdmin.addReplicationPeer(PEER_ID2, builder.build());
+    }
+  }
+
+  @After
+  public void tearDownBase() throws Exception {
+    if (peerExist(PEER_ID2)) {
+      hbaseAdmin.removeReplicationPeer(PEER_ID2);
+    }
   }
 
   protected static void runSimplePutDeleteTest() throws IOException, InterruptedException {

@@ -34,6 +34,7 @@ import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.ClassRule;
@@ -110,7 +111,7 @@ public class TestProtobufUtil {
     getBuilder = ClientProtos.Get.newBuilder(proto);
     getBuilder.setMaxVersions(1);
     getBuilder.setCacheBlocks(true);
-
+    getBuilder.setTimeRange(ProtobufUtil.toTimeRange(TimeRange.allTime()));
     Get get = ProtobufUtil.toGet(proto);
     assertEquals(getBuilder.build(), ProtobufUtil.toGet(get));
   }
@@ -198,7 +199,7 @@ public class TestProtobufUtil {
     // put value always use the default timestamp if no
     // value level timestamp specified,
     // add the timestamp to the original mutate
-    long timestamp = put.getTimeStamp();
+    long timestamp = put.getTimestamp();
     for (ColumnValue.Builder column:
         mutateBuilder.getColumnValueBuilderList()) {
       for (QualifierValue.Builder qualifier:
@@ -244,6 +245,8 @@ public class TestProtobufUtil {
     scanBuilder.setMaxVersions(2);
     scanBuilder.setCacheBlocks(false);
     scanBuilder.setCaching(1024);
+    scanBuilder.setTimeRange(ProtobufUtil.toTimeRange(TimeRange.allTime()));
+    scanBuilder.setIncludeStopRow(false);
     ClientProtos.Scan expectedProto = scanBuilder.build();
 
     ClientProtos.Scan actualProto = ProtobufUtil.toScan(
@@ -304,7 +307,8 @@ public class TestProtobufUtil {
     mutateBuilder.setDurability(MutationProto.Durability.USE_DEFAULT);
 
     Increment increment = ProtobufUtil.toIncrement(proto, null);
-    mutateBuilder.setTimestamp(increment.getTimeStamp());
+    mutateBuilder.setTimestamp(increment.getTimestamp());
+    mutateBuilder.setTimeRange(ProtobufUtil.toTimeRange(increment.getTimeRange()));
     assertEquals(mutateBuilder.build(), ProtobufUtil.toMutation(MutationType.INCREMENT, increment));
   }
 
@@ -344,7 +348,8 @@ public class TestProtobufUtil {
 
     // append always use the latest timestamp,
     // reset the timestamp to the original mutate
-    mutateBuilder.setTimestamp(append.getTimeStamp());
+    mutateBuilder.setTimestamp(append.getTimestamp());
+    mutateBuilder.setTimeRange(ProtobufUtil.toTimeRange(append.getTimeRange()));
     assertEquals(mutateBuilder.build(), ProtobufUtil.toMutation(MutationType.APPEND, append));
   }
 

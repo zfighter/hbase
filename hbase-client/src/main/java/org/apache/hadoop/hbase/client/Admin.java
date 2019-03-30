@@ -1,5 +1,4 @@
 /**
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +17,8 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import static org.apache.hadoop.hbase.util.FutureUtils.get;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collection;
@@ -26,15 +27,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Abortable;
 import org.apache.hadoop.hbase.CacheEvictionStats;
 import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.ClusterMetrics.Option;
-import org.apache.hadoop.hbase.ClusterStatus;
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.NamespaceNotFoundException;
 import org.apache.hadoop.hbase.RegionMetrics;
@@ -42,21 +41,24 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableExistsException;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
+import org.apache.hadoop.hbase.client.replication.ReplicationPeerConfigUtil;
 import org.apache.hadoop.hbase.client.replication.TableCFs;
 import org.apache.hadoop.hbase.client.security.SecurityCapability;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
 import org.apache.hadoop.hbase.quotas.QuotaFilter;
-import org.apache.hadoop.hbase.quotas.QuotaRetriever;
 import org.apache.hadoop.hbase.quotas.QuotaSettings;
+import org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshotView;
 import org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
+import org.apache.hadoop.hbase.security.access.GetUserPermissionsRequest;
+import org.apache.hadoop.hbase.security.access.UserPermission;
 import org.apache.hadoop.hbase.snapshot.HBaseSnapshotException;
 import org.apache.hadoop.hbase.snapshot.RestoreSnapshotException;
 import org.apache.hadoop.hbase.snapshot.SnapshotCreationException;
 import org.apache.hadoop.hbase.snapshot.UnknownSnapshotException;
-import org.apache.hadoop.hbase.util.Pair;
 import org.apache.yetus.audience.InterfaceAudience;
 
 /**
@@ -72,7 +74,27 @@ import org.apache.yetus.audience.InterfaceAudience;
  */
 @InterfaceAudience.Public
 public interface Admin extends Abortable, Closeable {
+
+  /**
+   * Return the operation timeout for a rpc call.
+   * @see #getSyncWaitTimeout()
+   */
   int getOperationTimeout();
+
+  /**
+   * Return the blocking wait time for an asynchronous operation. Can be configured by
+   * {@code hbase.client.sync.wait.timeout.msec}.
+   * <p/>
+   * For several operations, such as createTable, deleteTable, etc, the rpc call will finish right
+   * after we schedule a procedure at master side, so the timeout will not be controlled by the
+   * above {@link #getOperationTimeout()}. And timeout value here tells you how much time we will
+   * wait until the procedure at master side is finished.
+   * <p/>
+   * In general, you can consider that the implementation for XXXX method is just a
+   * XXXXAsync().get(getSyncWaitTimeout(), TimeUnit.MILLISECONDS).
+   * @see #getOperationTimeout()
+   */
+  int getSyncWaitTimeout();
 
   @Override
   void abort(String why, Throwable e);
@@ -95,18 +117,6 @@ public interface Admin extends Abortable, Closeable {
   /**
    * List all the userspace tables.
    *
-   * @return an array of read-only HTableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #listTableDescriptors()}.
-   * @see #listTableDescriptors()
-   */
-  @Deprecated
-  HTableDescriptor[] listTables() throws IOException;
-
-  /**
-   * List all the userspace tables.
-   *
    * @return a list of TableDescriptors
    * @throws IOException if a remote or network exception occurs
    */
@@ -116,54 +126,13 @@ public interface Admin extends Abortable, Closeable {
    * List all the userspace tables that match the given pattern.
    *
    * @param pattern The compiled regular expression to match against
-   * @return an array of read-only HTableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @see #listTables()
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #listTableDescriptors(java.util.regex.Pattern)}.
-   * @see #listTableDescriptors(Pattern)
-   */
-  @Deprecated
-  HTableDescriptor[] listTables(Pattern pattern) throws IOException;
-
-  /**
-   * List all the userspace tables that match the given pattern.
-   *
-   * @param pattern The compiled regular expression to match against
    * @return a list of TableDescriptors
    * @throws IOException if a remote or network exception occurs
-   * @see #listTables()
+   * @see #listTableDescriptors()
    */
-  List<TableDescriptor> listTableDescriptors(Pattern pattern) throws IOException;
-
-  /**
-   * List all the userspace tables matching the given regular expression.
-   *
-   * @param regex The regular expression to match against
-   * @return a list of read-only HTableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @see #listTableDescriptors(Pattern)
-   * @deprecated since 2.0 version and will be removed in 3.0 version. Use
-   *             {@link #listTableDescriptors(Pattern)} instead.
-   */
-  @Deprecated
-  HTableDescriptor[] listTables(String regex) throws IOException;
-
-  /**
-   * List all the tables matching the given pattern.
-   *
-   * @param pattern The compiled regular expression to match against
-   * @param includeSysTables <code>false</code> to match only against userspace tables
-   * @return an array of read-only HTableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @see #listTables()
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #listTableDescriptors(java.util.regex.Pattern, boolean)}.
-   * @see #listTableDescriptors(java.util.regex.Pattern, boolean)
-   */
-  @Deprecated
-  HTableDescriptor[] listTables(Pattern pattern, boolean includeSysTables)
-      throws IOException;
+  default List<TableDescriptor> listTableDescriptors(Pattern pattern) throws IOException {
+    return listTableDescriptors(pattern, false);
+  }
 
   /**
    * List all the tables matching the given pattern.
@@ -172,24 +141,9 @@ public interface Admin extends Abortable, Closeable {
    * @param includeSysTables <code>false</code> to match only against userspace tables
    * @return a list of TableDescriptors
    * @throws IOException if a remote or network exception occurs
-   * @see #listTables()
+   * @see #listTableDescriptors()
    */
   List<TableDescriptor> listTableDescriptors(Pattern pattern, boolean includeSysTables)
-      throws IOException;
-
-  /**
-   * List all the tables matching the given pattern.
-   *
-   * @param regex The regular expression to match against
-   * @param includeSysTables <code>false</code> to match only against userspace tables
-   * @return an array of read-only HTableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @see #listTables(java.util.regex.Pattern, boolean)
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #listTableDescriptors(Pattern, boolean)}.
-   */
-  @Deprecated
-  HTableDescriptor[] listTables(String regex, boolean includeSysTables)
       throws IOException;
 
   /**
@@ -206,18 +160,9 @@ public interface Admin extends Abortable, Closeable {
    * @return array of table names
    * @throws IOException if a remote or network exception occurs
    */
-  TableName[] listTableNames(Pattern pattern) throws IOException;
-
-  /**
-   * List all of the names of userspace tables.
-   * @param regex The regular expression to match against
-   * @return TableName[] table names
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version. Use
-   *             {@link #listTableNames(Pattern)} instead.
-   */
-  @Deprecated
-  TableName[] listTableNames(String regex) throws IOException;
+  default TableName[] listTableNames(Pattern pattern) throws IOException {
+    return listTableNames(pattern, false);
+  }
 
   /**
    * List all of the names of userspace tables.
@@ -228,33 +173,6 @@ public interface Admin extends Abortable, Closeable {
    */
   TableName[] listTableNames(Pattern pattern, boolean includeSysTables)
       throws IOException;
-
-  /**
-   * List all of the names of userspace tables.
-   * @param regex The regular expression to match against
-   * @param includeSysTables <code>false</code> to match only against userspace tables
-   * @return TableName[] table names
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version. Use
-   *             {@link #listTableNames(Pattern, boolean)} instead.
-   */
-  @Deprecated
-  TableName[] listTableNames(String regex, boolean includeSysTables)
-      throws IOException;
-
-  /**
-   * Get a table descriptor.
-   *
-   * @param tableName as a {@link TableName}
-   * @return the read-only tableDescriptor
-   * @throws org.apache.hadoop.hbase.TableNotFoundException
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #getDescriptor(TableName)}.
-   */
-  @Deprecated
-  HTableDescriptor getTableDescriptor(TableName tableName)
-      throws TableNotFoundException, IOException;
 
   /**
    * Get a table descriptor.
@@ -313,7 +231,9 @@ public interface Admin extends Abortable, Closeable {
    * threads, the table may have been created between test-for-existence and attempt-at-creation).
    * @throws IOException
    */
-  void createTable(TableDescriptor desc, byte[][] splitKeys) throws IOException;
+  default void createTable(TableDescriptor desc, byte[][] splitKeys) throws IOException {
+    get(createTableAsync(desc, splitKeys), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Creates a new table but does not block and wait for it to come online.
@@ -335,11 +255,12 @@ public interface Admin extends Abortable, Closeable {
 
   /**
    * Deletes a table. Synchronous operation.
-   *
    * @param tableName name of table to delete
    * @throws IOException if a remote or network exception occurs
    */
-  void deleteTable(TableName tableName) throws IOException;
+  default void deleteTable(TableName tableName) throws IOException {
+    get(deleteTableAsync(tableName), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Deletes the table but does not block and wait for it to be completely removed.
@@ -356,53 +277,14 @@ public interface Admin extends Abortable, Closeable {
   Future<Void> deleteTableAsync(TableName tableName) throws IOException;
 
   /**
-   * Deletes tables matching the passed in pattern and wait on completion. Warning: Use this method
-   * carefully, there is no prompting and the effect is immediate. Consider using {@link
-   * #listTableDescriptors(Pattern)}
-   * and {@link #deleteTable(org.apache.hadoop.hbase.TableName)}
-   *
-   * @param regex The regular expression to match table names against
-   * @return Table descriptors for tables that couldn't be deleted.
-   *         The return htds are read-only
-   * @throws IOException
-   * @see #deleteTables(java.util.regex.Pattern)
-   * @see #deleteTable(org.apache.hadoop.hbase.TableName)
-   * @deprecated since 2.0 version and will be removed in 3.0 version
-   *             This is just a trivial helper method without any magic.
-   *             Consider using {@link #listTableDescriptors(Pattern)}
-   *             and {@link #deleteTable(TableName)}
-   */
-  @Deprecated
-  HTableDescriptor[] deleteTables(String regex) throws IOException;
-
-  /**
-   * Delete tables matching the passed in pattern and wait on completion. Warning: Use this method
-   * carefully, there is no prompting and the effect is immediate. Consider using {@link
-   * #listTableDescriptors(java.util.regex.Pattern)} and
-   * {@link #deleteTable(org.apache.hadoop.hbase.TableName)}
-   *
-   * @param pattern The pattern to match table names against
-   * @return Table descriptors for tables that couldn't be deleted
-   *         The return htds are read-only
-   * @throws IOException
-   * @deprecated since 2.0 version and will be removed in 3.0 version
-   *             This is just a trivial helper method without any magic.
-   *             Consider using {@link #listTableDescriptors(java.util.regex.Pattern)}
-   *             and {@link #deleteTable(TableName)}
-   */
-  @Deprecated
-  HTableDescriptor[] deleteTables(Pattern pattern) throws IOException;
-
-  /**
-   * Truncate a table.
-   * Synchronous operation.
-   *
+   * Truncate a table. Synchronous operation.
    * @param tableName name of table to truncate
    * @param preserveSplits <code>true</code> if the splits should be preserved
    * @throws IOException if a remote or network exception occurs
    */
-  void truncateTable(TableName tableName, boolean preserveSplits)
-      throws IOException;
+  default void truncateTable(TableName tableName, boolean preserveSplits) throws IOException {
+    get(truncateTableAsync(tableName, preserveSplits), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Truncate the table but does not block and wait for it to be completely enabled. You can use
@@ -419,19 +301,20 @@ public interface Admin extends Abortable, Closeable {
       throws IOException;
 
   /**
-   * Enable a table.  May timeout.  Use {@link #enableTableAsync(org.apache.hadoop.hbase.TableName)}
+   * Enable a table. May timeout. Use {@link #enableTableAsync(org.apache.hadoop.hbase.TableName)}
    * and {@link #isTableEnabled(org.apache.hadoop.hbase.TableName)} instead. The table has to be in
    * disabled state for it to be enabled.
-   *
    * @param tableName name of the table
    * @throws IOException if a remote or network exception occurs There could be couple types of
-   * IOException TableNotFoundException means the table doesn't exist. TableNotDisabledException
-   * means the table isn't in disabled state.
+   *           IOException TableNotFoundException means the table doesn't exist.
+   *           TableNotDisabledException means the table isn't in disabled state.
    * @see #isTableEnabled(org.apache.hadoop.hbase.TableName)
    * @see #disableTable(org.apache.hadoop.hbase.TableName)
    * @see #enableTableAsync(org.apache.hadoop.hbase.TableName)
    */
-  void enableTable(TableName tableName) throws IOException;
+  default void enableTable(TableName tableName) throws IOException {
+    get(enableTableAsync(tableName), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Enable the table but does not block and wait for it to be completely enabled.
@@ -448,43 +331,6 @@ public interface Admin extends Abortable, Closeable {
   Future<Void> enableTableAsync(TableName tableName) throws IOException;
 
   /**
-   * Enable tables matching the passed in pattern and wait on completion. Warning: Use this method
-   * carefully, there is no prompting and the effect is immediate. Consider using {@link
-   * #listTableDescriptors(Pattern)} and {@link #enableTable(org.apache.hadoop.hbase.TableName)}
-   *
-   * @param regex The regular expression to match table names against
-   * @throws IOException
-   * @return Table descriptors for tables that couldn't be enabled.
-   *         The return HTDs are read-only.
-   * @see #enableTables(java.util.regex.Pattern)
-   * @see #enableTable(org.apache.hadoop.hbase.TableName)
-   * @deprecated since 2.0 version and will be removed in 3.0 version
-   *             This is just a trivial helper method without any magic.
-   *             Consider using {@link #listTableDescriptors(Pattern)}
-   *             and {@link #enableTable(org.apache.hadoop.hbase.TableName)}
-   */
-  @Deprecated
-  HTableDescriptor[] enableTables(String regex) throws IOException;
-
-  /**
-   * Enable tables matching the passed in pattern and wait on completion. Warning: Use this method
-   * carefully, there is no prompting and the effect is immediate. Consider using {@link
-   * #listTableDescriptors(java.util.regex.Pattern)} and
-   * {@link #enableTable(org.apache.hadoop.hbase.TableName)}
-   *
-   * @param pattern The pattern to match table names against
-   * @throws IOException
-   * @return Table descriptors for tables that couldn't be enabled.
-   *         The return HTDs are read-only.
-   * @deprecated since 2.0 version and will be removed in 3.0 version
-   *             This is just a trivial helper method without any magic.
-   *             Consider using {@link #listTableDescriptors(java.util.regex.Pattern)}
-   *             and {@link #enableTable(org.apache.hadoop.hbase.TableName)}
-   */
-  @Deprecated
-  HTableDescriptor[] enableTables(Pattern pattern) throws IOException;
-
-  /**
    * Disable the table but does not block and wait for it to be completely disabled.
    * You can use Future.get(long, TimeUnit) to wait on the operation to complete.
    * It may throw ExecutionException if there was an error while executing the operation
@@ -499,53 +345,17 @@ public interface Admin extends Abortable, Closeable {
   Future<Void> disableTableAsync(TableName tableName) throws IOException;
 
   /**
-   * Disable table and wait on completion.  May timeout eventually.  Use {@link
-   * #disableTableAsync(org.apache.hadoop.hbase.TableName)} and
+   * Disable table and wait on completion. May timeout eventually. Use
+   * {@link #disableTableAsync(org.apache.hadoop.hbase.TableName)} and
    * {@link #isTableDisabled(org.apache.hadoop.hbase.TableName)} instead. The table has to be in
    * enabled state for it to be disabled.
-   *
    * @param tableName
    * @throws IOException There could be couple types of IOException TableNotFoundException means the
-   * table doesn't exist. TableNotEnabledException means the table isn't in enabled state.
+   *           table doesn't exist. TableNotEnabledException means the table isn't in enabled state.
    */
-  void disableTable(TableName tableName) throws IOException;
-
-  /**
-   * Disable tables matching the passed in pattern and wait on completion. Warning: Use this method
-   * carefully, there is no prompting and the effect is immediate. Consider using {@link
-   * #listTableDescriptors(Pattern)} and {@link #disableTable(org.apache.hadoop.hbase.TableName)}
-   *
-   * @param regex The regular expression to match table names against
-   * @return Table descriptors for tables that couldn't be disabled
-   *         The return htds are read-only
-   * @throws IOException
-   * @see #disableTables(java.util.regex.Pattern)
-   * @see #disableTable(org.apache.hadoop.hbase.TableName)
-   * @deprecated since 2.0 version and will be removed in 3.0 version
-   *             This is just a trivial helper method without any magic.
-   *             Consider using {@link #listTableDescriptors(Pattern)}
-   *             and {@link #disableTable(org.apache.hadoop.hbase.TableName)}
-   */
-  @Deprecated
-  HTableDescriptor[] disableTables(String regex) throws IOException;
-
-  /**
-   * Disable tables matching the passed in pattern and wait on completion. Warning: Use this method
-   * carefully, there is no prompting and the effect is immediate. Consider using {@link
-   * #listTableDescriptors(java.util.regex.Pattern)} and
-   * {@link #disableTable(org.apache.hadoop.hbase.TableName)}
-   *
-   * @param pattern The pattern to match table names against
-   * @return Table descriptors for tables that couldn't be disabled
-   *         The return htds are read-only
-   * @throws IOException
-   * @deprecated since 2.0 version and will be removed in 3.0 version
-   *             This is just a trivial helper method without any magic.
-   *             Consider using {@link #listTableDescriptors(java.util.regex.Pattern)}
-   *             and {@link #disableTable(org.apache.hadoop.hbase.TableName)}
-   */
-  @Deprecated
-  HTableDescriptor[] disableTables(Pattern pattern) throws IOException;
+  default void disableTable(TableName tableName) throws IOException {
+    get(disableTableAsync(tableName), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * @param tableName name of table to check
@@ -569,75 +379,17 @@ public interface Admin extends Abortable, Closeable {
   boolean isTableAvailable(TableName tableName) throws IOException;
 
   /**
-   * Use this api to check if the table has been created with the specified number of splitkeys
-   * which was used while creating the given table. Note : If this api is used after a table's
-   * region gets splitted, the api may return <code>false</code>.
-   *
-   * @param tableName name of table to check
-   * @param splitKeys keys to check if the table has been created with all split keys
-   * @throws IOException if a remote or network excpetion occurs
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #isTableAvailable(TableName)}
-   */
-  @Deprecated
-  boolean isTableAvailable(TableName tableName, byte[][] splitKeys) throws IOException;
-
-  /**
-   * Get the status of an <code>alter</code> (a.k.a <code>modify</code>) command - indicates how
-   * many regions have received the updated schema Asynchronous operation.
-   *
-   * @param tableName TableName instance
-   * @return Pair indicating the number of regions updated Pair.getFirst() is the regions that are
-   * yet to be updated Pair.getSecond() is the total number of regions of the table
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. No longer needed now you get a Future
-   * on an operation.
-   */
-  @Deprecated
-  Pair<Integer, Integer> getAlterStatus(TableName tableName) throws IOException;
-
-  /**
-   * Get the status of <code>alter</code> (a.k.a <code>modify</code>) command - indicates how many
-   * regions have received the updated schema Asynchronous operation.
-   *
-   * @param tableName name of the table to get the status of
-   * @return Pair indicating the number of regions updated Pair.getFirst() is the regions that are
-   * yet to be updated Pair.getSecond() is the total number of regions of the table
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. No longer needed now you get a Future
-   * on an operation.
-   */
-  @Deprecated
-  Pair<Integer, Integer> getAlterStatus(byte[] tableName) throws IOException;
-
-  /**
-   * Add a column family to an existing table. Synchronous operation.
-   * Use {@link #addColumnFamilyAsync(TableName, ColumnFamilyDescriptor)} instead because it
-   * returns a {@link Future} from which you can learn whether success or failure.
-   *
+   * Add a column family to an existing table. Synchronous operation. Use
+   * {@link #addColumnFamilyAsync(TableName, ColumnFamilyDescriptor)} instead because it returns a
+   * {@link Future} from which you can learn whether success or failure.
    * @param tableName name of the table to add column family to
    * @param columnFamily column family descriptor of column family to be added
    * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0.
-   *             This will be removed in HBase 3.0.0.
-   *             Use {@link #addColumnFamily(TableName, ColumnFamilyDescriptor)}.
    */
-  @Deprecated
-  default void addColumn(TableName tableName, ColumnFamilyDescriptor columnFamily)
-    throws IOException {
-    addColumnFamily(tableName, columnFamily);
+  default void addColumnFamily(TableName tableName, ColumnFamilyDescriptor columnFamily)
+      throws IOException {
+    get(addColumnFamilyAsync(tableName, columnFamily), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
   }
-
-  /**
-   * Add a column family to an existing table. Synchronous operation.
-   * Use {@link #addColumnFamilyAsync(TableName, ColumnFamilyDescriptor)} instead because it
-   * returns a {@link Future} from which you can learn whether success or failure.
-   *
-   * @param tableName name of the table to add column family to
-   * @param columnFamily column family descriptor of column family to be added
-   * @throws IOException if a remote or network exception occurs
-   */
-  void addColumnFamily(TableName tableName, ColumnFamilyDescriptor columnFamily)
-    throws IOException;
 
   /**
    * Add a column family to an existing table. Asynchronous operation.
@@ -656,29 +408,17 @@ public interface Admin extends Abortable, Closeable {
       throws IOException;
 
   /**
-   * Delete a column family from a table. Synchronous operation.
-   *  Use {@link #deleteColumnFamily(TableName, byte[])} instead because it
-   * returns a {@link Future} from which you can learn whether success or failure.
-   *
-   * @param tableName name of table
-   * @param columnFamily name of column family to be deleted
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0.
-   *             This will be removed in HBase 3.0.0.
-   *             Use {@link #deleteColumnFamily(TableName, byte[])}}.
-   */
-  @Deprecated
-  void deleteColumn(TableName tableName, byte[] columnFamily) throws IOException;
-
-  /**
-   * Delete a column family from a table. Synchronous operation.
-   * Use {@link #deleteColumnFamily(TableName, byte[])} instead because it
-   * returns a {@link Future} from which you can learn whether success or failure.
+   * Delete a column family from a table. Synchronous operation. Use
+   * {@link #deleteColumnFamily(TableName, byte[])} instead because it returns a {@link Future} from
+   * which you can learn whether success or failure.
    * @param tableName name of table
    * @param columnFamily name of column family to be deleted
    * @throws IOException if a remote or network exception occurs
    */
-  void deleteColumnFamily(TableName tableName, byte[] columnFamily) throws IOException;
+  default void deleteColumnFamily(TableName tableName, byte[] columnFamily) throws IOException {
+    get(deleteColumnFamilyAsync(tableName, columnFamily), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Delete a column family from a table. Asynchronous operation.
@@ -697,32 +437,18 @@ public interface Admin extends Abortable, Closeable {
       throws IOException;
 
   /**
-   * Modify an existing column family on a table. Synchronous operation.
-   * Use {@link #modifyColumnFamilyAsync(TableName, ColumnFamilyDescriptor)} instead because it
-   * returns a {@link Future} from which you can learn whether success or failure.
+   * Modify an existing column family on a table. Synchronous operation. Use
+   * {@link #modifyColumnFamilyAsync(TableName, ColumnFamilyDescriptor)} instead because it returns
+   * a {@link Future} from which you can learn whether success or failure.
    * @param tableName name of table
    * @param columnFamily new column family descriptor to use
    * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0.
-   *             This will be removed in HBase 3.0.0.
-   *             Use {@link #modifyColumnFamily(TableName, ColumnFamilyDescriptor)}.
    */
-  @Deprecated
-  default void modifyColumn(TableName tableName, ColumnFamilyDescriptor columnFamily)
+  default void modifyColumnFamily(TableName tableName, ColumnFamilyDescriptor columnFamily)
       throws IOException {
-    modifyColumnFamily(tableName, columnFamily);
+    get(modifyColumnFamilyAsync(tableName, columnFamily), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
   }
-
-  /**
-   * Modify an existing column family on a table. Synchronous operation.
-   * Use {@link #modifyColumnFamilyAsync(TableName, ColumnFamilyDescriptor)} instead because it
-   * returns a {@link Future} from which you can learn whether success or failure.
-   * @param tableName name of table
-   * @param columnFamily new column family descriptor to use
-   * @throws IOException if a remote or network exception occurs
-   */
-  void modifyColumnFamily(TableName tableName, ColumnFamilyDescriptor columnFamily)
-      throws IOException;
 
   /**
    * Modify an existing column family on a table. Asynchronous operation.
@@ -739,67 +465,6 @@ public interface Admin extends Abortable, Closeable {
    */
   Future<Void> modifyColumnFamilyAsync(TableName tableName, ColumnFamilyDescriptor columnFamily)
       throws IOException;
-
-  /**
-   * Uses {@link #unassign(byte[], boolean)} to unassign the region. For expert-admins.
-   *
-   * @param regionname region name to close
-   * @param serverName Deprecated. Not used.
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #unassign(byte[], boolean)}.
-   */
-  @Deprecated
-  void closeRegion(String regionname, String serverName) throws IOException;
-
-  /**
-   * Uses {@link #unassign(byte[], boolean)} to unassign the region. For expert-admins.
-   *
-   * @param regionname region name to close
-   * @param serverName Deprecated. Not used.
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #unassign(byte[], boolean)}.
-   */
-  @Deprecated
-  void closeRegion(byte[] regionname, String serverName) throws IOException;
-
-  /**
-   * Uses {@link #unassign(byte[], boolean)} to unassign the region. For expert-admins.
-   *
-   * @param encodedRegionName The encoded region name; i.e. the hash that makes up the region name
-   * suffix: e.g. if regionname is
-   * <code>TestTable,0094429456,1289497600452.527db22f95c8a9e0116f0cc13c680396.</code>,
-   * then the encoded region name is: <code>527db22f95c8a9e0116f0cc13c680396</code>.
-   * @param serverName Deprecated. Not used.
-   * @return Deprecated. Returns <code>true</code> always.
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #unassign(byte[], boolean)}.
-   */
-  @Deprecated
-  boolean closeRegionWithEncodedRegionName(String encodedRegionName, String serverName)
-      throws IOException;
-
-  /**
-   * Used {@link #unassign(byte[], boolean)} to unassign the region. For expert-admins.
-   *
-   * @param sn Deprecated. Not used.
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0
-   *             (<a href="https://issues.apache.org/jira/browse/HBASE-18231">HBASE-18231</a>).
-   *             Use {@link #unassign(byte[], boolean)}.
-   */
-  @Deprecated
-  void closeRegion(final ServerName sn, final HRegionInfo hri) throws IOException;
-
-  /**
-   * Get all the online regions on a region server.
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0
-   *             (<a href="https://issues.apache.org/jira/browse/HBASE-17980">HBASE-17980</a>).
-   *             Use {@link #getRegions(ServerName sn)}.
-   */
-  @Deprecated
-  List<HRegionInfo> getOnlineRegions(ServerName sn) throws IOException;
 
   /**
    * Get all the online regions on a region server.
@@ -975,26 +640,17 @@ public interface Admin extends Abortable, Closeable {
     throws IOException, InterruptedException;
 
   /**
-   * Compact all regions on the region server. Asynchronous operation in that this method requests
-   * that a Compaction run and then it returns. It does not wait on the completion of Compaction (it
-   * can take a while).
-   * @param sn the region server name
-   * @param major if it's major compaction
-   * @throws IOException if a remote or network exception occurs
-   * @throws InterruptedException
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0. Use
-   *             {@link #compactRegionServer(ServerName)} or
-   *             {@link #majorCompactRegionServer(ServerName)}.
+   * Turn the compaction on or off. Disabling compactions will also interrupt any currently ongoing
+   * compactions. This state is ephemeral. The setting will be lost on restart. Compaction
+   * can also be enabled/disabled by modifying configuration hbase.regionserver.compaction.enabled
+   * in hbase-site.xml.
+   *
+   * @param switchState     Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @param serverNamesList list of region servers.
+   * @return Previous compaction states for region servers
    */
-  @Deprecated
-  default void compactRegionServer(ServerName sn, boolean major) throws IOException,
-      InterruptedException {
-    if (major) {
-      majorCompactRegionServer(sn);
-    } else {
-      compactRegionServer(sn);
-    }
-  }
+  Map<ServerName, Boolean> compactionSwitch(boolean switchState, List<String> serverNamesList)
+      throws IOException;
 
   /**
    * Compact all regions on the region server. Asynchronous operation in that this method requests
@@ -1061,40 +717,13 @@ public interface Admin extends Abortable, Closeable {
 
   /**
    * Turn the load balancer on or off.
-   *
-   * @param synchronous If <code>true</code>, it waits until current balance() call, if
-   * outstanding, to return.
-   * @return Previous balancer value
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0.
-   * Use {@link #balancerSwitch(boolean, boolean)} instead.
-   */
-  @Deprecated
-  default boolean setBalancerRunning(boolean on, boolean synchronous) throws IOException {
-    return balancerSwitch(on, synchronous);
-  }
-
-  /**
-   * Turn the load balancer on or off.
    * @param onOrOff Set to <code>true</code> to enable, <code>false</code> to disable.
-   * @param synchronous If <code>true</code>, it waits until current balance() call, if
-   * outstanding, to return.
+   * @param synchronous If <code>true</code>, it waits until current balance() call, if outstanding,
+   *          to return.
    * @return Previous balancer value
    */
-  boolean balancerSwitch(boolean onOrOff, boolean synchronous)
-  throws IOException;
+  boolean balancerSwitch(boolean onOrOff, boolean synchronous) throws IOException;
 
-  /**
-   * Invoke the balancer.  Will run the balancer and if regions to move, it will go ahead and do the
-   * reassignments.  Can NOT run for various reasons.  Check logs.
-   *
-   * @return <code>true</code> if balancer ran, <code>false</code> otherwise.
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0.
-   * Use {@link #balance()} instead.
-   */
-  @Deprecated
-  default boolean balancer() throws IOException {
-    return balance();
-  }
 
   /**
    * Invoke the balancer.  Will run the balancer and if regions to move, it will go ahead and do the
@@ -1103,21 +732,6 @@ public interface Admin extends Abortable, Closeable {
    * @return <code>true</code> if balancer ran, <code>false</code> otherwise.
    */
   boolean balance() throws IOException;
-
-  /**
-   * Invoke the balancer.  Will run the balancer and if regions to move, it will
-   * go ahead and do the reassignments. If there is region in transition, force parameter of true
-   * would still run balancer. Can *not* run for other reasons.  Check
-   * logs.
-   * @param force whether we should force balance even if there is region in transition
-   * @return <code>true</code> if balancer ran, <code>false</code> otherwise.
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0.
-   * Use {@link #balance(boolean)} instead.
-   */
-  @Deprecated
-  default boolean balancer(boolean force) throws IOException {
-    return balance(force);
-  }
 
   /**
    * Invoke the balancer.  Will run the balancer and if regions to move, it will
@@ -1166,33 +780,8 @@ public interface Admin extends Abortable, Closeable {
    * Turn region normalizer on or off.
    *
    * @return Previous normalizer value
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #normalizerSwitch(boolean)}}
-   * instead.
    */
-  @Deprecated
-  default boolean setNormalizerRunning(boolean on) throws IOException {
-    return normalizerSwitch(on);
-  }
-
-  /**
-   * Turn region normalizer on or off.
-   *
-   * @return Previous normalizer value
-   */
-  boolean normalizerSwitch (boolean on) throws IOException;
-
-  /**
-   * Enable/Disable the catalog janitor.
-   *
-   * @param enable if <code>true</code> enables the catalog janitor
-   * @return the previous state
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #catalogJanitorSwitch(boolean)}}
-   * instead.
-   */
-  @Deprecated
-  default boolean enableCatalogJanitor(boolean enable) throws IOException {
-    return catalogJanitorSwitch(enable);
-  }
+  boolean normalizerSwitch(boolean on) throws IOException;
 
   /**
    * Enable/Disable the catalog janitor/
@@ -1206,18 +795,6 @@ public interface Admin extends Abortable, Closeable {
    * Ask for a scan of the catalog table.
    *
    * @return the number of entries cleaned
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #runCatalogJanitor()}}
-   * instead.
-   */
-  @Deprecated
-  default int runCatalogScan() throws IOException {
-    return runCatalogJanitor();
-  }
-
-  /**
-   * Ask for a scan of the catalog table.
-   *
-   * @return the number of entries cleaned
    */
   int runCatalogJanitor() throws IOException;
 
@@ -1226,20 +803,6 @@ public interface Admin extends Abortable, Closeable {
    *
    */
   boolean isCatalogJanitorEnabled() throws IOException;
-
-  /**
-   * Enable/Disable the cleaner chore.
-   *
-   * @param on if <code>true</code> enables the cleaner chore
-   * @return the previous state
-   * @throws IOException
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #cleanerChoreSwitch(boolean)}}
-   * instead.
-   */
-  @Deprecated
-  default boolean setCleanerChoreRunning(boolean on) throws IOException {
-    return cleanerChoreSwitch(on);
-  }
 
   /**
    * Enable/Disable the cleaner chore.
@@ -1265,66 +828,42 @@ public interface Admin extends Abortable, Closeable {
    */
   boolean isCleanerChoreEnabled() throws IOException;
 
+
   /**
    * Merge two regions. Asynchronous operation.
-   *
    * @param nameOfRegionA encoded or full name of region a
    * @param nameOfRegionB encoded or full name of region b
    * @param forcible <code>true</code> if do a compulsory merge, otherwise we will only merge two
-   * adjacent regions
-   * @throws IOException
-   * @deprecated Since 2.0. Will be removed in 3.0. Use
-   *     {@link #mergeRegionsAsync(byte[], byte[], boolean)} instead.
+   *          adjacent regions
    */
-  @Deprecated
-  void mergeRegions(byte[] nameOfRegionA, byte[] nameOfRegionB,
-      boolean forcible) throws IOException;
-
-
-  /**
-   * Merge two regions. Asynchronous operation.
-   *
-   * @param nameOfRegionA encoded or full name of region a
-   * @param nameOfRegionB encoded or full name of region b
-   * @param forcible <code>true</code> if do a compulsory merge, otherwise we will only merge
-   *          two adjacent regions
-   * @throws IOException
-   */
-  Future<Void> mergeRegionsAsync(
-      byte[] nameOfRegionA,
-      byte[] nameOfRegionB,
-      boolean forcible) throws IOException;
+  default Future<Void> mergeRegionsAsync(byte[] nameOfRegionA, byte[] nameOfRegionB,
+      boolean forcible) throws IOException {
+    byte[][] nameofRegionsToMerge = new byte[2][];
+    nameofRegionsToMerge[0] = nameOfRegionA;
+    nameofRegionsToMerge[1] = nameOfRegionB;
+    return mergeRegionsAsync(nameofRegionsToMerge, forcible);
+  }
 
   /**
    * Merge regions. Asynchronous operation.
-   *
+   * <p/>
+   * You may get a {@code DoNotRetryIOException} if you pass more than two regions in but the master
+   * does not support merging more than two regions. At least till 2.2.0, we still only support
+   * merging two regions.
    * @param nameofRegionsToMerge encoded or full name of daughter regions
    * @param forcible <code>true</code> if do a compulsory merge, otherwise we will only merge
    *          adjacent regions
-   * @throws IOException
    */
-  Future<Void> mergeRegionsAsync(
-      byte[][] nameofRegionsToMerge,
-      boolean forcible) throws IOException;
+  Future<Void> mergeRegionsAsync(byte[][] nameofRegionsToMerge, boolean forcible)
+      throws IOException;
 
   /**
-   + Split a table. The method will execute split action for each region in table.
-   + Asynchronous operation.
+   * Split a table. The method will execute split action for each region in table.
+   * Asynchronous operation.
    * @param tableName table to split
    * @throws IOException if a remote or network exception occurs
    */
   void split(TableName tableName) throws IOException;
-
-  /**
-   * Split an individual region. Asynchronous operation.
-   *
-   * @param regionName region to split
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #splitRegionAsync(byte[], byte[])}.
-   */
-  @Deprecated
-  void splitRegion(byte[] regionName) throws IOException;
 
   /**
    * Split a table. Asynchronous operation.
@@ -1333,21 +872,7 @@ public interface Admin extends Abortable, Closeable {
    * @param splitPoint the explicit position to split on
    * @throws IOException if a remote or network exception occurs
    */
-  void split(TableName tableName, byte[] splitPoint)
-    throws IOException;
-
-  /**
-   * Split an individual region. Asynchronous operation.
-   *
-   * @param regionName region to split
-   * @param splitPoint the explicit position to split on
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #splitRegionAsync(byte[], byte[])}.
-   */
-  @Deprecated
-  void splitRegion(byte[] regionName, byte[] splitPoint)
-    throws IOException;
+  void split(TableName tableName, byte[] splitPoint) throws IOException;
 
   /**
    * Split an individual region. Asynchronous operation.
@@ -1355,75 +880,44 @@ public interface Admin extends Abortable, Closeable {
    * @param splitPoint the explicit position to split on
    * @throws IOException if a remote or network exception occurs
    */
-  Future<Void> splitRegionAsync(byte[] regionName, byte[] splitPoint)
-    throws IOException;
-
-  /**
-   * Modify an existing table, more IRB friendly version.
-   *
-   * @param tableName name of table.
-   * @param td modified description of the table
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #modifyTable(TableDescriptor)}
-   */
-  @Deprecated
-  void modifyTable(TableName tableName, TableDescriptor td)
-      throws IOException;
+  Future<Void> splitRegionAsync(byte[] regionName, byte[] splitPoint) throws IOException;
 
   /**
    * Modify an existing table, more IRB friendly version.
    * @param td modified description of the table
    * @throws IOException if a remote or network exception occurs
    */
-  void modifyTable(TableDescriptor td) throws IOException;
+  default void modifyTable(TableDescriptor td) throws IOException {
+    get(modifyTableAsync(td), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
-   * Modify an existing table, more IRB friendly version. Asynchronous operation.  This means that
-   * it may be a while before your schema change is updated across all of the table.
-   * You can use Future.get(long, TimeUnit) to wait on the operation to complete.
-   * It may throw ExecutionException if there was an error while executing the operation
-   * or TimeoutException in case the wait timeout was not long enough to allow the
-   * operation to complete.
-   *
-   * @param tableName name of table.
-   * @param td modified description of the table
-   * @throws IOException if a remote or network exception occurs
-   * @return the result of the async modify. You can use Future.get(long, TimeUnit) to wait on the
-   *     operation to complete
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #modifyTableAsync(TableDescriptor)}
-   */
-  @Deprecated
-  Future<Void> modifyTableAsync(TableName tableName, TableDescriptor td)
-      throws IOException;
-
-  /**
-   * Modify an existing table, more IRB (ruby) friendly version. Asynchronous operation. This means that
-   * it may be a while before your schema change is updated across all of the table.
-   * You can use Future.get(long, TimeUnit) to wait on the operation to complete.
-   * It may throw ExecutionException if there was an error while executing the operation
-   * or TimeoutException in case the wait timeout was not long enough to allow the
-   * operation to complete.
-   *
+   * Modify an existing table, more IRB (ruby) friendly version. Asynchronous operation. This means
+   * that it may be a while before your schema change is updated across all of the table. You can
+   * use Future.get(long, TimeUnit) to wait on the operation to complete. It may throw
+   * ExecutionException if there was an error while executing the operation or TimeoutException in
+   * case the wait timeout was not long enough to allow the operation to complete.
    * @param td description of the table
    * @throws IOException if a remote or network exception occurs
    * @return the result of the async modify. You can use Future.get(long, TimeUnit) to wait on the
-   *     operation to complete
+   *         operation to complete
    */
-  Future<Void> modifyTableAsync(TableDescriptor td)
-      throws IOException;
+  Future<Void> modifyTableAsync(TableDescriptor td) throws IOException;
 
   /**
    * Shuts down the HBase cluster.
-   *
+   * <p/>
+   * Notice that, a success shutdown call may ends with an error since the remote server has already
+   * been shutdown.
    * @throws IOException if a remote or network exception occurs
    */
   void shutdown() throws IOException;
 
   /**
    * Shuts down the current HBase master only. Does not shutdown the cluster.
-   *
+   * <p/>
+   * Notice that, a success stopMaster call may ends with an error since the remote server has
+   * already been shutdown.
    * @throws IOException if a remote or network exception occurs
    * @see #shutdown()
    */
@@ -1444,27 +938,6 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    */
   void stopRegionServer(String hostnamePort) throws IOException;
-
-  /**
-   * Get whole cluster status, containing status about:
-   * <pre>
-   * hbase version
-   * cluster id
-   * primary/backup master(s)
-   * master's coprocessors
-   * live/dead regionservers
-   * balancer
-   * regions in transition
-   * </pre>
-   * @return cluster status
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #getClusterMetrics()}
-   */
-  @Deprecated
-  default ClusterStatus getClusterStatus() throws IOException {
-    return new ClusterStatus(getClusterMetrics());
-  }
 
   /**
    * Get whole cluster metrics, containing status about:
@@ -1543,151 +1016,96 @@ public interface Admin extends Abortable, Closeable {
   Configuration getConfiguration();
 
   /**
-   * Create a new namespace. Blocks until namespace has been successfully created or an exception
-   * is thrown.
-   *
+   * Create a new namespace. Blocks until namespace has been successfully created or an exception is
+   * thrown.
    * @param descriptor descriptor which describes the new namespace.
    */
-  void createNamespace(NamespaceDescriptor descriptor)
-  throws IOException;
+  default void createNamespace(NamespaceDescriptor descriptor) throws IOException {
+    get(createNamespaceAsync(descriptor), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Create a new namespace.
-   *
    * @param descriptor descriptor which describes the new namespace
    * @return the result of the async create namespace operation. Use Future.get(long, TimeUnit) to
-   *  wait on the operation to complete.
+   *         wait on the operation to complete.
    */
-  Future<Void> createNamespaceAsync(NamespaceDescriptor descriptor)
-  throws IOException;
+  Future<Void> createNamespaceAsync(NamespaceDescriptor descriptor) throws IOException;
 
   /**
-   * Modify an existing namespace.  Blocks until namespace has been successfully modified or an
+   * Modify an existing namespace. Blocks until namespace has been successfully modified or an
    * exception is thrown.
-   *
    * @param descriptor descriptor which describes the new namespace
    */
-  void modifyNamespace(NamespaceDescriptor descriptor)
-  throws IOException;
+  default void modifyNamespace(NamespaceDescriptor descriptor) throws IOException {
+    get(modifyNamespaceAsync(descriptor), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Modify an existing namespace.
-   *
    * @param descriptor descriptor which describes the new namespace
    * @return the result of the async modify namespace operation. Use Future.get(long, TimeUnit) to
-   *  wait on the operation to complete.
+   *         wait on the operation to complete.
    */
-  Future<Void> modifyNamespaceAsync(NamespaceDescriptor descriptor)
-  throws IOException;
+  Future<Void> modifyNamespaceAsync(NamespaceDescriptor descriptor) throws IOException;
 
   /**
-   * Delete an existing namespace. Only empty namespaces (no tables) can be removed.
-   * Blocks until namespace has been successfully deleted or an
-   * exception is thrown.
-   *
+   * Delete an existing namespace. Only empty namespaces (no tables) can be removed. Blocks until
+   * namespace has been successfully deleted or an exception is thrown.
    * @param name namespace name
    */
-  void deleteNamespace(String name) throws IOException;
+  default void deleteNamespace(String name) throws IOException {
+    get(deleteNamespaceAsync(name), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Delete an existing namespace. Only empty namespaces (no tables) can be removed.
-   *
    * @param name namespace name
    * @return the result of the async delete namespace operation. Use Future.get(long, TimeUnit) to
-   *  wait on the operation to complete.
+   *         wait on the operation to complete.
    */
   Future<Void> deleteNamespaceAsync(String name) throws IOException;
 
   /**
    * Get a namespace descriptor by name.
-   *
    * @param name name of namespace descriptor
    * @return A descriptor
    * @throws org.apache.hadoop.hbase.NamespaceNotFoundException
    * @throws IOException if a remote or network exception occurs
    */
   NamespaceDescriptor getNamespaceDescriptor(String name)
-  throws NamespaceNotFoundException, IOException;
+      throws NamespaceNotFoundException, IOException;
 
   /**
    * List available namespace descriptors.
-   *
    * @return List of descriptors
    */
-  NamespaceDescriptor[] listNamespaceDescriptors()
-  throws IOException;
+  NamespaceDescriptor[] listNamespaceDescriptors() throws IOException;
 
   /**
    * Get list of table descriptors by namespace.
-   *
-   * @param name namespace name
-   * @return HTD[] the read-only tableDescriptors
-   * @throws IOException
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #listTableDescriptorsByNamespace(byte[])}
-   */
-  @Deprecated
-  HTableDescriptor[] listTableDescriptorsByNamespace(String name)
-      throws IOException;
-
-  /**
-   * Get list of table descriptors by namespace.
-   *
    * @param name namespace name
    * @return returns a list of TableDescriptors
-   * @throws IOException
    */
-  List<TableDescriptor> listTableDescriptorsByNamespace(byte[] name)
-      throws IOException;
+  List<TableDescriptor> listTableDescriptorsByNamespace(byte[] name) throws IOException;
 
   /**
    * Get list of table names by namespace.
-   *
    * @param name namespace name
    * @return The list of table names in the namespace
-   * @throws IOException
    */
-  TableName[] listTableNamesByNamespace(String name)
-      throws IOException;
-
-  /**
-   * Get the regions of a given table.
-   *
-   * @param tableName the name of the table
-   * @return List of {@link HRegionInfo}.
-   * @throws IOException
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0
-   *             (<a href="https://issues.apache.org/jira/browse/HBASE-17980">HBASE-17980</a>).
-   *             Use {@link #getRegions(TableName)}.
-   */
-  @Deprecated
-  List<HRegionInfo> getTableRegions(TableName tableName)
-    throws IOException;
+  TableName[] listTableNamesByNamespace(String name) throws IOException;
 
   /**
    * Get the regions of a given table.
    *
    * @param tableName the name of the table
    * @return List of {@link RegionInfo}.
-   * @throws IOException
    */
   List<RegionInfo> getRegions(TableName tableName) throws IOException;
 
   @Override
-  void close() throws IOException;
-
-  /**
-   * Get tableDescriptors.
-   *
-   * @param tableNames List of table names
-   * @return HTD[] the read-only tableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #listTableDescriptors(List)}
-   */
-  @Deprecated
-  HTableDescriptor[] getTableDescriptorsByTableName(List<TableName> tableNames)
-    throws IOException;
+  void close();
 
   /**
    * Get tableDescriptors.
@@ -1700,28 +1118,21 @@ public interface Admin extends Abortable, Closeable {
     throws IOException;
 
   /**
-   * Get tableDescriptors.
-   *
-   * @param names List of table names
-   * @return HTD[] the read-only tableDescriptors
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #listTableDescriptors(List)}
-   */
-  @Deprecated
-  HTableDescriptor[] getTableDescriptors(List<String> names)
-    throws IOException;
-
-  /**
    * Abort a procedure.
+   * <p/>
+   * Do not use. Usually it is ignored but if not, it can do more damage than good. See hbck2.
    * @param procId ID of the procedure to abort
    * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
-   * @return <code>true</code> if aborted, <code>false</code> if procedure already completed or does not exist
+   * @return <code>true</code> if aborted, <code>false</code> if procedure already completed or does
+   *         not exist
    * @throws IOException
+   * @deprecated Since 2.1.1 -- to be removed.
    */
-  boolean abortProcedure(
-      long procId,
-      boolean mayInterruptIfRunning) throws IOException;
+  @Deprecated
+  default boolean abortProcedure(long procId, boolean mayInterruptIfRunning) throws IOException {
+    return get(abortProcedureAsync(procId, mayInterruptIfRunning), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Abort a procedure but does not block and wait for completion.
@@ -1729,15 +1140,17 @@ public interface Admin extends Abortable, Closeable {
    * It may throw ExecutionException if there was an error while executing the operation
    * or TimeoutException in case the wait timeout was not long enough to allow the
    * operation to complete.
+   * Do not use. Usually it is ignored but if not, it can do more damage than good. See hbck2.
    *
    * @param procId ID of the procedure to abort
    * @param mayInterruptIfRunning if the proc completed at least one step, should it be aborted?
    * @return <code>true</code> if aborted, <code>false</code> if procedure already completed or does not exist
    * @throws IOException
+   * @deprecated Since 2.1.1 -- to be removed.
    */
-  Future<Boolean> abortProcedureAsync(
-    long procId,
-    boolean mayInterruptIfRunning) throws IOException;
+  @Deprecated
+  Future<Boolean> abortProcedureAsync(long procId, boolean mayInterruptIfRunning)
+      throws IOException;
 
   /**
    * Get procedures.
@@ -1765,18 +1178,6 @@ public interface Admin extends Abortable, Closeable {
    * @throws org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException
    */
   void rollWALWriter(ServerName serverName) throws IOException, FailedLogCloseException;
-
-  /**
-   * Helper that delegates to getClusterMetrics().getMasterCoprocessorNames().
-   * @return an array of master coprocessors
-   * @see org.apache.hadoop.hbase.ClusterMetrics#getMasterCoprocessorNames()
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             use {@link #getMasterCoprocessorNames()}
-   */
-  @Deprecated
-  default String[] getMasterCoprocessors() throws IOException {
-    return getMasterCoprocessorNames().stream().toArray(size -> new String[size]);
-  }
 
   /**
    * Helper that delegates to getClusterMetrics().getMasterCoprocessorNames().
@@ -1847,35 +1248,20 @@ public interface Admin extends Abortable, Closeable {
    * Take a snapshot for the given table. If the table is enabled, a FLUSH-type snapshot will be
    * taken. If the table is disabled, an offline snapshot is taken. Snapshots are considered unique
    * based on <b>the name of the snapshot</b>. Attempts to take a snapshot with the same name (even
-   * a different type or with different parameters) will fail with a {@link
-   * org.apache.hadoop.hbase.snapshot.SnapshotCreationException} indicating the duplicate naming.
-   * Snapshot names follow the same naming constraints as tables in HBase. See {@link
-   * org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
-   *
+   * a different type or with different parameters) will fail with a
+   * {@link org.apache.hadoop.hbase.snapshot.SnapshotCreationException} indicating the duplicate
+   * naming. Snapshot names follow the same naming constraints as tables in HBase. See
+   * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
    * @param snapshotName name of the snapshot to be created
    * @param tableName name of the table for which snapshot is created
    * @throws IOException if a remote or network exception occurs
    * @throws org.apache.hadoop.hbase.snapshot.SnapshotCreationException if snapshot creation failed
    * @throws IllegalArgumentException if the snapshot request is formatted incorrectly
    */
-  void snapshot(String snapshotName, TableName tableName)
-      throws IOException, SnapshotCreationException, IllegalArgumentException;
-
-  /**
-   * Create a timestamp consistent snapshot for the given table. Snapshots are considered unique
-   * based on <b>the name of the snapshot</b>. Attempts to take a snapshot with the same name (even
-   * different type or with different parameters) will fail with a {@link SnapshotCreationException}
-   * indicating the duplicate naming. Snapshot names follow the same naming constraints as tables in
-   * HBase.
-   *
-   * @param snapshotName name of the snapshot to be created
-   * @param tableName name of the table for which snapshot is created
-   * @throws IOException if a remote or network exception occurs
-   * @throws SnapshotCreationException if snapshot creation failed
-   * @throws IllegalArgumentException if the snapshot request is formatted incorrectly
-   */
-  void snapshot(byte[] snapshotName, TableName tableName)
-      throws IOException, SnapshotCreationException, IllegalArgumentException;
+  default void snapshot(String snapshotName, TableName tableName)
+      throws IOException, SnapshotCreationException, IllegalArgumentException {
+    snapshot(snapshotName, tableName, SnapshotType.FLUSH);
+  }
 
   /**
    * Create typed snapshot of the table. Snapshots are considered unique based on <b>the name of the
@@ -1883,19 +1269,18 @@ public interface Admin extends Abortable, Closeable {
    * different parameters) will fail with a {@link SnapshotCreationException} indicating the
    * duplicate naming. Snapshot names follow the same naming constraints as tables in HBase. See
    * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}.
-   *
    * @param snapshotName name to give the snapshot on the filesystem. Must be unique from all other
-   * snapshots stored on the cluster
+   *          snapshots stored on the cluster
    * @param tableName name of the table to snapshot
    * @param type type of snapshot to take
    * @throws IOException we fail to reach the master
    * @throws SnapshotCreationException if snapshot creation failed
    * @throws IllegalArgumentException if the snapshot request is formatted incorrectly
    */
-  void snapshot(String snapshotName,
-      TableName tableName,
-      SnapshotType type) throws IOException, SnapshotCreationException,
-      IllegalArgumentException;
+  default void snapshot(String snapshotName, TableName tableName, SnapshotType type)
+      throws IOException, SnapshotCreationException, IllegalArgumentException {
+    snapshot(new SnapshotDescription(snapshotName, tableName, type));
+  }
 
   /**
    * Take a snapshot and wait for the server to complete that snapshot (blocking). Only a single
@@ -1904,12 +1289,10 @@ public interface Admin extends Abortable, Closeable {
    * single cluster). Snapshots are considered unique based on <b>the name of the snapshot</b>.
    * Attempts to take a snapshot with the same name (even a different type or with different
    * parameters) will fail with a {@link SnapshotCreationException} indicating the duplicate naming.
-   * Snapshot names follow the same naming constraints as tables in HBase. See {@link
-   * org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}. You should probably
-   * use {@link #snapshot(String, org.apache.hadoop.hbase.TableName)} or
-   * {@link #snapshot(byte[], org.apache.hadoop.hbase.TableName)} unless you are sure about the type
-   * of snapshot that you want to take.
-   *
+   * Snapshot names follow the same naming constraints as tables in HBase. See
+   * {@link org.apache.hadoop.hbase.TableName#isLegalFullyQualifiedTableName(byte[])}. You should
+   * probably use {@link #snapshot(String, org.apache.hadoop.hbase.TableName)} unless you are sure
+   * about the type of snapshot that you want to take.
    * @param snapshot snapshot to take
    * @throws IOException or we lose contact with the master.
    * @throws SnapshotCreationException if snapshot failed to be taken
@@ -1926,25 +1309,9 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if the snapshot did not succeed or we lose contact with the master.
    * @throws SnapshotCreationException if snapshot creation failed
    * @throws IllegalArgumentException if the snapshot request is formatted incorrectly
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use
-   * {@link #snapshotAsync(SnapshotDescription)} instead.
    */
-  @Deprecated
-  default void takeSnapshotAsync(SnapshotDescription snapshot)
-  throws IOException, SnapshotCreationException {
-    snapshotAsync(snapshot);
-  }
-
-  /**
-   * Take a snapshot without waiting for the server to complete that snapshot (asynchronous) Only a
-   * single snapshot should be taken at a time, or results may be undefined.
-   *
-   * @param snapshot snapshot to take
-   * @throws IOException if the snapshot did not succeed or we lose contact with the master.
-   * @throws SnapshotCreationException if snapshot creation failed
-   * @throws IllegalArgumentException if the snapshot request is formatted incorrectly
-   */
-  void snapshotAsync(SnapshotDescription snapshot) throws IOException, SnapshotCreationException;
+  Future<Void> snapshotAsync(SnapshotDescription snapshot)
+      throws IOException, SnapshotCreationException;
 
   /**
    * Check the current state of the passed snapshot. There are three possible states: <ol>
@@ -1967,26 +1334,10 @@ public interface Admin extends Abortable, Closeable {
 
   /**
    * Restore the specified snapshot on the original table. (The table must be disabled) If the
-   * "hbase.snapshot.restore.take.failsafe.snapshot" configuration property is set to <code>true</code>, a
-   * snapshot of the current table is taken before executing the restore operation. In case of
-   * restore failure, the failsafe snapshot will be restored. If the restore completes without
-   * problem the failsafe snapshot is deleted.
-   *
-   * @param snapshotName name of the snapshot to restore
-   * @throws IOException if a remote or network exception occurs
-   * @throws org.apache.hadoop.hbase.snapshot.RestoreSnapshotException if snapshot failed to be
-   * restored
-   * @throws IllegalArgumentException if the restore request is formatted incorrectly
-   */
-  void restoreSnapshot(byte[] snapshotName) throws IOException, RestoreSnapshotException;
-
-  /**
-   * Restore the specified snapshot on the original table. (The table must be disabled) If the
-   * "hbase.snapshot.restore.take.failsafe.snapshot" configuration property is set to <code>true</code>, a
-   * snapshot of the current table is taken before executing the restore operation. In case of
-   * restore failure, the failsafe snapshot will be restored. If the restore completes without
-   * problem the failsafe snapshot is deleted.
-   *
+   * "hbase.snapshot.restore.take.failsafe.snapshot" configuration property is set to
+   * <code>true</code>, a snapshot of the current table is taken before executing the restore
+   * operation. In case of restore failure, the failsafe snapshot will be restored. If the restore
+   * completes without problem the failsafe snapshot is deleted.
    * @param snapshotName name of the snapshot to restore
    * @throws IOException if a remote or network exception occurs
    * @throws RestoreSnapshotException if snapshot failed to be restored
@@ -1995,60 +1346,28 @@ public interface Admin extends Abortable, Closeable {
   void restoreSnapshot(String snapshotName) throws IOException, RestoreSnapshotException;
 
   /**
-   * Restore the specified snapshot on the original table. (The table must be disabled) If the
-   * "hbase.snapshot.restore.take.failsafe.snapshot" configuration property is set to <code>true</code>, a
-   * snapshot of the current table is taken before executing the restore operation. In case of
-   * restore failure, the failsafe snapshot will be restored. If the restore completes without
-   * problem the failsafe snapshot is deleted.
-   *
-   * @param snapshotName name of the snapshot to restore
-   * @throws IOException if a remote or network exception occurs
-   * @throws RestoreSnapshotException if snapshot failed to be restored
-   * @return the result of the async restore snapshot. You can use Future.get(long, TimeUnit)
-   *    to wait on the operation to complete.
-   */
-  Future<Void> restoreSnapshotAsync(String snapshotName)
-      throws IOException, RestoreSnapshotException;
-
-  /**
    * Restore the specified snapshot on the original table. (The table must be disabled) If
-   * 'takeFailSafeSnapshot' is set to <code>true</code>, a snapshot of the current table is taken before
-   * executing the restore operation. In case of restore failure, the failsafe snapshot will be
-   * restored. If the restore completes without problem the failsafe snapshot is deleted. The
+   * 'takeFailSafeSnapshot' is set to <code>true</code>, a snapshot of the current table is taken
+   * before executing the restore operation. In case of restore failure, the failsafe snapshot will
+   * be restored. If the restore completes without problem the failsafe snapshot is deleted. The
    * failsafe snapshot name is configurable by using the property
    * "hbase.snapshot.restore.failsafe.name".
-   *
    * @param snapshotName name of the snapshot to restore
    * @param takeFailSafeSnapshot <code>true</code> if the failsafe snapshot should be taken
    * @throws IOException if a remote or network exception occurs
    * @throws RestoreSnapshotException if snapshot failed to be restored
    * @throws IllegalArgumentException if the restore request is formatted incorrectly
    */
-  void restoreSnapshot(byte[] snapshotName, boolean takeFailSafeSnapshot)
-      throws IOException, RestoreSnapshotException;
+  default void restoreSnapshot(String snapshotName, boolean takeFailSafeSnapshot)
+      throws IOException, RestoreSnapshotException {
+    restoreSnapshot(snapshotName, takeFailSafeSnapshot, false);
+  }
 
   /**
    * Restore the specified snapshot on the original table. (The table must be disabled) If
-   * 'takeFailSafeSnapshot' is set to <code>true</code>, a snapshot of the current table is taken before
-   * executing the restore operation. In case of restore failure, the failsafe snapshot will be
-   * restored. If the restore completes without problem the failsafe snapshot is deleted. The
-   * failsafe snapshot name is configurable by using the property
-   * "hbase.snapshot.restore.failsafe.name".
-   *
-   * @param snapshotName name of the snapshot to restore
-   * @param takeFailSafeSnapshot <code>true</code> if the failsafe snapshot should be taken
-   * @throws IOException if a remote or network exception occurs
-   * @throws RestoreSnapshotException if snapshot failed to be restored
-   * @throws IllegalArgumentException if the restore request is formatted incorrectly
-   */
-  void restoreSnapshot(String snapshotName, boolean takeFailSafeSnapshot)
-      throws IOException, RestoreSnapshotException;
-
-  /**
-   * Restore the specified snapshot on the original table. (The table must be disabled) If
-   * 'takeFailSafeSnapshot' is set to <code>true</code>, a snapshot of the current table is taken before
-   * executing the restore operation. In case of restore failure, the failsafe snapshot will be
-   * restored. If the restore completes without problem the failsafe snapshot is deleted. The
+   * 'takeFailSafeSnapshot' is set to <code>true</code>, a snapshot of the current table is taken
+   * before executing the restore operation. In case of restore failure, the failsafe snapshot will
+   * be restored. If the restore completes without problem the failsafe snapshot is deleted. The
    * failsafe snapshot name is configurable by using the property
    * "hbase.snapshot.restore.failsafe.name".
    * @param snapshotName name of the snapshot to restore
@@ -2058,12 +1377,11 @@ public interface Admin extends Abortable, Closeable {
    * @throws RestoreSnapshotException if snapshot failed to be restored
    * @throws IllegalArgumentException if the restore request is formatted incorrectly
    */
-  void restoreSnapshot(String snapshotName, boolean takeFailSafeSnapshot,
-      boolean restoreAcl) throws IOException, RestoreSnapshotException;
+  void restoreSnapshot(String snapshotName, boolean takeFailSafeSnapshot, boolean restoreAcl)
+      throws IOException, RestoreSnapshotException;
 
   /**
    * Create a new table by cloning the snapshot content.
-   *
    * @param snapshotName name of the snapshot to be cloned
    * @param tableName name of the table where the snapshot will be restored
    * @throws IOException if a remote or network exception occurs
@@ -2071,8 +1389,10 @@ public interface Admin extends Abortable, Closeable {
    * @throws RestoreSnapshotException if snapshot failed to be cloned
    * @throws IllegalArgumentException if the specified table has not a valid name
    */
-  void cloneSnapshot(byte[] snapshotName, TableName tableName)
-      throws IOException, TableExistsException, RestoreSnapshotException;
+  default void cloneSnapshot(String snapshotName, TableName tableName)
+      throws IOException, TableExistsException, RestoreSnapshotException {
+    cloneSnapshot(snapshotName, tableName, false);
+  }
 
   /**
    * Create a new table by cloning the snapshot content.
@@ -2084,39 +1404,42 @@ public interface Admin extends Abortable, Closeable {
    * @throws RestoreSnapshotException if snapshot failed to be cloned
    * @throws IllegalArgumentException if the specified table has not a valid name
    */
-  void cloneSnapshot(String snapshotName, TableName tableName, boolean restoreAcl)
-      throws IOException, TableExistsException, RestoreSnapshotException;
+  default void cloneSnapshot(String snapshotName, TableName tableName, boolean restoreAcl)
+      throws IOException, TableExistsException, RestoreSnapshotException {
+    get(cloneSnapshotAsync(snapshotName, tableName, restoreAcl), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Create a new table by cloning the snapshot content, but does not block and wait for it to be
+   * completely cloned. You can use Future.get(long, TimeUnit) to wait on the operation to complete.
+   * It may throw ExecutionException if there was an error while executing the operation or
+   * TimeoutException in case the wait timeout was not long enough to allow the operation to
+   * complete.
+   * @param snapshotName name of the snapshot to be cloned
+   * @param tableName name of the table where the snapshot will be restored
+   * @throws IOException if a remote or network exception occurs
+   * @throws TableExistsException if table to be cloned already exists
+   * @return the result of the async clone snapshot. You can use Future.get(long, TimeUnit) to wait
+   *         on the operation to complete.
+   */
+  default Future<Void> cloneSnapshotAsync(String snapshotName, TableName tableName)
+      throws IOException, TableExistsException {
+    return cloneSnapshotAsync(snapshotName, tableName, false);
+  }
 
   /**
    * Create a new table by cloning the snapshot content.
-   *
    * @param snapshotName name of the snapshot to be cloned
    * @param tableName name of the table where the snapshot will be restored
+   * @param restoreAcl <code>true</code> to clone acl into newly created table
    * @throws IOException if a remote or network exception occurs
    * @throws TableExistsException if table to be created already exists
    * @throws RestoreSnapshotException if snapshot failed to be cloned
    * @throws IllegalArgumentException if the specified table has not a valid name
    */
-  void cloneSnapshot(String snapshotName, TableName tableName)
+  Future<Void> cloneSnapshotAsync(String snapshotName, TableName tableName, boolean restoreAcl)
       throws IOException, TableExistsException, RestoreSnapshotException;
-
-  /**
-   * Create a new table by cloning the snapshot content, but does not block
-   * and wait for it to be completely cloned.
-   * You can use Future.get(long, TimeUnit) to wait on the operation to complete.
-   * It may throw ExecutionException if there was an error while executing the operation
-   * or TimeoutException in case the wait timeout was not long enough to allow the
-   * operation to complete.
-   *
-   * @param snapshotName name of the snapshot to be cloned
-   * @param tableName name of the table where the snapshot will be restored
-   * @throws IOException if a remote or network exception occurs
-   * @throws TableExistsException if table to be cloned already exists
-   * @return the result of the async clone snapshot. You can use Future.get(long, TimeUnit)
-   *    to wait on the operation to complete.
-   */
-  Future<Void> cloneSnapshotAsync(String snapshotName, TableName tableName)
-      throws IOException, TableExistsException;
 
   /**
    * Execute a distributed procedure on a cluster.
@@ -2141,28 +1464,9 @@ public interface Admin extends Abortable, Closeable {
    * @param props Property/Value pairs of properties passing to the procedure
    * @return data returned after procedure execution. null if no return data.
    * @throws IOException
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use
-   * {@link #execProcedureWithReturn(String, String, Map)} } instead.
-   */
-  @Deprecated
-  default byte[] execProcedureWithRet(String signature, String instance, Map<String, String> props)
-      throws IOException {
-    return execProcedureWithReturn(signature, instance, props);
-  }
-
-  /**
-   * Execute a distributed procedure on a cluster.
-   *
-   * @param signature A distributed procedure is uniquely identified by its signature (default the
-   * root ZK node name of the procedure).
-   * @param instance The instance name of the procedure. For some procedures, this parameter is
-   * optional.
-   * @param props Property/Value pairs of properties passing to the procedure
-   * @return data returned after procedure execution. null if no return data.
-   * @throws IOException
    */
   byte[] execProcedureWithReturn(String signature, String instance, Map<String, String> props)
-  throws IOException;
+      throws IOException;
 
   /**
    * Check the current state of the specified procedure. There are three possible states: <ol>
@@ -2187,18 +1491,6 @@ public interface Admin extends Abortable, Closeable {
   List<SnapshotDescription> listSnapshots() throws IOException;
 
   /**
-   * List all the completed snapshots matching the given regular expression.
-   *
-   * @param regex The regular expression to match against
-   * @return list of SnapshotDescription
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #listSnapshots(Pattern)} instead.
-   */
-  @Deprecated
-  List<SnapshotDescription> listSnapshots(String regex) throws IOException;
-
-  /**
    * List all the completed snapshots matching the given pattern.
    *
    * @param pattern The compiled regular expression to match against
@@ -2206,20 +1498,6 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    */
   List<SnapshotDescription> listSnapshots(Pattern pattern) throws IOException;
-
-  /**
-   * List all the completed snapshots matching the given table name regular expression and snapshot
-   * name regular expression.
-   * @param tableNameRegex The table name regular expression to match against
-   * @param snapshotNameRegex The snapshot name regular expression to match against
-   * @return list of completed SnapshotDescription
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #listTableSnapshots(Pattern, Pattern)} instead.
-   */
-  @Deprecated
-  List<SnapshotDescription> listTableSnapshots(String tableNameRegex,
-      String snapshotNameRegex) throws IOException;
 
   /**
    * List all the completed snapshots matching the given table name regular expression and snapshot
@@ -2238,26 +1516,7 @@ public interface Admin extends Abortable, Closeable {
    * @param snapshotName name of the snapshot
    * @throws IOException if a remote or network exception occurs
    */
-  void deleteSnapshot(byte[] snapshotName) throws IOException;
-
-  /**
-   * Delete an existing snapshot.
-   *
-   * @param snapshotName name of the snapshot
-   * @throws IOException if a remote or network exception occurs
-   */
   void deleteSnapshot(String snapshotName) throws IOException;
-
-  /**
-   * Delete existing snapshots whose names match the pattern passed.
-   *
-   * @param regex The regular expression to match against
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #deleteSnapshots(Pattern)} instead.
-   */
-  @Deprecated
-  void deleteSnapshots(String regex) throws IOException;
 
   /**
    * Delete existing snapshots whose names match the pattern passed.
@@ -2266,18 +1525,6 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    */
   void deleteSnapshots(Pattern pattern) throws IOException;
-
-  /**
-   * Delete all existing snapshots matching the given table name regular expression and snapshot
-   * name regular expression.
-   * @param tableNameRegex The table name regular expression to match against
-   * @param snapshotNameRegex The snapshot name regular expression to match against
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated since 2.0 version and will be removed in 3.0 version.
-   *             Use {@link #deleteTableSnapshots(Pattern, Pattern)} instead.
-   */
-  @Deprecated
-  void deleteTableSnapshots(String tableNameRegex, String snapshotNameRegex) throws IOException;
 
   /**
    * Delete all existing snapshots matching the given table name regular expression and snapshot
@@ -2296,16 +1543,6 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    */
   void setQuota(QuotaSettings quota) throws IOException;
-
-  /**
-   * Return a QuotaRetriever to list the quotas based on the filter.
-   * @param filter the quota settings filter
-   * @return the quota retriever
-   * @throws IOException if a remote or network exception occurs
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #getQuota(QuotaFilter)}.
-   */
-  @Deprecated
-  QuotaRetriever getQuotaRetriever(QuotaFilter filter) throws IOException;
 
   /**
    * List the quotas based on the filter.
@@ -2392,35 +1629,6 @@ public interface Admin extends Abortable, Closeable {
   List<SecurityCapability> getSecurityCapabilities() throws IOException;
 
   /**
-   * Turn the Split or Merge switches on or off.
-   * @param enabled enabled or not
-   * @param synchronous If <code>true</code>, it waits until current split() call, if outstanding,
-   *          to return.
-   * @param switchTypes switchType list {@link MasterSwitchType}
-   * @return Previous switch value array
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #splitSwitch(boolean, boolean)}
-   *             or {@link #mergeSwitch(boolean, boolean)} instead.
-   */
-  @Deprecated
-  default boolean[] setSplitOrMergeEnabled(boolean enabled, boolean synchronous,
-      MasterSwitchType... switchTypes) throws IOException {
-    boolean[] preValues = new boolean[switchTypes.length];
-    for (int i = 0; i < switchTypes.length; i++) {
-      switch (switchTypes[i]) {
-        case SPLIT:
-          preValues[i] = splitSwitch(enabled, synchronous);
-          break;
-        case MERGE:
-          preValues[i] = mergeSwitch(enabled, synchronous);
-          break;
-        default:
-          throw new UnsupportedOperationException("Unsupported switch type:" + switchTypes[i]);
-      }
-    }
-    return preValues;
-  }
-
-  /**
    * Turn the split switch on or off.
    * @param enabled enabled or not
    * @param synchronous If <code>true</code>, it waits until current split() call, if outstanding,
@@ -2437,26 +1645,6 @@ public interface Admin extends Abortable, Closeable {
    * @return Previous switch value
    */
   boolean mergeSwitch(boolean enabled, boolean synchronous) throws IOException;
-
-  /**
-   * Query the current state of the switch.
-   *
-   * @return <code>true</code> if the switch is enabled, <code>false</code> otherwise.
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use
-   * {@link #isSplitEnabled()} or {@link #isMergeEnabled()} instead.
-   */
-  @Deprecated
-  default boolean isSplitOrMergeEnabled(MasterSwitchType switchType) throws IOException {
-    switch (switchType) {
-      case SPLIT:
-        return isSplitEnabled();
-      case MERGE:
-        return isMergeEnabled();
-      default:
-        break;
-    }
-    throw new UnsupportedOperationException("Unsupported switch type:" + switchType);
-  }
 
   /**
    * Query the current state of the split switch.
@@ -2488,12 +1676,15 @@ public interface Admin extends Abortable, Closeable {
    * @param enabled peer state, true if ENABLED and false if DISABLED
    * @throws IOException if a remote or network exception occurs
    */
-  void addReplicationPeer(String peerId, ReplicationPeerConfig peerConfig, boolean enabled)
-      throws IOException;
+  default void addReplicationPeer(String peerId, ReplicationPeerConfig peerConfig, boolean enabled)
+      throws IOException {
+    get(addReplicationPeerAsync(peerId, peerConfig, enabled), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Add a new replication peer but does not block and wait for it.
-   * <p>
+   * <p/>
    * You can use Future.get(long, TimeUnit) to wait on the operation to complete. It may throw
    * ExecutionException if there was an error while executing the operation or TimeoutException in
    * case the wait timeout was not long enough to allow the operation to complete.
@@ -2527,7 +1718,10 @@ public interface Admin extends Abortable, Closeable {
    * @param peerId a short name that identifies the peer
    * @throws IOException if a remote or network exception occurs
    */
-  void removeReplicationPeer(String peerId) throws IOException;
+  default void removeReplicationPeer(String peerId) throws IOException {
+    get(removeReplicationPeerAsync(peerId), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Remove a replication peer but does not block and wait for it.
@@ -2546,7 +1740,9 @@ public interface Admin extends Abortable, Closeable {
    * @param peerId a short name that identifies the peer
    * @throws IOException if a remote or network exception occurs
    */
-  void enableReplicationPeer(String peerId) throws IOException;
+  default void enableReplicationPeer(String peerId) throws IOException {
+    get(enableReplicationPeerAsync(peerId), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Enable a replication peer but does not block and wait for it.
@@ -2565,11 +1761,13 @@ public interface Admin extends Abortable, Closeable {
    * @param peerId a short name that identifies the peer
    * @throws IOException if a remote or network exception occurs
    */
-  void disableReplicationPeer(String peerId) throws IOException;
+  default void disableReplicationPeer(String peerId) throws IOException {
+    get(disableReplicationPeerAsync(peerId), getSyncWaitTimeout(), TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Disable a replication peer but does not block and wait for it.
-   * <p>
+   * <p/>
    * You can use Future.get(long, TimeUnit) to wait on the operation to complete. It may throw
    * ExecutionException if there was an error while executing the operation or TimeoutException in
    * case the wait timeout was not long enough to allow the operation to complete.
@@ -2593,12 +1791,15 @@ public interface Admin extends Abortable, Closeable {
    * @param peerConfig new config for the replication peer
    * @throws IOException if a remote or network exception occurs
    */
-  void updateReplicationPeerConfig(String peerId,
-      ReplicationPeerConfig peerConfig) throws IOException;
+  default void updateReplicationPeerConfig(String peerId, ReplicationPeerConfig peerConfig)
+      throws IOException {
+    get(updateReplicationPeerConfigAsync(peerId, peerConfig), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
 
   /**
    * Update the peerConfig for the specified peer but does not block and wait for it.
-   * <p>
+   * <p/>
    * You can use Future.get(long, TimeUnit) to wait on the operation to complete. It may throw
    * ExecutionException if there was an error while executing the operation or TimeoutException in
    * case the wait timeout was not long enough to allow the operation to complete.
@@ -2617,9 +1818,16 @@ public interface Admin extends Abortable, Closeable {
    * @throws ReplicationException if tableCfs has conflict with existing config
    * @throws IOException if a remote or network exception occurs
    */
-  void appendReplicationPeerTableCFs(String id,
-      Map<TableName, List<String>> tableCfs)
-      throws ReplicationException, IOException;
+  default void appendReplicationPeerTableCFs(String id, Map<TableName, List<String>> tableCfs)
+      throws ReplicationException, IOException {
+    if (tableCfs == null) {
+      throw new ReplicationException("tableCfs is null");
+    }
+    ReplicationPeerConfig peerConfig = getReplicationPeerConfig(id);
+    ReplicationPeerConfig newPeerConfig =
+      ReplicationPeerConfigUtil.appendTableCFsToReplicationPeerConfig(tableCfs, peerConfig);
+    updateReplicationPeerConfig(id, newPeerConfig);
+  }
 
   /**
    * Remove some table-cfs from config of the specified peer.
@@ -2628,9 +1836,16 @@ public interface Admin extends Abortable, Closeable {
    * @throws ReplicationException if tableCfs has conflict with existing config
    * @throws IOException if a remote or network exception occurs
    */
-  void removeReplicationPeerTableCFs(String id,
-      Map<TableName, List<String>> tableCfs)
-      throws ReplicationException, IOException;
+  default void removeReplicationPeerTableCFs(String id, Map<TableName, List<String>> tableCfs)
+      throws ReplicationException, IOException {
+    if (tableCfs == null) {
+      throw new ReplicationException("tableCfs is null");
+    }
+    ReplicationPeerConfig peerConfig = getReplicationPeerConfig(id);
+    ReplicationPeerConfig newPeerConfig =
+      ReplicationPeerConfigUtil.removeTableCFsFromReplicationPeerConfig(tableCfs, peerConfig, id);
+    updateReplicationPeerConfig(id, newPeerConfig);
+  }
 
   /**
    * Return a list of replication peers.
@@ -2646,6 +1861,47 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    */
   List<ReplicationPeerDescription> listReplicationPeers(Pattern pattern) throws IOException;
+
+  /**
+   * Transit current cluster to a new state in a synchronous replication peer.
+   * @param peerId a short name that identifies the peer
+   * @param state a new state of current cluster
+   * @throws IOException if a remote or network exception occurs
+   */
+  default void transitReplicationPeerSyncReplicationState(String peerId, SyncReplicationState state)
+      throws IOException {
+    get(transitReplicationPeerSyncReplicationStateAsync(peerId, state), getSyncWaitTimeout(),
+      TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Transit current cluster to a new state in a synchronous replication peer. But does not block
+   * and wait for it.
+   * <p>
+   * You can use Future.get(long, TimeUnit) to wait on the operation to complete. It may throw
+   * ExecutionException if there was an error while executing the operation or TimeoutException in
+   * case the wait timeout was not long enough to allow the operation to complete.
+   * @param peerId a short name that identifies the peer
+   * @param state a new state of current cluster
+   * @throws IOException if a remote or network exception occurs
+   */
+  Future<Void> transitReplicationPeerSyncReplicationStateAsync(String peerId,
+      SyncReplicationState state) throws IOException;
+
+  /**
+   * Get the current cluster state in a synchronous replication peer.
+   * @param peerId a short name that identifies the peer
+   * @return the current cluster state
+   * @throws IOException if a remote or network exception occurs
+   */
+  default SyncReplicationState getReplicationPeerSyncReplicationState(String peerId)
+      throws IOException {
+    List<ReplicationPeerDescription> peers = listReplicationPeers(Pattern.compile(peerId));
+    if (peers.isEmpty() || !peers.get(0).getPeerId().equals(peerId)) {
+      throw new IOException("Replication peer " + peerId + " does not exist");
+    }
+    return peers.get(0).getSyncReplicationState();
+  }
 
   /**
    * Mark region server(s) as decommissioned to prevent additional regions from getting
@@ -2717,5 +1973,86 @@ public interface Admin extends Abortable, Closeable {
    * @throws IOException if a remote or network exception occurs
    * @return List of servers that are not cleared
    */
-  List<ServerName> clearDeadServers(final List<ServerName> servers) throws IOException;
+  List<ServerName> clearDeadServers(List<ServerName> servers) throws IOException;
+
+  /**
+   * Create a new table by cloning the existent table schema.
+   * @param tableName name of the table to be cloned
+   * @param newTableName name of the new table where the table will be created
+   * @param preserveSplits True if the splits should be preserved
+   * @throws IOException if a remote or network exception occurs
+   */
+  void cloneTableSchema(TableName tableName, TableName newTableName, boolean preserveSplits)
+      throws IOException;
+
+  /**
+   * Switch the rpc throttle enable state.
+   * @param enable Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @return Previous rpc throttle enabled value
+   */
+  boolean switchRpcThrottle(boolean enable) throws IOException;
+
+  /**
+   * Get if the rpc throttle is enabled.
+   * @return True if rpc throttle is enabled
+   */
+  boolean isRpcThrottleEnabled() throws IOException;
+
+  /**
+   * Switch the exceed throttle quota. If enabled, user/table/namespace throttle quota
+   * can be exceeded if region server has availble quota.
+   * @param enable Set to <code>true</code> to enable, <code>false</code> to disable.
+   * @return Previous exceed throttle enabled value
+   */
+  boolean exceedThrottleQuotaSwitch(final boolean enable) throws IOException;
+
+  /**
+   * Fetches the table sizes on the filesystem as tracked by the HBase Master.
+   */
+  Map<TableName, Long> getSpaceQuotaTableSizes() throws IOException;
+
+  /**
+   * Fetches the observed {@link SpaceQuotaSnapshotView}s observed by a RegionServer.
+   */
+  Map<TableName, ? extends SpaceQuotaSnapshotView> getRegionServerSpaceQuotaSnapshots(
+      ServerName serverName) throws IOException;
+
+  /**
+   * Returns the Master's view of a quota on the given {@code namespace} or null if the Master has
+   * no quota information on that namespace.
+   */
+  SpaceQuotaSnapshotView getCurrentSpaceQuotaSnapshot(String namespace) throws IOException;
+
+  /**
+   * Returns the Master's view of a quota on the given {@code tableName} or null if the Master has
+   * no quota information on that table.
+   */
+  SpaceQuotaSnapshotView getCurrentSpaceQuotaSnapshot(TableName tableName) throws IOException;
+
+  /**
+   * Grants user specific permissions
+   * @param userPermission user name and the specific permission
+   * @param mergeExistingPermissions If set to false, later granted permissions will override
+   *          previous granted permissions. otherwise, it'll merge with previous granted
+   *          permissions.
+   * @throws IOException if a remote or network exception occurs
+   */
+  void grant(UserPermission userPermission, boolean mergeExistingPermissions) throws IOException;
+
+  /**
+   * Revokes user specific permissions
+   * @param userPermission user name and the specific permission
+   * @throws IOException if a remote or network exception occurs
+   */
+  void revoke(UserPermission userPermission) throws IOException;
+
+  /**
+   * Get the global/namespace/table permissions for user
+   * @param getUserPermissionsRequest A request contains which user, global, namespace or table
+   *          permissions needed
+   * @return The user and permission list
+   * @throws IOException if a remote or network exception occurs
+   */
+  List<UserPermission> getUserPermissions(GetUserPermissionsRequest getUserPermissionsRequest)
+      throws IOException;
 }

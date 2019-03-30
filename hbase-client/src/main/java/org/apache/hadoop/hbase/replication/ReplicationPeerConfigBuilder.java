@@ -138,6 +138,25 @@ public interface ReplicationPeerConfigBuilder {
   ReplicationPeerConfigBuilder setExcludeNamespaces(Set<String> namespaces);
 
   /**
+   * <p>
+   * Sets whether we should preserve order when replicating, i.e, serial replication.
+   * </p>
+   * <p>
+   * Default {@code false}.
+   * </p>
+   * @param serial {@code true} means preserve order, otherwise {@code false}.
+   * @return {@code this}
+   */
+  ReplicationPeerConfigBuilder setSerial(boolean serial);
+
+  /**
+   * Set the remote peer cluster's wal directory. Used by synchronous replication.
+   * @param dir the remote peer cluster's wal directory
+   * @return {@code this}
+   */
+  ReplicationPeerConfigBuilder setRemoteWALDir(String dir);
+
+  /**
    * Builds the configuration object from the current state of {@code this}.
    * @return A {@link ReplicationPeerConfig} instance.
    */

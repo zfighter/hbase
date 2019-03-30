@@ -25,7 +25,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.util.UUID;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -62,19 +61,19 @@ public class TestNodeHealthCheckChore {
     if (!fs.mkdirs(testDir)) throw new IOException("Failed mkdir " + testDir);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testHealthCheckerSuccess() throws Exception {
     String normalScript = "echo \"I am all fine\"";
     healthCheckerTest(normalScript, HealthCheckerExitStatus.SUCCESS);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testHealthCheckerFail() throws Exception {
     String errorScript = "echo ERROR" + eol + "echo \"Node not healthy\"";
     healthCheckerTest(errorScript, HealthCheckerExitStatus.FAILED);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testHealthCheckerTimeout() throws Exception {
     String timeOutScript = "sleep 10" + eol + "echo \"I am fine\"";
     healthCheckerTest(timeOutScript, HealthCheckerExitStatus.TIMED_OUT);
@@ -99,7 +98,7 @@ public class TestNodeHealthCheckChore {
     this.healthScriptFile.delete();
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testRSHealthChore() throws Exception{
     Stoppable stop = new StoppableImplementation();
     Configuration conf = getConfForNodeHealthScript();
@@ -144,7 +143,7 @@ public class TestNodeHealthCheckChore {
         throw new IOException("Failed mkdirs " + tempDir);
       }
     }
-    String scriptName = "HealthScript" + UUID.randomUUID().toString()
+    String scriptName = "HealthScript" + UTIL.getRandomUUID().toString()
         + (Shell.WINDOWS ? ".cmd" : ".sh");
     healthScriptFile = new File(tempDir.getAbsolutePath(), scriptName);
     conf.set(HConstants.HEALTH_SCRIPT_LOC, healthScriptFile.getAbsolutePath());

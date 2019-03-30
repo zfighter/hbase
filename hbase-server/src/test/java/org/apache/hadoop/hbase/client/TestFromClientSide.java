@@ -29,7 +29,6 @@ import static org.junit.Assert.fail;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -38,7 +37,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,6 +48,7 @@ import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.ClusterMetrics.Option;
 import org.apache.hadoop.hbase.CompareOperator;
+import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
@@ -83,6 +82,7 @@ import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
 import org.apache.hadoop.hbase.filter.SubstringComparator;
 import org.apache.hadoop.hbase.filter.ValueFilter;
 import org.apache.hadoop.hbase.filter.WhileMatchFilter;
+import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.io.hfile.BlockCache;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
@@ -139,22 +139,25 @@ public class TestFromClientSide {
   @Rule
   public TestName name = new TestName();
 
-  @BeforeClass
-  public static void setUpBeforeClass() throws Exception {
+  protected static final void initialize(Class<?>... cps) throws Exception {
     // Uncomment the following lines if more verbosity is needed for
     // debugging (see HBASE-12285 for details).
-    //((Log4JLogger)RpcServer.LOG).getLogger().setLevel(Level.ALL);
-    //((Log4JLogger)RpcClient.LOG).getLogger().setLevel(Level.ALL);
-    //((Log4JLogger)ScannerCallable.LOG).getLogger().setLevel(Level.ALL);
+    // ((Log4JLogger)RpcServer.LOG).getLogger().setLevel(Level.ALL);
+    // ((Log4JLogger)RpcClient.LOG).getLogger().setLevel(Level.ALL);
+    // ((Log4JLogger)ScannerCallable.LOG).getLogger().setLevel(Level.ALL);
     // make sure that we do not get the same ts twice, see HBASE-19731 for more details.
     EnvironmentEdgeManager.injectEdge(new NonRepeatedEnvironmentEdge());
     Configuration conf = TEST_UTIL.getConfiguration();
     conf.setStrings(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY,
-        MultiRowMutationEndpoint.class.getName());
+      Arrays.stream(cps).map(Class::getName).toArray(String[]::new));
     conf.setBoolean("hbase.table.sanity.checks", true); // enable for below tests
-    conf.setLong(HConstants.HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD, 6000000);
     // We need more than one region server in this test
     TEST_UTIL.startMiniCluster(SLAVES);
+  }
+
+  @BeforeClass
+  public static void setUpBeforeClass() throws Exception {
+    initialize(MultiRowMutationEndpoint.class);
   }
 
   @AfterClass
@@ -353,9 +356,9 @@ public class TestFromClientSide {
     Table ht = TEST_UTIL.createTable(tableName, FAMILIES);
     String value = "this is the value";
     String value2 = "this is some other value";
-    String keyPrefix1 = UUID.randomUUID().toString();
-    String keyPrefix2 = UUID.randomUUID().toString();
-    String keyPrefix3 = UUID.randomUUID().toString();
+    String keyPrefix1 = TEST_UTIL.getRandomUUID().toString();
+    String keyPrefix2 = TEST_UTIL.getRandomUUID().toString();
+    String keyPrefix3 = TEST_UTIL.getRandomUUID().toString();
     putRows(ht, 3, value, keyPrefix1);
     putRows(ht, 3, value, keyPrefix2);
     putRows(ht, 3, value, keyPrefix3);
@@ -445,7 +448,7 @@ public class TestFromClientSide {
   private void putRows(Table ht, int numRows, String value, String key)
       throws IOException {
     for (int i = 0; i < numRows; i++) {
-      String row = key + "_" + UUID.randomUUID().toString();
+      String row = key + "_" + TEST_UTIL.getRandomUUID().toString();
       System.out.println(String.format("Saving row: %s, with value %s", row,
           value));
       Put put = new Put(Bytes.toBytes(row));
@@ -2750,7 +2753,7 @@ public class TestFromClientSide {
   throws Exception {
     Get get = new Get(row);
     get.addColumn(family, qualifier);
-    get.setTimeStamp(stamp);
+    get.setTimestamp(stamp);
     get.setMaxVersions(Integer.MAX_VALUE);
     Result result = ht.get(get);
     assertSingleResult(result, row, family, qualifier, stamp, value);
@@ -2761,7 +2764,7 @@ public class TestFromClientSide {
   throws Exception {
     Get get = new Get(row);
     get.addColumn(family, qualifier);
-    get.setTimeStamp(stamp);
+    get.setTimestamp(stamp);
     get.setMaxVersions(Integer.MAX_VALUE);
     Result result = ht.get(get);
     assertEmptyResult(result);
@@ -2772,7 +2775,7 @@ public class TestFromClientSide {
   throws Exception {
     Scan scan = new Scan(row);
     scan.addColumn(family, qualifier);
-    scan.setTimeStamp(stamp);
+    scan.setTimestamp(stamp);
     scan.setMaxVersions(Integer.MAX_VALUE);
     Result result = getSingleScanResult(ht, scan);
     assertSingleResult(result, row, family, qualifier, stamp, value);
@@ -2783,7 +2786,7 @@ public class TestFromClientSide {
   throws Exception {
     Scan scan = new Scan(row);
     scan.addColumn(family, qualifier);
-    scan.setTimeStamp(stamp);
+    scan.setTimestamp(stamp);
     scan.setMaxVersions(Integer.MAX_VALUE);
     Result result = getSingleScanResult(ht, scan);
     assertNullResult(result);
@@ -4207,15 +4210,14 @@ public class TestFromClientSide {
       TEST_UTIL.createTable(tables[i], FAMILY);
     }
     Admin admin = TEST_UTIL.getAdmin();
-    HTableDescriptor[] ts = admin.listTables();
-    HashSet<HTableDescriptor> result = new HashSet<HTableDescriptor>(ts.length);
-    Collections.addAll(result, ts);
+    List<TableDescriptor> ts = admin.listTableDescriptors();
+    HashSet<TableDescriptor> result = new HashSet<>(ts);
     int size = result.size();
     assertTrue(size >= tables.length);
     for (int i = 0; i < tables.length && i < size; i++) {
       boolean found = false;
-      for (int j = 0; j < ts.length; j++) {
-        if (ts[j].getTableName().equals(tables[i])) {
+      for (int j = 0; j < ts.size(); j++) {
+        if (ts.get(j).getTableName().equals(tables[i])) {
           found = true;
           break;
         }
@@ -4330,7 +4332,7 @@ public class TestFromClientSide {
     for (HColumnDescriptor c : desc.getFamilies())
       c.setValue(attrName, attrValue);
     // update metadata for all regions of this table
-    admin.modifyTable(tableAname, desc);
+    admin.modifyTable(desc);
     // enable the table
     admin.enableTable(tableAname);
 
@@ -4829,6 +4831,60 @@ public class TestFromClientSide {
   }
 
   @Test
+  public void testCheckAndMutateWithTimeRange() throws IOException {
+    Table table = TEST_UTIL.createTable(TableName.valueOf(name.getMethodName()), FAMILY);
+    final long ts = System.currentTimeMillis() / 2;
+    Put put = new Put(ROW);
+    put.addColumn(FAMILY, QUALIFIER, ts, VALUE);
+
+    boolean ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .ifNotExists()
+      .thenPut(put);
+    assertTrue(ok);
+
+    ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .timeRange(TimeRange.at(ts + 10000))
+      .ifEquals(VALUE)
+      .thenPut(put);
+    assertFalse(ok);
+
+    ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .timeRange(TimeRange.at(ts))
+      .ifEquals(VALUE)
+      .thenPut(put);
+    assertTrue(ok);
+
+    RowMutations rm = new RowMutations(ROW)
+      .add((Mutation) put);
+    ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .timeRange(TimeRange.at(ts + 10000))
+      .ifEquals(VALUE)
+      .thenMutate(rm);
+    assertFalse(ok);
+
+    ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .timeRange(TimeRange.at(ts))
+      .ifEquals(VALUE)
+      .thenMutate(rm);
+    assertTrue(ok);
+
+    Delete delete = new Delete(ROW)
+      .addColumn(FAMILY, QUALIFIER);
+
+    ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .timeRange(TimeRange.at(ts + 10000))
+      .ifEquals(VALUE)
+      .thenDelete(delete);
+    assertFalse(ok);
+
+    ok = table.checkAndMutate(ROW, FAMILY).qualifier(QUALIFIER)
+      .timeRange(TimeRange.at(ts))
+      .ifEquals(VALUE)
+      .thenDelete(delete);
+    assertTrue(ok);
+  }
+
+  @Test
   public void testCheckAndPutWithCompareOp() throws IOException {
     final byte [] value1 = Bytes.toBytes("aaaa");
     final byte [] value2 = Bytes.toBytes("bbbb");
@@ -5057,7 +5113,7 @@ public class TestFromClientSide {
     LOG.info("test data has " + numRecords + " records.");
 
     // by default, scan metrics collection is turned off
-    assertEquals(null, scan1.getScanMetrics());
+    assertEquals(null, scanner.getScanMetrics());
 
     // turn on scan metrics
     Scan scan2 = new Scan();
@@ -5068,7 +5124,7 @@ public class TestFromClientSide {
     }
     scanner.close();
     // closing the scanner will set the metrics.
-    assertNotNull(scan2.getScanMetrics());
+    assertNotNull(scanner.getScanMetrics());
 
     // set caching to 1, because metrics are collected in each roundtrip only
     scan2 = new Scan();
@@ -5081,7 +5137,7 @@ public class TestFromClientSide {
     }
     scanner.close();
 
-    ScanMetrics scanMetrics = scan2.getScanMetrics();
+    ScanMetrics scanMetrics = scanner.getScanMetrics();
     assertEquals("Did not access all the regions in the table", numOfRegions,
         scanMetrics.countOfRegions.get());
 
@@ -5097,7 +5153,7 @@ public class TestFromClientSide {
       }
     }
     scanner.close();
-    scanMetrics = scan2.getScanMetrics();
+    scanMetrics = scanner.getScanMetrics();
     assertEquals("Did not count the result bytes", numBytes,
       scanMetrics.countOfBytesInResults.get());
 
@@ -5114,7 +5170,7 @@ public class TestFromClientSide {
       }
     }
     scanner.close();
-    scanMetrics = scan2.getScanMetrics();
+    scanMetrics = scanner.getScanMetrics();
     assertEquals("Did not count the result bytes", numBytes,
       scanMetrics.countOfBytesInResults.get());
 
@@ -5142,18 +5198,9 @@ public class TestFromClientSide {
     for (Result result : scannerWithClose.next(numRecords + 1)) {
     }
     scannerWithClose.close();
-    ScanMetrics scanMetricsWithClose = getScanMetrics(scanWithClose);
+    ScanMetrics scanMetricsWithClose = scannerWithClose.getScanMetrics();
     assertEquals("Did not access all the regions in the table", numOfRegions,
         scanMetricsWithClose.countOfRegions.get());
-  }
-
-  private ScanMetrics getScanMetrics(Scan scan) throws Exception {
-    byte[] serializedMetrics = scan.getAttribute(Scan.SCAN_ATTRIBUTES_METRICS_DATA);
-    assertTrue("Serialized metrics were not found.", serializedMetrics != null);
-
-    ScanMetrics scanMetrics = ProtobufUtil.toScanMetrics(serializedMetrics);
-
-    return scanMetrics;
   }
 
   /**
@@ -5177,13 +5224,12 @@ public class TestFromClientSide {
       CacheConfig cacheConf = store.getCacheConfig();
       cacheConf.setCacheDataOnWrite(true);
       cacheConf.setEvictOnClose(true);
-      BlockCache cache = cacheConf.getBlockCache();
+      BlockCache cache = cacheConf.getBlockCache().get();
 
       // establish baseline stats
       long startBlockCount = cache.getBlockCount();
       long startBlockHits = cache.getStats().getHitCount();
       long startBlockMiss = cache.getStats().getMissCount();
-
 
       // wait till baseline is stable, (minimal 500 ms)
       for (int i = 0; i < 5; i++) {
@@ -6295,6 +6341,19 @@ public class TestFromClientSide {
     assertEquals(4, count); // 003 004 005 006
   }
 
+  private static Pair<byte[][], byte[][]> getStartEndKeys(List<RegionLocations> regions) {
+    final byte[][] startKeyList = new byte[regions.size()][];
+    final byte[][] endKeyList = new byte[regions.size()][];
+
+    for (int i = 0; i < regions.size(); i++) {
+      RegionInfo region = regions.get(i).getRegionLocation().getRegion();
+      startKeyList[i] = region.getStartKey();
+      endKeyList[i] = region.getEndKey();
+    }
+
+    return new Pair<>(startKeyList, endKeyList);
+  }
+
   @Test
   public void testGetStartEndKeysWithRegionReplicas() throws IOException {
     HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(name.getMethodName()));
@@ -6303,7 +6362,7 @@ public class TestFromClientSide {
     byte[][] KEYS = HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE;
     Admin admin = TEST_UTIL.getAdmin();
     admin.createTable(htd, KEYS);
-    List<HRegionInfo> regions = admin.getTableRegions(htd.getTableName());
+    List<RegionInfo> regions = admin.getRegions(htd.getTableName());
 
     HRegionLocator locator =
         (HRegionLocator) admin.getConnection().getRegionLocator(htd.getTableName());
@@ -6311,7 +6370,7 @@ public class TestFromClientSide {
       List<RegionLocations> regionLocations = new ArrayList<>();
 
       // mock region locations coming from meta with multiple replicas
-      for (HRegionInfo region : regions) {
+      for (RegionInfo region : regions) {
         HRegionLocation[] arr = new HRegionLocation[regionReplication];
         for (int i = 0; i < arr.length; i++) {
           arr[i] = new HRegionLocation(RegionReplicaUtil.getRegionInfoForReplica(region, i), null);
@@ -6319,7 +6378,7 @@ public class TestFromClientSide {
         regionLocations.add(new RegionLocations(arr));
       }
 
-      Pair<byte[][], byte[][]> startEndKeys = locator.getStartEndKeys(regionLocations);
+      Pair<byte[][], byte[][]> startEndKeys = getStartEndKeys(regionLocations);
 
       assertEquals(KEYS.length + 1, startEndKeys.getFirst().length);
 
@@ -6339,7 +6398,7 @@ public class TestFromClientSide {
     scan.setCaching(1);
     // Filter out any records
     scan.setFilter(new FilterList(new FirstKeyOnlyFilter(), new InclusiveStopFilter(new byte[0])));
-    try (Table table = TEST_UTIL.getConnection().getTable(TableName.NAMESPACE_TABLE_NAME)) {
+    try (Table table = TEST_UTIL.getConnection().getTable(TableName.META_TABLE_NAME)) {
       try (ResultScanner s = table.getScanner(scan)) {
         assertNull(s.next());
       }
@@ -6360,6 +6419,13 @@ public class TestFromClientSide {
     int number = ((ConnectionImplementation)admin.getConnection())
       .getNumberOfCachedRegionLocations(htd.getTableName());
     assertEquals(results.size(), number);
+    ConnectionImplementation conn = ((ConnectionImplementation)admin.getConnection());
+    assertNotNull("Can't get cached location for row aaa",
+        conn.getCachedLocation(htd.getTableName(),Bytes.toBytes("aaa")));
+    for(byte[] startKey:HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE){
+      assertNotNull("Can't get cached location for row "+
+        Bytes.toString(startKey),(conn.getCachedLocation(htd.getTableName(),startKey)));
+    }
   }
 
   @Test
@@ -6642,5 +6708,31 @@ public class TestFromClientSide {
       // No more results in this scan
       assertNull(scanner.next());
     }
+  }
+
+  @Test(expected = DoNotRetryIOException.class)
+  public void testCreateTableWithZeroRegionReplicas() throws Exception {
+    TableName tableName = TableName.valueOf(name.getMethodName());
+    TableDescriptor desc = TableDescriptorBuilder.newBuilder(tableName)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(Bytes.toBytes("cf")))
+        .setRegionReplication(0)
+        .build();
+
+    TEST_UTIL.getAdmin().createTable(desc);
+  }
+
+  @Test(expected = DoNotRetryIOException.class)
+  public void testModifyTableWithZeroRegionReplicas() throws Exception {
+    TableName tableName = TableName.valueOf(name.getMethodName());
+    TableDescriptor desc = TableDescriptorBuilder.newBuilder(tableName)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(Bytes.toBytes("cf")))
+        .build();
+
+    TEST_UTIL.getAdmin().createTable(desc);
+    TableDescriptor newDesc = TableDescriptorBuilder.newBuilder(desc)
+        .setRegionReplication(0)
+        .build();
+
+    TEST_UTIL.getAdmin().modifyTable(newDesc);
   }
 }

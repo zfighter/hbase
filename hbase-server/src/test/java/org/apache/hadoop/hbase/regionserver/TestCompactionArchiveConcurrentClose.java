@@ -94,7 +94,7 @@ public class TestCompactionArchiveConcurrentClose {
 
     TableName tableName = TableName.valueOf(name.getMethodName());
     TableDescriptor htd = TableDescriptorBuilder.newBuilder(tableName)
-        .addColumnFamily(ColumnFamilyDescriptorBuilder.of(fam)).build();
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(fam)).build();
     RegionInfo info = RegionInfoBuilder.newBuilder(tableName).build();
     HRegion region = initHRegion(htd, info);
     RegionServerServices rss = mock(RegionServerServices.class);
@@ -175,7 +175,7 @@ public class TestCompactionArchiveConcurrentClose {
     ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
     final Configuration walConf = new Configuration(conf);
     FSUtils.setRootDir(walConf, tableDir);
-    final WALFactory wals = new WALFactory(walConf, null, "log_" + info.getEncodedName());
+    final WALFactory wals = new WALFactory(walConf, "log_" + info.getEncodedName());
     HRegion region = new HRegion(fs, wals.getWAL(info), conf, htd, null);
 
     region.initialize();

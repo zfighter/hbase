@@ -32,6 +32,7 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
@@ -67,7 +68,7 @@ public class TestZKProcedureControllers {
   private static final String CONTROLLER_NODE_NAME = "controller";
   private static final VerificationMode once = Mockito.times(1);
 
-  private final byte[] memberData = new String("data from member").getBytes();
+  private final byte[] memberData = Bytes.toBytes("data from member");
 
   @BeforeClass
   public static void setupTest() throws Exception {
@@ -83,7 +84,7 @@ public class TestZKProcedureControllers {
    * Smaller test to just test the actuation on the cohort member
    * @throws Exception on failure
    */
-  @Test(timeout = 60000)
+  @Test
   public void testSimpleZKCohortMemberController() throws Exception {
     ZKWatcher watcher = UTIL.getZooKeeperWatcher();
     final String operationName = "instanceTest";
@@ -146,7 +147,7 @@ public class TestZKProcedureControllers {
     assertEquals("Didn't delete commit node", -1, ZKUtil.checkExists(watcher, commit));
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testZKCoordinatorControllerWithNoCohort() throws Exception {
     final String operationName = "no cohort controller test";
     final byte[] data = new byte[] { 1, 2, 3 };
@@ -155,7 +156,7 @@ public class TestZKProcedureControllers {
     runMockCommitWithOrchestratedControllers(startCohortFirst, operationName, data);
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testZKCoordinatorControllerWithSingleMemberCohort() throws Exception {
     final String operationName = "single member controller test";
     final byte[] data = new byte[] { 1, 2, 3 };
@@ -164,7 +165,7 @@ public class TestZKProcedureControllers {
     runMockCommitWithOrchestratedControllers(startCohortFirst, operationName, data, "cohort");
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testZKCoordinatorControllerMultipleCohort() throws Exception {
     final String operationName = "multi member controller test";
     final byte[] data = new byte[] { 1, 2, 3 };

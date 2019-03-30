@@ -35,6 +35,7 @@ import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
@@ -42,7 +43,12 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.protobuf.Int64Value;
 
-@Category({MasterTests.class, LargeTests.class})
+/**
+ * For now we do not guarantee this, we will restore the locks when restarting ProcedureExecutor so
+ * we should use lock to obtain the correct order. Ignored.
+ */
+@Ignore
+@Category({ MasterTests.class, LargeTests.class })
 public class TestProcedureReplayOrder {
 
   @ClassRule
@@ -53,7 +59,7 @@ public class TestProcedureReplayOrder {
 
   private static final int NUM_THREADS = 16;
 
-  private ProcedureExecutor<Void> procExecutor;
+  private ProcedureExecutor<TestProcedureEnv> procExecutor;
   private TestProcedureEnv procEnv;
   private ProcedureStore procStore;
 
@@ -74,9 +80,9 @@ public class TestProcedureReplayOrder {
     logDir = new Path(testDir, "proc-logs");
     procEnv = new TestProcedureEnv();
     procStore = ProcedureTestingUtility.createWalStore(htu.getConfiguration(), logDir);
-    procExecutor = new ProcedureExecutor(htu.getConfiguration(), procEnv, procStore);
+    procExecutor = new ProcedureExecutor<>(htu.getConfiguration(), procEnv, procStore);
     procStore.start(NUM_THREADS);
-    procExecutor.start(1, true);
+    ProcedureTestingUtility.initAndStartWorkers(procExecutor, 1, true);
   }
 
   @After
@@ -86,7 +92,7 @@ public class TestProcedureReplayOrder {
     fs.delete(logDir, true);
   }
 
-  @Test(timeout=90000)
+  @Test
   public void testSingleStepReplayOrder() throws Exception {
     final int NUM_PROC_XTHREAD = 32;
     final int NUM_PROCS = NUM_THREADS * NUM_PROC_XTHREAD;
@@ -107,7 +113,7 @@ public class TestProcedureReplayOrder {
     procEnv.assertSortedExecList(NUM_PROCS);
   }
 
-  @Test(timeout=90000)
+  @Test
   public void testMultiStepReplayOrder() throws Exception {
     final int NUM_PROC_XTHREAD = 24;
     final int NUM_PROCS = NUM_THREADS * (NUM_PROC_XTHREAD * 2);

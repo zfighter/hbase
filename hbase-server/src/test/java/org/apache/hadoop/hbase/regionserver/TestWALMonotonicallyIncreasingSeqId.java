@@ -104,7 +104,7 @@ public class TestWALMonotonicallyIncreasingSeqId {
     TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
     Arrays.stream(families).map(
       f -> ColumnFamilyDescriptorBuilder.newBuilder(f).setMaxVersions(Integer.MAX_VALUE).build())
-        .forEachOrdered(builder::addColumnFamily);
+        .forEachOrdered(builder::setColumnFamily);
     return builder.build();
   }
 
@@ -121,7 +121,7 @@ public class TestWALMonotonicallyIncreasingSeqId {
     final Configuration walConf = new Configuration(conf);
     FSUtils.setRootDir(walConf, tableDir);
     this.walConf = walConf;
-    wals = new WALFactory(walConf, null, "log_" + replicaId);
+    wals = new WALFactory(walConf, "log_" + replicaId);
     ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
     HRegion region = HRegion.createHRegion(info, TEST_UTIL.getDefaultRootDirPath(), conf, htd,
       wals.getWAL(info));
@@ -143,7 +143,7 @@ public class TestWALMonotonicallyIncreasingSeqId {
         for (int i = 0; i < 100; i++) {
           byte[] row = Bytes.toBytes("putRow" + i);
           Put put = new Put(row);
-          put.addColumn("cf".getBytes(), Bytes.toBytes(0), Bytes.toBytes(""));
+          put.addColumn(Bytes.toBytes("cf"), Bytes.toBytes(0), new byte[0]);
           latch.await();
           region.batchMutate(new Mutation[] { put });
           Thread.sleep(10);
@@ -168,7 +168,7 @@ public class TestWALMonotonicallyIncreasingSeqId {
         for (int i = 0; i < 100; i++) {
           byte[] row = Bytes.toBytes("incrementRow" + i);
           Increment inc = new Increment(row);
-          inc.addColumn("cf".getBytes(), Bytes.toBytes(0), 1);
+          inc.addColumn(Bytes.toBytes("cf"), Bytes.toBytes(0), 1);
           // inc.setDurability(Durability.ASYNC_WAL);
           region.increment(inc);
           latch.countDown();

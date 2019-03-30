@@ -85,7 +85,7 @@ public class TestStoreFileRefresherChore {
     TableDescriptorBuilder builder =
         TableDescriptorBuilder.newBuilder(tableName).setRegionReplication(regionReplication);
     Arrays.stream(families).map(family -> ColumnFamilyDescriptorBuilder.newBuilder(family)
-        .setMaxVersions(Integer.MAX_VALUE).build()).forEachOrdered(builder::addColumnFamily);
+        .setMaxVersions(Integer.MAX_VALUE).build()).forEachOrdered(builder::setColumnFamily);
     return builder.build();
   }
 
@@ -117,7 +117,7 @@ public class TestStoreFileRefresherChore {
         new FailingHRegionFileSystem(conf, tableDir.getFileSystem(conf), tableDir, info);
     final Configuration walConf = new Configuration(conf);
     FSUtils.setRootDir(walConf, tableDir);
-    final WALFactory wals = new WALFactory(walConf, null, "log_" + replicaId);
+    final WALFactory wals = new WALFactory(walConf, "log_" + replicaId);
     ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
     HRegion region =
         new HRegion(fs, wals.getWAL(info),

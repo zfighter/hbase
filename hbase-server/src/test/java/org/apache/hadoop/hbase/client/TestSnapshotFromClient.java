@@ -146,19 +146,10 @@ public class TestSnapshotFromClient {
 
   /**
    * Test snapshotting not allowed hbase:meta and -ROOT-
-   * @throws Exception
    */
-  @Test (timeout=300000)
+  @Test(expected = IllegalArgumentException.class)
   public void testMetaTablesSnapshot() throws Exception {
-    Admin admin = UTIL.getAdmin();
-    byte[] snapshotName = Bytes.toBytes("metaSnapshot");
-
-    try {
-      admin.snapshot(snapshotName, TableName.META_TABLE_NAME);
-      fail("taking a snapshot of hbase:meta should not be allowed");
-    } catch (IllegalArgumentException e) {
-      // expected
-    }
+    UTIL.getAdmin().snapshot("metaSnapshot", TableName.META_TABLE_NAME);
   }
 
   /**
@@ -166,7 +157,7 @@ public class TestSnapshotFromClient {
    *
    * @throws Exception
    */
-  @Test (timeout=300000)
+  @Test
   public void testSnapshotDeletionWithRegex() throws Exception {
     Admin admin = UTIL.getAdmin();
     // make sure we don't fail on listing snapshots
@@ -177,16 +168,16 @@ public class TestSnapshotFromClient {
     UTIL.loadTable(table, TEST_FAM);
     table.close();
 
-    byte[] snapshot1 = Bytes.toBytes("TableSnapshot1");
+    String snapshot1 = "TableSnapshot1";
     admin.snapshot(snapshot1, TABLE_NAME);
     LOG.debug("Snapshot1 completed.");
 
-    byte[] snapshot2 = Bytes.toBytes("TableSnapshot2");
+    String snapshot2 = "TableSnapshot2";
     admin.snapshot(snapshot2, TABLE_NAME);
     LOG.debug("Snapshot2 completed.");
 
     String snapshot3 = "3rdTableSnapshot";
-    admin.snapshot(Bytes.toBytes(snapshot3), TABLE_NAME);
+    admin.snapshot(snapshot3, TABLE_NAME);
     LOG.debug(snapshot3 + " completed.");
 
     // delete the first two snapshots
@@ -202,7 +193,7 @@ public class TestSnapshotFromClient {
    * Test snapshotting a table that is offline
    * @throws Exception
    */
-  @Test (timeout=300000)
+  @Test
   public void testOfflineTableSnapshot() throws Exception {
     Admin admin = UTIL.getAdmin();
     // make sure we don't fail on listing snapshots
@@ -225,7 +216,7 @@ public class TestSnapshotFromClient {
 
     // take a snapshot of the disabled table
     final String SNAPSHOT_NAME = "offlineTableSnapshot";
-    byte[] snapshot = Bytes.toBytes(SNAPSHOT_NAME);
+    String snapshot = SNAPSHOT_NAME;
 
     admin.snapshot(new SnapshotDescription(SNAPSHOT_NAME, TABLE_NAME,
         SnapshotType.DISABLED, null, -1, SnapshotManifestV1.DESCRIPTOR_VERSION));
@@ -250,7 +241,7 @@ public class TestSnapshotFromClient {
     SnapshotTestingUtils.assertNoSnapshots(admin);
   }
 
-  @Test (timeout=300000)
+  @Test
   public void testSnapshotFailsOnNonExistantTable() throws Exception {
     Admin admin = UTIL.getAdmin();
     // make sure we don't fail on listing snapshots
@@ -260,13 +251,13 @@ public class TestSnapshotFromClient {
     // make sure the table doesn't exist
     boolean fail = false;
     do {
-    try {
-      admin.getTableDescriptor(TableName.valueOf(tableName));
-      fail = true;
-          LOG.error("Table:" + tableName + " already exists, checking a new name");
-      tableName = tableName+"!";
-    } catch (TableNotFoundException e) {
-      fail = false;
+      try {
+        admin.getDescriptor(TableName.valueOf(tableName));
+        fail = true;
+        LOG.error("Table:" + tableName + " already exists, checking a new name");
+        tableName = tableName + "!";
+      } catch (TableNotFoundException e) {
+        fail = false;
       }
     } while (fail);
 
@@ -279,7 +270,7 @@ public class TestSnapshotFromClient {
     }
   }
 
-  @Test (timeout=300000)
+  @Test
   public void testOfflineTableSnapshotWithEmptyRegions() throws Exception {
     // test with an empty table with one region
 
@@ -297,7 +288,7 @@ public class TestSnapshotFromClient {
       FSUtils.getRootDir(UTIL.getConfiguration()), LOG);
 
     // take a snapshot of the disabled table
-    byte[] snapshot = Bytes.toBytes("testOfflineTableSnapshotWithEmptyRegions");
+    String snapshot = "testOfflineTableSnapshotWithEmptyRegions";
     admin.snapshot(snapshot, TABLE_NAME);
     LOG.debug("Snapshot completed.");
 
@@ -323,7 +314,7 @@ public class TestSnapshotFromClient {
     SnapshotTestingUtils.assertNoSnapshots(admin);
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testListTableSnapshots() throws Exception {
     Admin admin = null;
     final TableName tableName = TableName.valueOf(name.getMethodName());
@@ -342,7 +333,7 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(Bytes.toBytes(table2Snapshot1), tableName);
+      admin.snapshot(table2Snapshot1, tableName);
       LOG.debug(table2Snapshot1 + " completed.");
 
       List<SnapshotDescription> listTableSnapshots =
@@ -369,7 +360,7 @@ public class TestSnapshotFromClient {
     }
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testListTableSnapshotsWithRegex() throws Exception {
     Admin admin = null;
     try {
@@ -384,7 +375,7 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(Bytes.toBytes(table2Snapshot1), TABLE_NAME);
+      admin.snapshot(table2Snapshot1, TABLE_NAME);
       LOG.debug(table2Snapshot1 + " completed.");
 
       List<SnapshotDescription> listTableSnapshots =
@@ -408,7 +399,7 @@ public class TestSnapshotFromClient {
     }
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testDeleteTableSnapshots() throws Exception {
     Admin admin = null;
     final TableName tableName = TableName.valueOf(name.getMethodName());
@@ -427,7 +418,7 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(Bytes.toBytes(table2Snapshot1), tableName);
+      admin.snapshot(table2Snapshot1, tableName);
       LOG.debug(table2Snapshot1 + " completed.");
 
       Pattern tableNamePattern = Pattern.compile("test.*");
@@ -443,7 +434,7 @@ public class TestSnapshotFromClient {
     }
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testDeleteTableSnapshotsWithRegex() throws Exception {
     Admin admin = null;
     Pattern tableNamePattern = Pattern.compile("test.*");
@@ -459,7 +450,7 @@ public class TestSnapshotFromClient {
       LOG.debug("Snapshot2 completed.");
 
       String table2Snapshot1 = "Table2Snapshot1";
-      admin.snapshot(Bytes.toBytes(table2Snapshot1), TABLE_NAME);
+      admin.snapshot(table2Snapshot1, TABLE_NAME);
       LOG.debug(table2Snapshot1 + " completed.");
 
       admin.deleteTableSnapshots(tableNamePattern, Pattern.compile("Table1.*"));

@@ -60,6 +60,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hbase.util.Triple;
+import org.apache.zookeeper.KeeperException;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -90,7 +91,7 @@ public class TestCatalogJanitor {
   }
 
   @Before
-  public void setup() throws IOException {
+  public void setup() throws IOException, KeeperException {
     setRootDirAndCleanIt(HTU, this.name.getMethodName());
     NavigableMap<ServerName, SortedSet<byte []>> regionsToRegionServers =
         new ConcurrentSkipListMap<ServerName, SortedSet<byte []>>();
@@ -173,7 +174,7 @@ public class TestCatalogJanitor {
    */
   private TableDescriptor createTableDescriptorForCurrentMethod() {
     return TableDescriptorBuilder.newBuilder(TableName.valueOf(this.name.getMethodName())).
-        addColumnFamily(new HColumnDescriptor(MockMasterServices.DEFAULT_COLUMN_FAMILY_NAME)).
+      setColumnFamily(new HColumnDescriptor(MockMasterServices.DEFAULT_COLUMN_FAMILY_NAME)).
         build();
   }
 

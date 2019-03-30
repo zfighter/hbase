@@ -61,6 +61,7 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
@@ -86,7 +87,7 @@ public class TestReplicasClient {
 
   private static final int NB_SERVERS = 1;
   private static Table table = null;
-  private static final byte[] row = TestReplicasClient.class.getName().getBytes();
+  private static final byte[] row = Bytes.toBytes(TestReplicasClient.class.getName());
 
   private static HRegionInfo hriPrimary;
   private static HRegionInfo hriSecondary;
@@ -312,7 +313,7 @@ public class TestReplicasClient {
 
   @Test
   public void testUseRegionWithoutReplica() throws Exception {
-    byte[] b1 = "testUseRegionWithoutReplica".getBytes();
+    byte[] b1 = Bytes.toBytes("testUseRegionWithoutReplica");
     openRegion(hriSecondary);
     SlowMeCopro.getPrimaryCdl().set(new CountDownLatch(0));
     try {
@@ -326,7 +327,7 @@ public class TestReplicasClient {
 
   @Test
   public void testLocations() throws Exception {
-    byte[] b1 = "testLocations".getBytes();
+    byte[] b1 = Bytes.toBytes("testLocations");
     openRegion(hriSecondary);
     ClusterConnection hc = (ClusterConnection) HTU.getAdmin().getConnection();
 
@@ -351,7 +352,7 @@ public class TestReplicasClient {
 
   @Test
   public void testGetNoResultNoStaleRegionWithReplica() throws Exception {
-    byte[] b1 = "testGetNoResultNoStaleRegionWithReplica".getBytes();
+    byte[] b1 = Bytes.toBytes("testGetNoResultNoStaleRegionWithReplica");
     openRegion(hriSecondary);
 
     try {
@@ -367,7 +368,7 @@ public class TestReplicasClient {
 
   @Test
   public void testGetNoResultStaleRegionWithReplica() throws Exception {
-    byte[] b1 = "testGetNoResultStaleRegionWithReplica".getBytes();
+    byte[] b1 = Bytes.toBytes("testGetNoResultStaleRegionWithReplica");
     openRegion(hriSecondary);
 
     SlowMeCopro.getPrimaryCdl().set(new CountDownLatch(1));
@@ -384,7 +385,7 @@ public class TestReplicasClient {
 
   @Test
   public void testGetNoResultNotStaleSleepRegionWithReplica() throws Exception {
-    byte[] b1 = "testGetNoResultNotStaleSleepRegionWithReplica".getBytes();
+    byte[] b1 = Bytes.toBytes("testGetNoResultNotStaleSleepRegionWithReplica");
     openRegion(hriSecondary);
 
     try {
@@ -460,7 +461,7 @@ public class TestReplicasClient {
 
   @Test
   public void testUseRegionWithReplica() throws Exception {
-    byte[] b1 = "testUseRegionWithReplica".getBytes();
+    byte[] b1 = Bytes.toBytes("testUseRegionWithReplica");
     openRegion(hriSecondary);
 
     try {
@@ -553,7 +554,7 @@ public class TestReplicasClient {
 
   @Test
   public void testHedgedRead() throws Exception {
-    byte[] b1 = "testHedgedRead".getBytes();
+    byte[] b1 = Bytes.toBytes("testHedgedRead");
     openRegion(hriSecondary);
 
     try {
@@ -616,6 +617,7 @@ public class TestReplicasClient {
     }
   }
 
+  @Ignore // Disabled because it is flakey. Fails 17% on constrained GCE. %3 on Apache.
   @Test
   public void testCancelOfMultiGet() throws Exception {
     openRegion(hriSecondary);
@@ -767,7 +769,7 @@ public class TestReplicasClient {
         for (int col = 0; col < NUMCOLS; col++) {
           Put p = new Put(b1);
           String qualifier = "qualifer" + col;
-          KeyValue kv = new KeyValue(b1, f, qualifier.getBytes());
+          KeyValue kv = new KeyValue(b1, f, Bytes.toBytes(qualifier));
           p.add(kv);
           table.put(p);
         }

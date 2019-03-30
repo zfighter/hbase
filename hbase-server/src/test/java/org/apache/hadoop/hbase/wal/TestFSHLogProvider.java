@@ -186,10 +186,10 @@ public class TestFSHLogProvider {
     LOG.info(currentTest.getMethodName());
     TableDescriptor htd =
         TableDescriptorBuilder.newBuilder(TableName.valueOf(currentTest.getMethodName()))
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
     TableDescriptor htd2 =
         TableDescriptorBuilder.newBuilder(TableName.valueOf(currentTest.getMethodName() + "2"))
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
     NavigableMap<byte[], Integer> scopes1 = new TreeMap<>(Bytes.BYTES_COMPARATOR);
     for (byte[] fam : htd.getColumnFamilyNames()) {
       scopes1.put(fam, 0);
@@ -200,7 +200,7 @@ public class TestFSHLogProvider {
     }
     Configuration localConf = new Configuration(conf);
     localConf.set(WALFactory.WAL_PROVIDER, FSHLogProvider.class.getName());
-    WALFactory wals = new WALFactory(localConf, null, currentTest.getMethodName());
+    WALFactory wals = new WALFactory(localConf, currentTest.getMethodName());
     try {
       RegionInfo hri = RegionInfoBuilder.newBuilder(htd.getTableName()).build();
       RegionInfo hri2 = RegionInfoBuilder.newBuilder(htd2.getTableName()).build();
@@ -232,7 +232,8 @@ public class TestFSHLogProvider {
       log.startCacheFlush(hri.getEncodedNameAsBytes(), htd.getColumnFamilyNames());
       log.completeCacheFlush(hri.getEncodedNameAsBytes());
       log.rollWriter();
-      assertEquals(2, AbstractFSWALProvider.getNumRolledLogFiles(log));
+      int count = AbstractFSWALProvider.getNumRolledLogFiles(log);
+      assertEquals(2, count);
 
       // Flush the second region, which removes all the remaining output files
       // since the oldest was completely flushed and the two others only contain
@@ -266,10 +267,10 @@ public class TestFSHLogProvider {
     LOG.debug(currentTest.getMethodName());
     TableDescriptor table1 =
         TableDescriptorBuilder.newBuilder(TableName.valueOf(currentTest.getMethodName() + "1"))
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
     TableDescriptor table2 =
         TableDescriptorBuilder.newBuilder(TableName.valueOf(currentTest.getMethodName() + "2"))
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of("row")).build();
     NavigableMap<byte[], Integer> scopes1 = new TreeMap<>(Bytes.BYTES_COMPARATOR);
     for (byte[] fam : table1.getColumnFamilyNames()) {
       scopes1.put(fam, 0);
@@ -280,7 +281,7 @@ public class TestFSHLogProvider {
     }
     Configuration localConf = new Configuration(conf);
     localConf.set(WALFactory.WAL_PROVIDER, FSHLogProvider.class.getName());
-    WALFactory wals = new WALFactory(localConf, null, currentTest.getMethodName());
+    WALFactory wals = new WALFactory(localConf, currentTest.getMethodName());
     try {
       WAL wal = wals.getWAL(null);
       assertEquals(0, AbstractFSWALProvider.getNumRolledLogFiles(wal));
@@ -354,7 +355,7 @@ public class TestFSHLogProvider {
   public void setMembershipDedups() throws IOException {
     Configuration localConf = new Configuration(conf);
     localConf.set(WALFactory.WAL_PROVIDER, FSHLogProvider.class.getName());
-    WALFactory wals = new WALFactory(localConf, null, currentTest.getMethodName());
+    WALFactory wals = new WALFactory(localConf, currentTest.getMethodName());
     try {
       final Set<WAL> seen = new HashSet<>(1);
       assertTrue("first attempt to add WAL from default provider should work.",

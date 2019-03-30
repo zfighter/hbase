@@ -38,7 +38,8 @@ import org.apache.hadoop.hbase.backup.master.LogRollMasterProcedureManager;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -101,7 +102,7 @@ public class IncrementalBackupManager extends BackupManager {
     List<WALItem> logFromSystemTable =
         getLogFilesFromBackupSystem(previousTimestampMins, newTimestamps, getBackupInfo()
             .getBackupRootDir());
-    logList = excludeAlreadyBackedUpWALs(logList, logFromSystemTable);
+    logList = excludeAlreadyBackedUpAndProcV2WALs(logList, logFromSystemTable);
     backupInfo.setIncrBackupFileList(logList);
 
     return newTimestamps;
@@ -144,14 +145,13 @@ public class IncrementalBackupManager extends BackupManager {
         getLogFilesFromBackupSystem(previousTimestampMins, newTimestamps, getBackupInfo()
             .getBackupRootDir());
 
-    logList = excludeAlreadyBackedUpWALs(logList, logFromSystemTable);
+    logList = excludeAlreadyBackedUpAndProcV2WALs(logList, logFromSystemTable);
     backupInfo.setIncrBackupFileList(logList);
 
     return logList;
   }
 
-
-  private List<String> excludeAlreadyBackedUpWALs(List<String> logList,
+  private List<String> excludeAlreadyBackedUpAndProcV2WALs(List<String> logList,
       List<WALItem> logFromSystemTable) {
     Set<String> walFileNameSet = convertToSet(logFromSystemTable);
 
@@ -160,7 +160,7 @@ public class IncrementalBackupManager extends BackupManager {
       Path p = new Path(logList.get(i));
       String name  = p.getName();
 
-      if (walFileNameSet.contains(name)) {
+      if (walFileNameSet.contains(name) || name.startsWith(WALProcedureStore.LOG_PREFIX)) {
         continue;
       }
 
@@ -178,7 +178,7 @@ public class IncrementalBackupManager extends BackupManager {
     Set<String> set = new HashSet<>();
     for (int i=0; i < logFromSystemTable.size(); i++) {
       WALItem item = logFromSystemTable.get(i);
-      set.add(item.walFile);
+      set.add((new Path(item.walFile)).getName());
     }
     return set;
   }
@@ -243,10 +243,11 @@ public class IncrementalBackupManager extends BackupManager {
       throws IOException {
     LOG.debug("In getLogFilesForNewBackup()\n" + "olderTimestamps: " + olderTimestamps
         + "\n newestTimestamps: " + newestTimestamps);
-    Path rootdir = FSUtils.getRootDir(conf);
-    Path logDir = new Path(rootdir, HConstants.HREGION_LOGDIR_NAME);
-    Path oldLogDir = new Path(rootdir, HConstants.HREGION_OLDLOGDIR_NAME);
-    FileSystem fs = rootdir.getFileSystem(conf);
+
+    Path walRootDir = CommonFSUtils.getWALRootDir(conf);
+    Path logDir = new Path(walRootDir, HConstants.HREGION_LOGDIR_NAME);
+    Path oldLogDir = new Path(walRootDir, HConstants.HREGION_OLDLOGDIR_NAME);
+    FileSystem fs = walRootDir.getFileSystem(conf);
     NewestLogFilter pathFilter = new NewestLogFilter();
 
     List<String> resultLogFiles = new ArrayList<>();
@@ -296,9 +297,20 @@ public class IncrementalBackupManager extends BackupManager {
         currentLogFile = log.getPath().toString();
         resultLogFiles.add(currentLogFile);
         currentLogTS = BackupUtils.getCreationTime(log.getPath());
-        // newestTimestamps is up-to-date with the current list of hosts
-        // so newestTimestamps.get(host) will not be null.
-        if (currentLogTS > newestTimestamps.get(host)) {
+
+        // If newestTimestamps.get(host) is null, means that
+        // either RS (host) has been restarted recently with different port number
+        // or RS is down (was decommisioned). In any case, we treat this
+        // log file as eligible for inclusion into incremental backup log list
+        Long ts = newestTimestamps.get(host);
+        if (ts ==  null) {
+          LOG.warn("ORPHAN log found: " + log + " host=" + host);
+          LOG.debug("Known hosts (from newestTimestamps):");
+          for (String s: newestTimestamps.keySet()) {
+            LOG.debug(s);
+          }
+        }
+        if (ts == null || currentLogTS > ts) {
           newestLogs.add(currentLogFile);
         }
       }
@@ -343,7 +355,7 @@ public class IncrementalBackupManager extends BackupManager {
       // Even if these logs belong to a obsolete region server, we still need
       // to include they to avoid loss of edits for backup.
       Long newTimestamp = newestTimestamps.get(host);
-      if (newTimestamp != null && currentLogTS > newTimestamp) {
+      if (newTimestamp == null || currentLogTS > newTimestamp) {
         newestLogs.add(currentLogFile);
       }
     }

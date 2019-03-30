@@ -27,7 +27,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
@@ -41,7 +40,7 @@ import org.apache.hadoop.hbase.master.RegionPlan;
 import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.master.ServerManager;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
-import org.apache.hadoop.hbase.master.assignment.RegionStates.RegionStateNode;
+import org.apache.hadoop.hbase.master.assignment.RegionStateNode;
 import org.apache.hadoop.hbase.net.Address;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -56,6 +55,8 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 @InterfaceAudience.Private
 public class RSGroupAdminServer implements RSGroupAdmin {
   private static final Logger LOG = LoggerFactory.getLogger(RSGroupAdminServer.class);
+  public static final String KEEP_ONE_SERVER_IN_DEFAULT_ERROR_MESSAGE = "should keep at least " +
+          "one server in 'default' RSGroup.";
 
   private MasterServices master;
   private final RSGroupInfoManager rsGroupInfoManager;
@@ -289,9 +290,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
     // Hold a lock on the manager instance while moving servers to prevent
     // another writer changing our state while we are working.
     synchronized (rsGroupInfoManager) {
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().preMoveServers(servers, targetGroupName);
-      }
       // Presume first server's source group. Later ensure all servers are from this group.
       Address firstServer = servers.iterator().next();
       RSGroupInfo srcGrp = rsGroupInfoManager.getRSGroupOfServer(firstServer);
@@ -307,6 +305,9 @@ public class RSGroupAdminServer implements RSGroupAdmin {
       // Only move online servers (when moving from 'default') or servers from other
       // groups. This prevents bogus servers from entering groups
       if (RSGroupInfo.DEFAULT_GROUP.equals(srcGrp.getName())) {
+        if (srcGrp.getServers().size() <= servers.size()) {
+          throw new ConstraintException(KEEP_ONE_SERVER_IN_DEFAULT_ERROR_MESSAGE);
+        }
         checkOnlineServersOnly(servers);
       }
       // Ensure all servers are of same rsgroup.
@@ -365,9 +366,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
         }
       } while (foundRegionsToMove);
 
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().postMoveServers(servers, targetGroupName);
-      }
       LOG.info("Move server done: " + srcGrp.getName() + "=>" + targetGroupName);
     }
   }
@@ -385,9 +383,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
     // Hold a lock on the manager instance while moving servers to prevent
     // another writer changing our state while we are working.
     synchronized (rsGroupInfoManager) {
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().preMoveTables(tables, targetGroup);
-      }
       if(targetGroup != null) {
         RSGroupInfo destGroup = rsGroupInfoManager.getRSGroup(targetGroup);
         if(destGroup == null) {
@@ -425,22 +420,12 @@ public class RSGroupAdminServer implements RSGroupAdmin {
           }
         }
       }
-
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().postMoveTables(tables, targetGroup);
-      }
     }
   }
 
   @Override
   public void addRSGroup(String name) throws IOException {
-    if (master.getMasterCoprocessorHost() != null) {
-      master.getMasterCoprocessorHost().preAddRSGroup(name);
-    }
     rsGroupInfoManager.addRSGroup(new RSGroupInfo(name));
-    if (master.getMasterCoprocessorHost() != null) {
-      master.getMasterCoprocessorHost().postAddRSGroup(name);
-    }
   }
 
   @Override
@@ -448,9 +433,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
     // Hold a lock on the manager instance while moving servers to prevent
     // another writer changing our state while we are working.
     synchronized (rsGroupInfoManager) {
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().preRemoveRSGroup(name);
-      }
       RSGroupInfo rsGroupInfo = rsGroupInfoManager.getRSGroup(name);
       if (rsGroupInfo == null) {
         throw new ConstraintException("RSGroup " + name + " does not exist");
@@ -467,17 +449,14 @@ public class RSGroupAdminServer implements RSGroupAdmin {
             " servers; you must remove these servers from the RSGroup before" +
             "the RSGroup can be removed.");
       }
-      for (NamespaceDescriptor ns: master.getClusterSchema().getNamespaces()) {
-        String nsGroup = ns.getConfigurationValue(rsGroupInfo.NAMESPACE_DESC_PROP_GROUP);
-        if (nsGroup != null &&  nsGroup.equals(name)) {
-          throw new ConstraintException("RSGroup " + name + " is referenced by namespace: " +
-              ns.getName());
+      for (NamespaceDescriptor ns : master.getClusterSchema().getNamespaces()) {
+        String nsGroup = ns.getConfigurationValue(RSGroupInfo.NAMESPACE_DESC_PROP_GROUP);
+        if (nsGroup != null && nsGroup.equals(name)) {
+          throw new ConstraintException(
+            "RSGroup " + name + " is referenced by namespace: " + ns.getName());
         }
       }
       rsGroupInfoManager.removeRSGroup(name);
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().postRemoveRSGroup(name);
-      }
     }
   }
 
@@ -493,9 +472,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
         return false;
       }
 
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().preBalanceRSGroup(groupName);
-      }
       if (getRSGroupInfo(groupName) == null) {
         throw new ConstraintException("RSGroup does not exist: "+groupName);
       }
@@ -537,9 +513,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
         LOG.info("RSGroup balance " + groupName + " completed after " +
             (System.currentTimeMillis()-startTime) + " seconds");
       }
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().postBalanceRSGroup(groupName, balancerRan);
-      }
       return balancerRan;
     }
   }
@@ -570,9 +543,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
     // Hold a lock on the manager instance while moving servers and tables to prevent
     // another writer changing our state while we are working.
     synchronized (rsGroupInfoManager) {
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().preMoveServersAndTables(servers, tables, targetGroup);
-      }
       //check servers and tables status
       checkServersAndTables(servers, tables, targetGroup);
 
@@ -584,10 +554,6 @@ public class RSGroupAdminServer implements RSGroupAdmin {
       moveRegionsFromServers(servers, tables, targetGroup);
       //move regions which should belong to these servers
       moveRegionsToServers(servers, tables, targetGroup);
-
-      if (master.getMasterCoprocessorHost() != null) {
-        master.getMasterCoprocessorHost().postMoveServersAndTables(servers, tables, targetGroup);
-      }
     }
     LOG.info("Move servers and tables done. Severs :"
             + servers + " , Tables : " + tables + " => " +  targetGroup);
@@ -602,15 +568,9 @@ public class RSGroupAdminServer implements RSGroupAdmin {
       // Hold a lock on the manager instance while moving servers to prevent
       // another writer changing our state while we are working.
       synchronized (rsGroupInfoManager) {
-        if (master.getMasterCoprocessorHost() != null) {
-          master.getMasterCoprocessorHost().preRemoveServers(servers);
-        }
         //check the set of servers
         checkForDeadOrOnlineServers(servers);
         rsGroupInfoManager.removeServers(servers);
-        if (master.getMasterCoprocessorHost() != null) {
-          master.getMasterCoprocessorHost().postRemoveServers(servers);
-        }
         LOG.info("Remove decommissioned servers " + servers + " from rsgroup done.");
       }
     }
@@ -675,8 +635,12 @@ public class RSGroupAdminServer implements RSGroupAdmin {
   private void checkForDeadOrOnlineServers(Set<Address> servers) throws ConstraintException {
     // This uglyness is because we only have Address, not ServerName.
     Set<Address> onlineServers = new HashSet<>();
-    for(ServerName server: master.getServerManager().getOnlineServers().keySet()) {
-      onlineServers.add(server.getAddress());
+    List<ServerName> drainingServers = master.getServerManager().getDrainingServersList();
+    for (ServerName server : master.getServerManager().getOnlineServers().keySet()) {
+      // Only online but not decommissioned servers are really online
+      if (!drainingServers.contains(server)) {
+        onlineServers.add(server.getAddress());
+      }
     }
 
     Set<Address> deadServers = new HashSet<>();

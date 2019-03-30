@@ -23,10 +23,12 @@ import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FilterFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
@@ -35,7 +37,8 @@ import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.StoppableImplementation;
-import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -55,10 +58,16 @@ public class TestCleanerChore {
   private static final Logger LOG = LoggerFactory.getLogger(TestCleanerChore.class);
   private static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
 
-  @After
-  public void cleanup() throws Exception {
+  @BeforeClass
+  public static void setup() {
+    CleanerChore.initChorePool(UTIL.getConfiguration());
+  }
+
+  @AfterClass
+  public static void cleanup() throws Exception {
     // delete and recreate the test directory, ensuring a clean test dir between tests
     UTIL.cleanupTestDir();
+    CleanerChore.shutDownChorePool();
   }
 
   @Test
@@ -83,9 +92,55 @@ public class TestCleanerChore {
     // run the chore
     chore.chore();
 
-    // verify all the files got deleted
-    assertTrue("File didn't get deleted", fs.exists(file));
-    assertTrue("Empty directory didn't get deleted", fs.exists(parent));
+    // verify all the files were preserved
+    assertTrue("File shouldn't have been deleted", fs.exists(file));
+    assertTrue("directory shouldn't have been deleted", fs.exists(parent));
+  }
+
+  @Test
+  public void retriesIOExceptionInStatus() throws Exception {
+    Stoppable stop = new StoppableImplementation();
+    Configuration conf = UTIL.getConfiguration();
+    Path testDir = UTIL.getDataTestDir();
+    FileSystem fs = UTIL.getTestFileSystem();
+    String confKey = "hbase.test.cleaner.delegates";
+
+    Path child = new Path(testDir, "child");
+    Path file = new Path(child, "file");
+    fs.mkdirs(child);
+    fs.create(file).close();
+    assertTrue("test file didn't get created.", fs.exists(file));
+    final AtomicBoolean fails = new AtomicBoolean(true);
+
+    FilterFileSystem filtered = new FilterFileSystem(fs) {
+      public FileStatus[] listStatus(Path f) throws IOException {
+        if (fails.get()) {
+          throw new IOException("whomp whomp.");
+        }
+        return fs.listStatus(f);
+      }
+    };
+
+    AllValidPaths chore = new AllValidPaths("test-retry-ioe", stop, conf, filtered, testDir, confKey);
+
+    // trouble talking to the filesystem
+    Boolean result = chore.runCleaner();
+
+    // verify that it couldn't clean the files.
+    assertTrue("test rig failed to inject failure.", fs.exists(file));
+    assertTrue("test rig failed to inject failure.", fs.exists(child));
+    // and verify that it accurately reported the failure.
+    assertFalse("chore should report that it failed.", result);
+
+    // filesystem is back
+    fails.set(false);
+    result = chore.runCleaner();
+
+    // verify everything is gone.
+    assertFalse("file should have been destroyed.", fs.exists(file));
+    assertFalse("directory should have been destroyed.", fs.exists(child));
+    // and verify that it accurately reported success.
+    assertTrue("chore should claim it succeeded.", result);
   }
 
   @Test
@@ -247,6 +302,7 @@ public class TestCleanerChore {
    */
   @Test
   public void testNoExceptionFromDirectoryWithRacyChildren() throws Exception {
+    UTIL.cleanupTestDir();
     Stoppable stop = new StoppableImplementation();
     // need to use a localutil to not break the rest of the test that runs on the local FS, which
     // gets hosed when we start to use a minicluster.

@@ -22,9 +22,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -73,14 +73,14 @@ public class TestLoadAndSwitchEncodeOnDisk extends
   }
 
   @Override
-  @Test(timeout=TIMEOUT_MS)
+  @Test
   public void loadTest() throws Exception {
     Admin admin = TEST_UTIL.getAdmin();
 
     compression = Compression.Algorithm.GZ; // used for table setup
     super.loadTest();
 
-    HColumnDescriptor hcd = getColumnDesc(admin);
+    ColumnFamilyDescriptor hcd = getColumnDesc(admin);
     System.err.println("\nDisabling encode-on-disk. Old column descriptor: " + hcd + "\n");
     Table t = TEST_UTIL.getConnection().getTable(TABLE);
     assertAllOnLine(t);

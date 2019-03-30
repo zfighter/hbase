@@ -67,9 +67,9 @@ public class TestLogRollingNoCluster {
   /** ProtobufLogWriter that simulates higher latencies in sync() call */
   public static class HighLatencySyncWriter extends  ProtobufLogWriter {
     @Override
-    public void sync() throws IOException {
+    public void sync(boolean forceSync) throws IOException {
       Threads.sleep(ThreadLocalRandom.current().nextInt(10));
-      super.sync();
+      super.sync(forceSync);
       Threads.sleep(ThreadLocalRandom.current().nextInt(10));
     }
   }
@@ -91,7 +91,7 @@ public class TestLogRollingNoCluster {
     conf.set(WALFactory.WAL_PROVIDER, "filesystem");
     FSUtils.setRootDir(conf, dir);
     conf.set("hbase.regionserver.hlog.writer.impl", HighLatencySyncWriter.class.getName());
-    final WALFactory wals = new WALFactory(conf, null, TestLogRollingNoCluster.class.getName());
+    final WALFactory wals = new WALFactory(conf, TestLogRollingNoCluster.class.getName());
     final WAL wal = wals.getWAL(null);
 
     Appender [] appenders = null;

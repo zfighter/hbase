@@ -24,20 +24,23 @@ import java.util.List;
 import java.util.concurrent.ThreadPoolExecutor;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.CoordinatedStateManager;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.backup.BackupRestoreConstants;
 import org.apache.hadoop.hbase.backup.impl.BackupManager;
-import org.apache.hadoop.hbase.coordination.ZkCoordinatedStateManager;
 import org.apache.hadoop.hbase.errorhandling.ForeignException;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.MetricsMaster;
 import org.apache.hadoop.hbase.procedure.MasterProcedureManager;
 import org.apache.hadoop.hbase.procedure.Procedure;
+import org.apache.hadoop.hbase.procedure.ProcedureCoordinationManager;
 import org.apache.hadoop.hbase.procedure.ProcedureCoordinator;
 import org.apache.hadoop.hbase.procedure.ProcedureCoordinatorRpcs;
 import org.apache.hadoop.hbase.procedure.RegionServerProcedureManager;
+import org.apache.hadoop.hbase.procedure.ZKProcedureCoordinationManager;
+import org.apache.hadoop.hbase.security.User;
+import org.apache.hadoop.hbase.security.access.AccessChecker;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,7 +50,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.ProcedureDe
 
 /**
  * Master procedure manager for coordinated cluster-wide WAL roll operation, which is run during
- * backup operation, see {@link MasterProcedureManager} and and {@link RegionServerProcedureManager}
+ * backup operation, see {@link MasterProcedureManager} and {@link RegionServerProcedureManager}
  */
 @InterfaceAudience.Private
 public class LogRollMasterProcedureManager extends MasterProcedureManager {
@@ -96,7 +99,7 @@ public class LogRollMasterProcedureManager extends MasterProcedureManager {
 
     // setup the default procedure coordinator
     ThreadPoolExecutor tpool = ProcedureCoordinator.defaultPool(name, opThreads);
-    CoordinatedStateManager coordManager = new ZkCoordinatedStateManager(master);
+    ProcedureCoordinationManager coordManager = new ZKProcedureCoordinationManager(master);
     ProcedureCoordinatorRpcs comms =
         coordManager.getProcedureCoordinatorRpcs(getProcedureSignature(), name);
     this.coordinator = new ProcedureCoordinator(comms, tpool, timeoutMillis, wakeFrequency);
@@ -128,7 +131,7 @@ public class LogRollMasterProcedureManager extends MasterProcedureManager {
     byte[] data = new byte[0];
     if (conf.size() > 0) {
       // Get backup root path
-      data = conf.get(0).getValue().getBytes();
+      data = Bytes.toBytes(conf.get(0).getValue());
     }
     Procedure proc = coordinator.startProcedure(monitor, desc.getInstance(), data, servers);
     if (proc == null) {
@@ -155,6 +158,12 @@ public class LogRollMasterProcedureManager extends MasterProcedureManager {
       monitor.receive(ee);
     }
     monitor.rethrowException();
+  }
+
+  @Override
+  public void checkPermissions(ProcedureDescription desc, AccessChecker accessChecker, User user)
+      throws IOException {
+    // TODO: what permissions checks are needed here?
   }
 
   private boolean isBackupEnabled() {

@@ -102,7 +102,7 @@ public class TestHBaseAdminNoCluster {
     Mockito.when(masterAdmin.createTable((RpcController)Mockito.any(),
       (CreateTableRequest)Mockito.any())).
         thenThrow(new ServiceException("Test fail").initCause(new PleaseHoldException("test")));
-    Mockito.when(connection.getKeepAliveMasterService()).thenReturn(masterAdmin);
+    Mockito.when(connection.getMaster()).thenReturn(masterAdmin);
     Admin admin = new HBaseAdmin(connection);
     try {
       HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(name.getMethodName()));
@@ -129,7 +129,7 @@ public class TestHBaseAdminNoCluster {
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.listTables();
+        admin.listTableDescriptors();
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -153,11 +153,11 @@ public class TestHBaseAdminNoCluster {
       }
     });
 
-    // Admin.getTableDescriptor()
+    // Admin.getDescriptor()
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.getTableDescriptor(TableName.valueOf(name.getMethodName()));
+        admin.getDescriptor(TableName.valueOf(name.getMethodName()));
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -171,7 +171,7 @@ public class TestHBaseAdminNoCluster {
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.getTableDescriptorsByTableName(new ArrayList<>());
+        admin.listTableDescriptors(new ArrayList<>());
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -209,11 +209,11 @@ public class TestHBaseAdminNoCluster {
       }
     });
 
-    // Admin.setBalancerRunning()
+    // Admin.balancerSwitch()
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.setBalancerRunning(true, true);
+        admin.balancerSwitch(true, true);
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -223,11 +223,11 @@ public class TestHBaseAdminNoCluster {
       }
     });
 
-    // Admin.balancer()
+    // Admin.balance()
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.balancer();
+        admin.balance();
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -241,7 +241,7 @@ public class TestHBaseAdminNoCluster {
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.enableCatalogJanitor(true);
+        admin.catalogJanitorSwitch(true);
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -255,7 +255,7 @@ public class TestHBaseAdminNoCluster {
     testMasterOperationIsRetried(new MethodCaller() {
       @Override
       public void call(Admin admin) throws Exception {
-        admin.runCatalogScan();
+        admin.runCatalogJanitor();
       }
       @Override
       public void verify(MasterKeepAliveConnection masterAdmin, int count) throws Exception {
@@ -304,7 +304,7 @@ public class TestHBaseAdminNoCluster {
             throw new MasterNotRunningException(); // all methods will throw an exception
           }
         });
-    Mockito.when(connection.getKeepAliveMasterService()).thenReturn(masterAdmin);
+    Mockito.when(connection.getMaster()).thenReturn(masterAdmin);
     RpcControllerFactory rpcControllerFactory = Mockito.mock(RpcControllerFactory.class);
     Mockito.when(connection.getRpcControllerFactory()).thenReturn(rpcControllerFactory);
     Mockito.when(rpcControllerFactory.newController()).thenReturn(

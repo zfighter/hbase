@@ -29,6 +29,7 @@ import java.lang.reflect.Modifier;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadLocalRandom;
@@ -37,6 +38,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
@@ -214,8 +218,8 @@ public class TestConnectionImplementation {
   // dead servers is broke"
   public void testClusterStatus() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
-    byte[] cf = "cf".getBytes();
-    byte[] rk = "rk1".getBytes();
+    byte[] cf = Bytes.toBytes("cf");
+    byte[] rk = Bytes.toBytes("rk1");
 
     JVMClusterUtil.RegionServerThread rs = TEST_UTIL.getHBaseCluster().startRegionServer();
     rs.waitForServerOnline();
@@ -238,7 +242,7 @@ public class TestConnectionImplementation {
     }
 
     Put p1 = new Put(rk);
-    p1.addColumn(cf, "qual".getBytes(), "val".getBytes());
+    p1.addColumn(cf, Bytes.toBytes("qual"), Bytes.toBytes("val"));
     t.put(p1);
 
     rs.getRegionServer().abort("I'm dead");
@@ -280,7 +284,7 @@ public class TestConnectionImplementation {
     TableName tableName = TableName.valueOf("HCM-testConnectionClose" + allowsInterrupt);
     TEST_UTIL.createTable(tableName, FAM_NAM).close();
 
-    boolean previousBalance = TEST_UTIL.getAdmin().setBalancerRunning(false, true);
+    boolean previousBalance = TEST_UTIL.getAdmin().balancerSwitch(false, true);
 
     Configuration c2 = new Configuration(TEST_UTIL.getConfiguration());
     // We want to work on a separate connection.
@@ -362,7 +366,7 @@ public class TestConnectionImplementation {
     table.close();
     connection.close();
     Assert.assertTrue("Unexpected exception is " + failed.get(), failed.get() == null);
-    TEST_UTIL.getAdmin().setBalancerRunning(previousBalance, true);
+    TEST_UTIL.getAdmin().balancerSwitch(previousBalance, true);
   }
 
   /**
@@ -373,7 +377,7 @@ public class TestConnectionImplementation {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     TEST_UTIL.createTable(tableName, FAM_NAM).close();
     int idleTime =  20000;
-    boolean previousBalance = TEST_UTIL.getAdmin().setBalancerRunning(false, true);
+    boolean previousBalance = TEST_UTIL.getAdmin().balancerSwitch(false, true);
 
     Configuration c2 = new Configuration(TEST_UTIL.getConfiguration());
     // We want to work on a separate connection.
@@ -421,7 +425,7 @@ public class TestConnectionImplementation {
 
     connection.close();
     EnvironmentEdgeManager.reset();
-    TEST_UTIL.getAdmin().setBalancerRunning(previousBalance, true);
+    TEST_UTIL.getAdmin().balancerSwitch(previousBalance, true);
   }
 
     /**
@@ -434,7 +438,7 @@ public class TestConnectionImplementation {
     final TableName tableName = TableName.valueOf(name.getMethodName());
 
     TEST_UTIL.createTable(tableName, FAM_NAM).close();
-    boolean previousBalance = TEST_UTIL.getAdmin().setBalancerRunning(false, true);
+    boolean previousBalance = TEST_UTIL.getAdmin().balancerSwitch(false, true);
 
     Configuration c2 = new Configuration(TEST_UTIL.getConfiguration());
     // We want to work on a separate connection.
@@ -489,7 +493,7 @@ public class TestConnectionImplementation {
     } finally {
       syncBlockingFilter.set(true);
       t.join();
-      TEST_UTIL.getAdmin().setBalancerRunning(previousBalance, true);
+      TEST_UTIL.getAdmin().balancerSwitch(previousBalance, true);
     }
 
     table.close();
@@ -568,7 +572,7 @@ public class TestConnectionImplementation {
     assertNotNull(conn.getCachedLocation(TABLE_NAME, ROW));
     assertNotNull(conn.getCachedLocation(TableName.valueOf(TABLE_NAME.getName()), ROW.clone()));
 
-    TEST_UTIL.getAdmin().setBalancerRunning(false, false);
+    TEST_UTIL.getAdmin().balancerSwitch(false, false);
     HMaster master = TEST_UTIL.getMiniHBaseCluster().getMaster();
 
     // We can wait for all regions to be online, that makes log reading easier when debugging
@@ -602,7 +606,7 @@ public class TestConnectionImplementation {
     LOG.info("Move starting region="+toMove.getRegionInfo().getRegionNameAsString());
     TEST_UTIL.getAdmin().move(
       toMove.getRegionInfo().getEncodedNameAsBytes(),
-      destServerName.getServerName().getBytes()
+      Bytes.toBytes(destServerName.getServerName())
     );
 
     while (destServer.getOnlineRegion(regionName) == null ||
@@ -668,7 +672,7 @@ public class TestConnectionImplementation {
     LOG.info("Move starting region=" + toMove.getRegionInfo().getRegionNameAsString());
     TEST_UTIL.getAdmin().move(
       toMove.getRegionInfo().getEncodedNameAsBytes(),
-      curServer.getServerName().getServerName().getBytes()
+      Bytes.toBytes(curServer.getServerName().getServerName())
     );
 
     while (curServer.getOnlineRegion(regionName) == null ||
@@ -870,7 +874,7 @@ public class TestConnectionImplementation {
       conn.clearRegionCache(TABLE_NAME3);
       Assert.assertEquals(0, conn.getNumberOfCachedRegionLocations(TABLE_NAME3));
 
-      TEST_UTIL.getAdmin().setBalancerRunning(false, false);
+      TEST_UTIL.getAdmin().balancerSwitch(false, false);
       HMaster master = TEST_UTIL.getMiniHBaseCluster().getMaster();
 
       // We can wait for all regions to be online, that makes log reading easier when debugging
@@ -926,7 +930,7 @@ public class TestConnectionImplementation {
       LOG.info("Move starting region=" + toMove.getRegionInfo().getRegionNameAsString());
       TEST_UTIL.getAdmin().move(
           toMove.getRegionInfo().getEncodedNameAsBytes(),
-          destServerName.getServerName().getBytes()
+          Bytes.toBytes(destServerName.getServerName())
       );
 
       while (destServer.getOnlineRegion(regionName) == null ||
@@ -1043,5 +1047,37 @@ public class TestConnectionImplementation {
     TEST_UTIL.deleteTable(tableName);
     table.close();
     connection.close();
+  }
+
+  @Test
+  public void testLocateRegionsWithRegionReplicas() throws IOException {
+    int regionReplication = 3;
+    byte[] family = Bytes.toBytes("cf");
+    TableName tableName = TableName.valueOf(name.getMethodName());
+
+    // Create a table with region replicas
+    TableDescriptorBuilder builder = TableDescriptorBuilder
+      .newBuilder(tableName)
+      .setRegionReplication(regionReplication)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(family));
+    TEST_UTIL.getAdmin().createTable(builder.build());
+
+    try (ConnectionImplementation con = (ConnectionImplementation) ConnectionFactory.
+      createConnection(TEST_UTIL.getConfiguration())) {
+      // Get locations of the regions of the table
+      List<HRegionLocation> locations = con.locateRegions(tableName, false, false);
+
+      // The size of the returned locations should be 3
+      assertEquals(regionReplication, locations.size());
+
+      // The replicaIds of the returned locations should be 0, 1 and 2
+      Set<Integer> expectedReplicaIds = IntStream.range(0, regionReplication).
+        boxed().collect(Collectors.toSet());
+      for (HRegionLocation location : locations) {
+        assertTrue(expectedReplicaIds.remove(location.getRegion().getReplicaId()));
+      }
+    } finally {
+      TEST_UTIL.deleteTable(tableName);
+    }
   }
 }

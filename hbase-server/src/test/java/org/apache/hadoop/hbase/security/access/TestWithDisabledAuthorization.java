@@ -381,11 +381,12 @@ public class TestWithDisabledAuthorization extends SecureTestUtil {
     AccessTestAction checkMultiQualifierRead = new AccessTestAction() {
       @Override
       public Void run() throws Exception {
-        checkTablePerms(TEST_UTIL, TEST_TABLE.getTableName(), new Permission[] {
-          new TablePermission(TEST_TABLE.getTableName(), TEST_FAMILY, TEST_Q1,
-            Permission.Action.READ),
-          new TablePermission(TEST_TABLE.getTableName(), TEST_FAMILY, TEST_Q2,
-            Permission.Action.READ), });
+        checkTablePerms(TEST_UTIL, TEST_TABLE.getTableName(),
+          new Permission[] {
+              Permission.newBuilder(TEST_TABLE.getTableName()).withFamily(TEST_FAMILY)
+                  .withQualifier(TEST_Q1).withActions(Action.READ).build(),
+              Permission.newBuilder(TEST_TABLE.getTableName()).withFamily(TEST_FAMILY)
+                  .withQualifier(TEST_Q2).withActions(Action.READ).build() });
         return null;
       }
     };
@@ -397,11 +398,14 @@ public class TestWithDisabledAuthorization extends SecureTestUtil {
     AccessTestAction checkMultiQualifierReadWrite = new AccessTestAction() {
       @Override
       public Void run() throws Exception {
-        checkTablePerms(TEST_UTIL, TEST_TABLE.getTableName(), new Permission[] {
-            new TablePermission(TEST_TABLE.getTableName(), TEST_FAMILY, TEST_Q1,
-              Permission.Action.READ, Permission.Action.WRITE),
-            new TablePermission(TEST_TABLE.getTableName(), TEST_FAMILY, TEST_Q2,
-              Permission.Action.READ, Permission.Action.WRITE), });
+        checkTablePerms(TEST_UTIL, TEST_TABLE.getTableName(),
+          new Permission[] {
+              Permission.newBuilder(TEST_TABLE.getTableName()).withFamily(TEST_FAMILY)
+                  .withQualifier(TEST_Q1)
+                  .withActions(Permission.Action.READ, Permission.Action.WRITE).build(),
+              Permission.newBuilder(TEST_TABLE.getTableName()).withFamily(TEST_FAMILY)
+                  .withQualifier(TEST_Q2)
+                  .withActions(Permission.Action.READ, Permission.Action.WRITE).build() });
         return null;
       }
     };
@@ -493,7 +497,9 @@ public class TestWithDisabledAuthorization extends SecureTestUtil {
         htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
         htd.addFamily(new HColumnDescriptor(TEST_FAMILY2));
         ACCESS_CONTROLLER.preModifyTable(ObserverContextImpl.createAndPrepare(CP_ENV),
-          TEST_TABLE.getTableName(), htd);
+          TEST_TABLE.getTableName(),
+          null,  // not needed by AccessController
+          htd);
         return null;
       }
     }, SUPERUSER, USER_ADMIN, USER_RW, USER_RO, USER_OWNER, USER_CREATE, USER_QUAL, USER_NONE);
@@ -700,6 +706,7 @@ public class TestWithDisabledAuthorization extends SecureTestUtil {
       public Object run() throws Exception {
         NamespaceDescriptor ns = NamespaceDescriptor.create("test").build();
         ACCESS_CONTROLLER.preModifyNamespace(ObserverContextImpl.createAndPrepare(CP_ENV),
+          null,  // not needed by AccessController
           ns);
         return null;
       }
@@ -873,7 +880,7 @@ public class TestWithDisabledAuthorization extends SecureTestUtil {
       public Object run() throws Exception {
         ACCESS_CONTROLLER.preCheckAndPut(ObserverContextImpl.createAndPrepare(RCP_ENV),
           TEST_ROW, TEST_FAMILY, TEST_Q1, CompareOperator.EQUAL,
-          new BinaryComparator("foo".getBytes()), new Put(TEST_ROW), true);
+          new BinaryComparator(Bytes.toBytes("foo")), new Put(TEST_ROW), true);
         return null;
       }
     }, SUPERUSER, USER_ADMIN, USER_RW, USER_RO, USER_OWNER, USER_CREATE, USER_QUAL, USER_NONE);
@@ -884,7 +891,7 @@ public class TestWithDisabledAuthorization extends SecureTestUtil {
       public Object run() throws Exception {
         ACCESS_CONTROLLER.preCheckAndDelete(ObserverContextImpl.createAndPrepare(RCP_ENV),
           TEST_ROW, TEST_FAMILY, TEST_Q1, CompareOperator.EQUAL,
-          new BinaryComparator("foo".getBytes()), new Delete(TEST_ROW), true);
+          new BinaryComparator(Bytes.toBytes("foo")), new Delete(TEST_ROW), true);
         return null;
       }
     }, SUPERUSER, USER_ADMIN, USER_RW, USER_RO, USER_OWNER, USER_CREATE, USER_QUAL, USER_NONE);

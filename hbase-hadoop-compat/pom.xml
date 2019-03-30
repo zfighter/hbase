@@ -37,13 +37,6 @@
 
     <build>
       <plugins>
-        <plugin>
-          <groupId>org.apache.maven.plugins</groupId>
-          <artifactId>maven-site-plugin</artifactId>
-          <configuration>
-            <skip>true</skip>
-          </configuration>
-        </plugin>
       <plugin>
         <!--Make it so assembly:single does nothing in here-->
         <artifactId>maven-assembly-plugin</artifactId>
@@ -62,6 +55,10 @@
           <configuration>
             <failOnViolation>true</failOnViolation>
           </configuration>
+        </plugin>
+        <plugin>
+          <groupId>net.revelc.code</groupId>
+          <artifactId>warbucks-maven-plugin</artifactId>
         </plugin>
       </plugins>
       <pluginManagement>

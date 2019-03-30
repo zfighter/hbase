@@ -29,17 +29,6 @@
     <artifactId>hbase-testing-util</artifactId>
     <name>Apache HBase - Testing Util</name>
     <description>HBase Testing Utilities.</description>
-    <build>
-      <plugins>
-        <plugin>
-          <groupId>org.apache.maven.plugins</groupId>
-          <artifactId>maven-site-plugin</artifactId>
-          <configuration>
-            <skip>true</skip>
-          </configuration>
-        </plugin>
-      </plugins>
-    </build>
     <dependencies>
         <!-- Intra-project dependencies -->
         <dependency>
@@ -151,12 +140,6 @@
                     <groupId>org.apache.hadoop</groupId>
                     <artifactId>hadoop-common</artifactId>
                     <scope>compile</scope>
-                    <exclusions>
-                        <exclusion>
-                            <groupId>org.apache.htrace</groupId>
-                            <artifactId>htrace-core</artifactId>
-                        </exclusion>
-                    </exclusions>
                 </dependency>
                 <dependency>
                     <groupId>org.apache.hadoop</groupId>
@@ -213,10 +196,6 @@
                     <scope>compile</scope>
                     <exclusions>
                       <exclusion>
-                        <groupId>org.apache.htrace</groupId>
-                        <artifactId>htrace-core</artifactId>
-                      </exclusion>
-                      <exclusion>
                         <groupId>com.google.guava</groupId>
                         <artifactId>guava</artifactId>
                       </exclusion>
@@ -253,12 +232,6 @@
                     <groupId>org.apache.hadoop</groupId>
                     <artifactId>hadoop-minicluster</artifactId>
                     <scope>compile</scope>
-                    <exclusions>
-                        <exclusion>
-                            <groupId>org.apache.htrace</groupId>
-                            <artifactId>htrace-core</artifactId>
-                        </exclusion>
-                    </exclusions>
                 </dependency>
                 <dependency>
                     <groupId>org.apache.hadoop</groupId>

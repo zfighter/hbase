@@ -24,16 +24,22 @@ import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.SortedSet;
+
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseZKTestingUtility;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.MD5Hash;
 import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.zookeeper.KeeperException;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -41,6 +47,8 @@ import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
 @Category({ ReplicationTests.class, MediumTests.class })
 public class TestZKReplicationQueueStorage {
@@ -65,7 +73,7 @@ public class TestZKReplicationQueueStorage {
   }
 
   @After
-  public void tearDownAfterTest() throws ReplicationException {
+  public void tearDownAfterTest() throws ReplicationException, KeeperException, IOException {
     for (ServerName serverName : STORAGE.getListOfReplicators()) {
       for (String queue : STORAGE.getAllQueues(serverName)) {
         STORAGE.removeQueue(serverName, queue);
@@ -127,7 +135,7 @@ public class TestZKReplicationQueueStorage {
     List<String> wals1 = STORAGE.getWALsInQueue(serverName1, queue1);
     List<String> wals2 = STORAGE.getWALsInQueue(serverName1, queue2);
     assertEquals(10, wals1.size());
-    assertEquals(10, wals1.size());
+    assertEquals(10, wals2.size());
     for (int i = 0; i < 10; i++) {
       assertThat(wals1, hasItems(getFileName("file1", i)));
       assertThat(wals2, hasItems(getFileName("file2", i)));
@@ -136,8 +144,10 @@ public class TestZKReplicationQueueStorage {
     for (int i = 0; i < 10; i++) {
       assertEquals(0, STORAGE.getWALPosition(serverName1, queue1, getFileName("file1", i)));
       assertEquals(0, STORAGE.getWALPosition(serverName1, queue2, getFileName("file2", i)));
-      STORAGE.setWALPosition(serverName1, queue1, getFileName("file1", i), (i + 1) * 100);
-      STORAGE.setWALPosition(serverName1, queue2, getFileName("file2", i), (i + 1) * 100 + 10);
+      STORAGE.setWALPosition(serverName1, queue1, getFileName("file1", i), (i + 1) * 100,
+        Collections.emptyMap());
+      STORAGE.setWALPosition(serverName1, queue2, getFileName("file2", i), (i + 1) * 100 + 10,
+        Collections.emptyMap());
     }
 
     for (int i = 0; i < 10; i++) {
@@ -211,10 +221,11 @@ public class TestZKReplicationQueueStorage {
     assertEquals(1, v1 - v0);
   }
 
-  private ZKReplicationQueueStorage createWithUnstableCversion() throws IOException {
+  private ZKReplicationQueueStorage createWithUnstableVersion() throws IOException {
     return new ZKReplicationQueueStorage(UTIL.getZooKeeperWatcher(), UTIL.getConfiguration()) {
 
       private int called = 0;
+      private int getLastSeqIdOpIndex = 0;
 
       @Override
       protected int getQueuesZNodeCversion() throws KeeperException {
@@ -223,12 +234,26 @@ public class TestZKReplicationQueueStorage {
         }
         return called;
       }
+
+      @Override
+      protected Pair<Long, Integer> getLastSequenceIdWithVersion(String encodedRegionName,
+          String peerId) throws KeeperException {
+        Pair<Long, Integer> oldPair = super.getLastSequenceIdWithVersion(encodedRegionName, peerId);
+        if (getLastSeqIdOpIndex < 100) {
+          // Let the ZNode version increase.
+          String path = getSerialReplicationRegionPeerNode(encodedRegionName, peerId);
+          ZKUtil.createWithParents(zookeeper, path);
+          ZKUtil.setData(zookeeper, path, ZKUtil.positionToByteArray(100L));
+        }
+        getLastSeqIdOpIndex++;
+        return oldPair;
+      }
     };
   }
 
   @Test
   public void testGetAllWALsCversionChange() throws IOException, ReplicationException {
-    ZKReplicationQueueStorage storage = createWithUnstableCversion();
+    ZKReplicationQueueStorage storage = createWithUnstableVersion();
     storage.addWAL(getServerName(0), "1", "file");
     // This should return eventually when cversion stabilizes
     Set<String> allWals = storage.getAllWALs();
@@ -239,7 +264,7 @@ public class TestZKReplicationQueueStorage {
   // For HBASE-14621
   @Test
   public void testGetAllHFileRefsCversionChange() throws IOException, ReplicationException {
-    ZKReplicationQueueStorage storage = createWithUnstableCversion();
+    ZKReplicationQueueStorage storage = createWithUnstableVersion();
     storage.addPeerToHFileRefs("1");
     Path p = new Path("/test");
     storage.addHFileRefs("1", Arrays.asList(Pair.newPair(p, p)));
@@ -247,5 +272,60 @@ public class TestZKReplicationQueueStorage {
     Set<String> allHFileRefs = storage.getAllHFileRefs();
     assertEquals(1, allHFileRefs.size());
     assertThat(allHFileRefs, hasItems("test"));
+  }
+
+  // For HBASE-20138
+  @Test
+  public void testSetWALPositionBadVersion() throws IOException, ReplicationException {
+    ZKReplicationQueueStorage storage = createWithUnstableVersion();
+    ServerName serverName1 = ServerName.valueOf("128.0.0.1", 8000, 10000);
+    assertTrue(storage.getAllQueues(serverName1).isEmpty());
+    String queue1 = "1";
+    String fileName = getFileName("file1", 0);
+    String encodedRegionName = "31d9792f4435b99d9fb1016f6fbc8dc6";
+    storage.addWAL(serverName1, queue1, fileName);
+
+    List<String> wals1 = storage.getWALsInQueue(serverName1, queue1);
+    assertEquals(1, wals1.size());
+
+    assertEquals(0, storage.getWALPosition(serverName1, queue1, fileName));
+    // This should return eventually when data version stabilizes
+    storage.setWALPosition(serverName1, queue1, fileName, 100,
+      ImmutableMap.of(encodedRegionName, 120L));
+
+    assertEquals(100, storage.getWALPosition(serverName1, queue1, fileName));
+    assertEquals(120L, storage.getLastSequenceId(encodedRegionName, queue1));
+  }
+
+  @Test
+  public void testRegionsZNodeLayout() throws Exception {
+    String peerId = "1";
+    String encodedRegionName = "31d9792f4435b99d9fb1016f6fbc8dc7";
+    String expectedPath = "/hbase/replication/regions/31/d9/792f4435b99d9fb1016f6fbc8dc7-" + peerId;
+    String path = STORAGE.getSerialReplicationRegionPeerNode(encodedRegionName, peerId);
+    assertEquals(expectedPath, path);
+  }
+
+  @Test
+  public void testRemoveAllLastPushedSeqIdsForPeer() throws Exception {
+    String peerId = "1";
+    String peerIdToDelete = "2";
+    for (int i = 0; i < 100; i++) {
+      String encodedRegionName = MD5Hash.getMD5AsHex(Bytes.toBytes(i));
+      STORAGE.setLastSequenceIds(peerId, ImmutableMap.of(encodedRegionName, (long) i));
+      STORAGE.setLastSequenceIds(peerIdToDelete, ImmutableMap.of(encodedRegionName, (long) i));
+    }
+    for (int i = 0; i < 100; i++) {
+      String encodedRegionName = MD5Hash.getMD5AsHex(Bytes.toBytes(i));
+      assertEquals(i, STORAGE.getLastSequenceId(encodedRegionName, peerId));
+      assertEquals(i, STORAGE.getLastSequenceId(encodedRegionName, peerIdToDelete));
+    }
+    STORAGE.removeLastSequenceIds(peerIdToDelete);
+    for (int i = 0; i < 100; i++) {
+      String encodedRegionName = MD5Hash.getMD5AsHex(Bytes.toBytes(i));
+      assertEquals(i, STORAGE.getLastSequenceId(encodedRegionName, peerId));
+      assertEquals(HConstants.NO_SEQNUM,
+        STORAGE.getLastSequenceId(encodedRegionName, peerIdToDelete));
+    }
   }
 }

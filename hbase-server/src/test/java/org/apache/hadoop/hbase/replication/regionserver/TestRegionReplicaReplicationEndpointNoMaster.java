@@ -57,6 +57,7 @@ import org.apache.hadoop.hbase.replication.ReplicationEndpoint.ReplicateContext;
 import org.apache.hadoop.hbase.replication.regionserver.RegionReplicaReplicationEndpoint.RegionReplicaReplayCallable;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ServerRegionReplicaUtil;
 import org.apache.hadoop.hbase.wal.WAL.Entry;
 import org.apache.hadoop.hbase.wal.WALEdit;
@@ -90,7 +91,7 @@ public class TestRegionReplicaReplicationEndpointNoMaster {
   private static TableName tableName = TableName.valueOf(
     TestRegionReplicaReplicationEndpointNoMaster.class.getSimpleName());
   private static Table table;
-  private static final byte[] row = "TestRegionReplicaReplicator".getBytes();
+  private static final byte[] row = Bytes.toBytes("TestRegionReplicaReplicator");
 
   private static HRegionServer rs0;
   private static HRegionServer rs1;
@@ -167,14 +168,14 @@ public class TestRegionReplicaReplicationEndpointNoMaster {
     public void postWALWrite(ObserverContext<? extends WALCoprocessorEnvironment> ctx,
                              RegionInfo info, WALKey logKey, WALEdit logEdit) throws IOException {
       // only keep primary region's edits
-      if (logKey.getTablename().equals(tableName) && info.getReplicaId() == 0) {
+      if (logKey.getTableName().equals(tableName) && info.getReplicaId() == 0) {
         // Presume type is a WALKeyImpl
         entries.add(new Entry((WALKeyImpl)logKey, logEdit));
       }
     }
   }
 
-  @Test (timeout = 240000)
+  @Test
   public void testReplayCallable() throws Exception {
     // tests replaying the edits to a secondary region replica using the Callable directly
     openRegion(HTU, rs0, hriSecondary);
@@ -214,7 +215,7 @@ public class TestRegionReplicaReplicationEndpointNoMaster {
     }
   }
 
-  @Test (timeout = 240000)
+  @Test
   public void testReplayCallableWithRegionMove() throws Exception {
     // tests replaying the edits to a secondary region replica using the Callable directly while
     // the region is moved to another location.It tests handling of RME.
@@ -249,7 +250,7 @@ public class TestRegionReplicaReplicationEndpointNoMaster {
     connection.close();
   }
 
-  @Test (timeout = 240000)
+  @Test
   public void testRegionReplicaReplicationEndpointReplicate() throws Exception {
     // tests replaying the edits to a secondary region replica using the RRRE.replicate()
     openRegion(HTU, rs0, hriSecondary);

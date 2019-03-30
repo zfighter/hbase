@@ -22,14 +22,10 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.master.procedure.PeerProcedureInterface;
 import org.apache.hadoop.hbase.master.procedure.RSProcedureDispatcher.ServerOperation;
-import org.apache.hadoop.hbase.procedure2.Procedure;
-import org.apache.hadoop.hbase.procedure2.ProcedureEvent;
+import org.apache.hadoop.hbase.master.procedure.ServerRemoteProcedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
-import org.apache.hadoop.hbase.procedure2.ProcedureSuspendedException;
-import org.apache.hadoop.hbase.procedure2.ProcedureYieldException;
 import org.apache.hadoop.hbase.procedure2.RemoteProcedureDispatcher.RemoteOperation;
 import org.apache.hadoop.hbase.procedure2.RemoteProcedureDispatcher.RemoteProcedure;
-import org.apache.hadoop.hbase.procedure2.RemoteProcedureException;
 import org.apache.hadoop.hbase.replication.regionserver.RefreshPeerCallable;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -41,7 +37,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.R
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.RefreshPeerStateData;
 
 @InterfaceAudience.Private
-public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
+public class RefreshPeerProcedure extends ServerRemoteProcedure
     implements PeerProcedureInterface, RemoteProcedure<MasterProcedureEnv, ServerName> {
 
   private static final Logger LOG = LoggerFactory.getLogger(RefreshPeerProcedure.class);
@@ -50,21 +46,21 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
 
   private PeerOperationType type;
 
-  private ServerName targetServer;
-
-  private boolean dispatched;
-
-  private ProcedureEvent<?> event;
-
-  private boolean succ;
+  private int stage;
 
   public RefreshPeerProcedure() {
   }
 
   public RefreshPeerProcedure(String peerId, PeerOperationType type, ServerName targetServer) {
+    this(peerId, type, targetServer, 0);
+  }
+
+  public RefreshPeerProcedure(String peerId, PeerOperationType type, ServerName targetServer,
+      int stage) {
     this.peerId = peerId;
     this.type = type;
     this.targetServer = targetServer;
+    this.stage = stage;
   }
 
   @Override
@@ -89,6 +85,8 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
         return PeerModificationType.DISABLE_PEER;
       case UPDATE_CONFIG:
         return PeerModificationType.UPDATE_PEER_CONFIG;
+      case TRANSIT_SYNC_REPLICATION_STATE:
+        return PeerModificationType.TRANSIT_SYNC_REPLICATION_STATE;
       default:
         throw new IllegalArgumentException("Unknown type: " + type);
     }
@@ -106,6 +104,8 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
         return PeerOperationType.DISABLE;
       case UPDATE_PEER_CONFIG:
         return PeerOperationType.UPDATE_CONFIG;
+      case TRANSIT_SYNC_REPLICATION_STATE:
+        return PeerOperationType.TRANSIT_SYNC_REPLICATION_STATE;
       default:
         throw new IllegalArgumentException("Unknown type: " + type);
     }
@@ -116,15 +116,12 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
     assert targetServer.equals(remote);
     return new ServerOperation(this, getProcId(), RefreshPeerCallable.class,
         RefreshPeerParameter.newBuilder().setPeerId(peerId).setType(toPeerModificationType(type))
-            .setTargetServer(ProtobufUtil.toServerName(remote)).build().toByteArray());
+            .setTargetServer(ProtobufUtil.toServerName(remote)).setStage(stage).build()
+            .toByteArray());
   }
 
-  private void complete(MasterProcedureEnv env, Throwable error) {
-    if (event == null) {
-      LOG.warn("procedure event for {} is null, maybe the procedure is created when recovery",
-        getProcId());
-      return;
-    }
+  @Override
+  protected void complete(MasterProcedureEnv env, Throwable error) {
     if (error != null) {
       LOG.warn("Refresh peer {} for {} on {} failed", peerId, type, targetServer, error);
       this.succ = false;
@@ -132,48 +129,6 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
       LOG.info("Refresh peer {} for {} on {} suceeded", peerId, type, targetServer);
       this.succ = true;
     }
-
-    event.wake(env.getProcedureScheduler());
-    event = null;
-  }
-
-  @Override
-  public synchronized void remoteCallFailed(MasterProcedureEnv env, ServerName remote,
-      IOException exception) {
-    complete(env, exception);
-  }
-
-  @Override
-  public synchronized void remoteOperationCompleted(MasterProcedureEnv env) {
-    complete(env, null);
-  }
-
-  @Override
-  public synchronized void remoteOperationFailed(MasterProcedureEnv env,
-      RemoteProcedureException error) {
-    complete(env, error);
-  }
-
-  @Override
-  protected synchronized Procedure<MasterProcedureEnv>[] execute(MasterProcedureEnv env)
-      throws ProcedureYieldException, ProcedureSuspendedException, InterruptedException {
-    if (dispatched) {
-      if (succ) {
-        return null;
-      }
-      // retry
-      dispatched = false;
-    }
-    if (!env.getRemoteDispatcher().addOperationToNode(targetServer, this)) {
-      LOG.info("Can not add remote operation for refreshing peer {} for {} to {}, " +
-        "this usually because the server is already dead, " +
-        "give up and mark the procedure as complete", peerId, type, targetServer);
-      return null;
-    }
-    dispatched = true;
-    event = new ProcedureEvent<>(this);
-    event.suspendIfNotReady(this);
-    throw new ProcedureSuspendedException();
   }
 
   @Override
@@ -188,10 +143,15 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
   }
 
   @Override
+  protected boolean waitInitialized(MasterProcedureEnv env) {
+    return env.waitInitialized(this);
+  }
+
+  @Override
   protected void serializeStateData(ProcedureStateSerializer serializer) throws IOException {
     serializer.serialize(
       RefreshPeerStateData.newBuilder().setPeerId(peerId).setType(toPeerModificationType(type))
-          .setTargetServer(ProtobufUtil.toServerName(targetServer)).build());
+          .setTargetServer(ProtobufUtil.toServerName(targetServer)).setStage(stage).build());
   }
 
   @Override
@@ -200,5 +160,6 @@ public class RefreshPeerProcedure extends Procedure<MasterProcedureEnv>
     peerId = data.getPeerId();
     type = toPeerOperationType(data.getType());
     targetServer = ProtobufUtil.toServerName(data.getTargetServer());
+    stage = data.getStage();
   }
 }

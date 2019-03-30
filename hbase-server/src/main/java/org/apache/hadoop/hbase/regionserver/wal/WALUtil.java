@@ -20,17 +20,25 @@
 package org.apache.hadoop.hbase.regionserver.wal;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.NavigableMap;
-
+import java.util.function.Function;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.wal.WALEdit;
 import org.apache.hadoop.hbase.wal.WALKeyImpl;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.protobuf.TextFormat;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.CompactionDescriptor;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.FlushDescriptor;
@@ -156,9 +164,55 @@ public class WALUtil {
       // Call complete only here because these are markers only. They are not for clients to read.
       mvcc.complete(walKey.getWriteEntry());
     } catch (IOException ioe) {
-      mvcc.complete(walKey.getWriteEntry());
+      if (walKey.getWriteEntry() != null) {
+        mvcc.complete(walKey.getWriteEntry());
+      }
       throw ioe;
     }
     return walKey;
+  }
+
+  /**
+   * Blocksize returned here is 2x the default HDFS blocksize unless explicitly set in
+   * Configuration. Works in tandem with hbase.regionserver.logroll.multiplier. See comment in
+   * AbstractFSWAL in Constructor where we set blocksize and logrollsize for why.
+   * @return Blocksize to use writing WALs.
+   */
+  public static long getWALBlockSize(Configuration conf, FileSystem fs, Path dir)
+      throws IOException {
+    return getWALBlockSize(conf, fs, dir, false);
+  }
+
+  /**
+   * Public because of FSHLog. Should be package-private
+   * @param isRecoverEdits the created writer is for recovered edits or WAL.
+   *                       For recovered edits, it is true and for WAL it is false.
+   */
+  public static long getWALBlockSize(Configuration conf, FileSystem fs, Path dir,
+      boolean isRecoverEdits) throws IOException {
+    long defaultBlockSize = CommonFSUtils.getDefaultBlockSize(fs, dir) * 2;
+    if (isRecoverEdits) {
+      return conf.getLong("hbase.regionserver.recoverededits.blocksize", defaultBlockSize);
+    }
+    return conf.getLong("hbase.regionserver.hlog.blocksize", defaultBlockSize);
+  }
+
+  public static void filterCells(WALEdit edit, Function<Cell, Cell> mapper) {
+    ArrayList<Cell> cells = edit.getCells();
+    int size = cells.size();
+    int newSize = 0;
+    for (int i = 0; i < size; i++) {
+      Cell cell = mapper.apply(cells.get(i));
+      if (cell != null) {
+        cells.set(newSize, cell);
+        newSize++;
+      }
+    }
+    for (int i = size - 1; i >= newSize; i--) {
+      cells.remove(i);
+    }
+    if (newSize < size / 2) {
+      cells.trimToSize();
+    }
   }
 }

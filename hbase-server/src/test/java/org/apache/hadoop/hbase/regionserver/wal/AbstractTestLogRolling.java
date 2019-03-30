@@ -28,6 +28,7 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
@@ -119,7 +120,8 @@ public abstract class AbstractTestLogRolling  {
 
   @Before
   public void setUp() throws Exception {
-    TEST_UTIL.startMiniCluster(1, 1, 2);
+    // Use 2 DataNodes and default values for other StartMiniCluster options.
+    TEST_UTIL.startMiniCluster(StartMiniClusterOption.builder().numDataNodes(2).build());
 
     cluster = TEST_UTIL.getHBaseCluster();
     dfsCluster = TEST_UTIL.getDFSCluster();
@@ -159,11 +161,11 @@ public abstract class AbstractTestLogRolling  {
   /**
    * Tests that log rolling doesn't hang when no data is written.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testLogRollOnNothingWritten() throws Exception {
     final Configuration conf = TEST_UTIL.getConfiguration();
     final WALFactory wals =
-        new WALFactory(conf, null, ServerName.valueOf("test.com", 8080, 1).toString());
+      new WALFactory(conf, ServerName.valueOf("test.com", 8080, 1).toString());
     final WAL newLog = wals.getWAL(null);
     try {
       // Now roll the log before we write anything.
@@ -183,8 +185,6 @@ public abstract class AbstractTestLogRolling  {
 
   /**
    * Tests that logs are deleted
-   * @throws IOException
-   * @throws org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException
    */
   @Test
   public void testLogRolling() throws Exception {
@@ -254,9 +254,6 @@ public abstract class AbstractTestLogRolling  {
       final WAL log = server.getWAL(region.getRegionInfo());
       Store s = region.getStore(HConstants.CATALOG_FAMILY);
 
-      //have to flush namespace to ensure it doesn't affect wall tests
-      admin.flush(TableName.NAMESPACE_TABLE_NAME);
-
       // Put some stuff into table, to make sure we have some files to compact.
       for (int i = 1; i <= 2; ++i) {
         doPut(table, i);
@@ -307,7 +304,7 @@ public abstract class AbstractTestLogRolling  {
   protected Table createTestTable(String tableName) throws IOException {
     // Create the test table and open it
     TableDescriptor desc = TableDescriptorBuilder.newBuilder(TableName.valueOf(getName()))
-        .addColumnFamily(ColumnFamilyDescriptorBuilder.of(HConstants.CATALOG_FAMILY)).build();
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(HConstants.CATALOG_FAMILY)).build();
     admin.createTable(desc);
     return TEST_UTIL.getConnection().getTable(desc.getTableName());
   }

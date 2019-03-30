@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.replication;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
 
@@ -62,9 +63,41 @@ public interface ReplicationQueueStorage {
    * @param serverName the name of the regionserver
    * @param queueId a String that identifies the queue
    * @param fileName name of the WAL
-   * @param position the current position in the file
+   * @param position the current position in the file. Will ignore if less than or equal to 0.
+   * @param lastSeqIds map with {encodedRegionName, sequenceId} pairs for serial replication.
    */
-  void setWALPosition(ServerName serverName, String queueId, String fileName, long position)
+  void setWALPosition(ServerName serverName, String queueId, String fileName, long position,
+      Map<String, Long> lastSeqIds) throws ReplicationException;
+
+  /**
+   * Read the max sequence id of the specific region for a given peer. For serial replication, we
+   * need the max sequenced id to decide whether we can push the next entries.
+   * @param encodedRegionName the encoded region name
+   * @param peerId peer id
+   * @return the max sequence id of the specific region for a given peer.
+   */
+  long getLastSequenceId(String encodedRegionName, String peerId) throws ReplicationException;
+
+  /**
+   * Set the max sequence id of a bunch of regions for a given peer. Will be called when setting up
+   * a serial replication peer.
+   * @param peerId peer id
+   * @param lastSeqIds map with {encodedRegionName, sequenceId} pairs for serial replication.
+   */
+  void setLastSequenceIds(String peerId, Map<String, Long> lastSeqIds) throws ReplicationException;
+
+  /**
+   * Remove all the max sequence id record for the given peer.
+   * @param peerId peer id
+   */
+  void removeLastSequenceIds(String peerId) throws ReplicationException;
+
+  /**
+   * Remove the max sequence id record for the given peer and regions.
+   * @param peerId peer id
+   * @param encodedRegionNames the encoded region names
+   */
+  void removeLastSequenceIds(String peerId, List<String> encodedRegionNames)
       throws ReplicationException;
 
   /**
@@ -169,4 +202,11 @@ public interface ReplicationQueueStorage {
    * created hfile references during the call may not be included.
    */
   Set<String> getAllHFileRefs() throws ReplicationException;
+
+  /**
+   * Get full znode name for given region server
+   * @param serverName the name of the region server
+   * @return full znode name
+   */
+  String getRsNode(ServerName serverName);
 }

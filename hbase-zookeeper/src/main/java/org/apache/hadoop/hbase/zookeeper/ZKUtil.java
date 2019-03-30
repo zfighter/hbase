@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -108,20 +109,20 @@ public final class ZKUtil {
    * @throws IOException if unable to connect to zk or config problem
    */
   public static RecoverableZooKeeper connect(Configuration conf, Watcher watcher)
-  throws IOException {
+    throws IOException {
     String ensemble = ZKConfig.getZKQuorumServersString(conf);
     return connect(conf, ensemble, watcher);
   }
 
   public static RecoverableZooKeeper connect(Configuration conf, String ensemble,
       Watcher watcher)
-  throws IOException {
+    throws IOException {
     return connect(conf, ensemble, watcher, null);
   }
 
   public static RecoverableZooKeeper connect(Configuration conf, String ensemble,
       Watcher watcher, final String identifier)
-  throws IOException {
+    throws IOException {
     if(ensemble == null) {
       throw new IOException("Unable to determine ZooKeeper ensemble");
     }
@@ -136,8 +137,9 @@ public final class ZKUtil {
     int maxSleepTime = conf.getInt("zookeeper.recovery.retry.maxsleeptime", 60000);
     zkDumpConnectionTimeOut = conf.getInt("zookeeper.dump.connection.timeout",
         1000);
+    int multiMaxSize = conf.getInt("zookeeper.multi.max.size", 1024*1024);
     return new RecoverableZooKeeper(ensemble, timeout, watcher,
-        retry, retryIntervalMillis, maxSleepTime, identifier);
+        retry, retryIntervalMillis, maxSleepTime, identifier, multiMaxSize);
   }
 
   /**
@@ -347,7 +349,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static boolean watchAndCheckExists(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     try {
       Stat s = zkw.getRecoverableZooKeeper().exists(znode, zkw);
       boolean exists = s != null ? true : false;
@@ -401,7 +403,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static int checkExists(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     try {
       Stat s = zkw.getRecoverableZooKeeper().exists(znode, null);
       return s != null ? s.getVersion() : -1;
@@ -438,7 +440,7 @@ public final class ZKUtil {
    */
   public static List<String> listChildrenAndWatchForNewChildren(
           ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     try {
       List<String> children = zkw.getRecoverableZooKeeper().getChildren(znode, zkw);
       return children;
@@ -493,7 +495,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static List<String> listChildrenNoWatch(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     List<String> children = null;
     try {
       // List the children without watching
@@ -550,7 +552,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static boolean nodeHasChildren(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     try {
       return !zkw.getRecoverableZooKeeper().getChildren(znode, null).isEmpty();
     } catch(KeeperException.NoNodeException ke) {
@@ -582,7 +584,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static int getNumberOfChildren(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     try {
       Stat stat = zkw.getRecoverableZooKeeper().exists(znode, null);
       return stat == null ? 0 : stat.getNumChildren();
@@ -633,7 +635,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static byte [] getDataAndWatch(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     return getDataInternal(zkw, znode, null, true);
   }
 
@@ -695,7 +697,7 @@ public final class ZKUtil {
    */
   public static byte [] getDataNoWatch(ZKWatcher zkw, String znode,
                                        Stat stat)
-  throws KeeperException {
+    throws KeeperException {
     try {
       byte [] data = zkw.getRecoverableZooKeeper().getData(znode, null, stat);
       logRetrievedMsg(zkw, znode, data, false);
@@ -801,7 +803,7 @@ public final class ZKUtil {
    */
   public static boolean setData(ZKWatcher zkw, String znode,
                                 byte [] data, int expectedVersion)
-  throws KeeperException, KeeperException.NoNodeException {
+    throws KeeperException, KeeperException.NoNodeException {
     try {
       return zkw.getRecoverableZooKeeper().setData(znode, data, expectedVersion) != null;
     } catch (InterruptedException e) {
@@ -845,12 +847,12 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static void setData(ZKWatcher zkw, String znode, byte [] data)
-  throws KeeperException, KeeperException.NoNodeException {
+    throws KeeperException, KeeperException.NoNodeException {
     setData(zkw, (SetData)ZKUtilOp.setData(znode, data));
   }
 
   private static void setData(ZKWatcher zkw, SetData setData)
-  throws KeeperException, KeeperException.NoNodeException {
+    throws KeeperException, KeeperException.NoNodeException {
     SetDataRequest sd = (SetDataRequest)toZooKeeperOp(zkw, setData).toRequestRecord();
     setData(zkw, sd.getPath(), sd.getData(), sd.getVersion());
   }
@@ -891,7 +893,7 @@ public final class ZKUtil {
 
   public static ArrayList<ACL> createACL(ZKWatcher zkw, String node,
                                          boolean isSecureZooKeeper) {
-    if (!node.startsWith(zkw.znodePaths.baseZNode)) {
+    if (!node.startsWith(zkw.getZNodePaths().baseZNode)) {
       return Ids.OPEN_ACL_UNSAFE;
     }
     if (isSecureZooKeeper) {
@@ -923,7 +925,7 @@ public final class ZKUtil {
       }
       // Certain znodes are accessed directly by the client,
       // so they must be readable by non-authenticated clients
-      if (zkw.znodePaths.isClientReadable(node)) {
+      if (zkw.getZNodePaths().isClientReadable(node)) {
         acls.addAll(Ids.CREATOR_ALL_ACL);
         acls.addAll(Ids.READ_ACL_UNSAFE);
       } else {
@@ -959,7 +961,7 @@ public final class ZKUtil {
    */
   public static boolean createEphemeralNodeAndWatch(ZKWatcher zkw,
       String znode, byte [] data)
-  throws KeeperException {
+    throws KeeperException {
     boolean ret = true;
     try {
       zkw.getRecoverableZooKeeper().create(znode, data, createACL(zkw, znode),
@@ -999,7 +1001,7 @@ public final class ZKUtil {
    */
   public static boolean createNodeIfNotExistsAndWatch(
           ZKWatcher zkw, String znode, byte [] data)
-  throws KeeperException {
+    throws KeeperException {
     boolean ret = true;
     try {
       zkw.getRecoverableZooKeeper().create(znode, data, createACL(zkw, znode),
@@ -1066,7 +1068,7 @@ public final class ZKUtil {
    */
   public static int createAndWatch(ZKWatcher zkw,
       String znode, byte [] data)
-  throws KeeperException, KeeperException.NodeExistsException {
+    throws KeeperException, KeeperException.NodeExistsException {
     try {
       zkw.getRecoverableZooKeeper().create(znode, data, createACL(zkw, znode),
           CreateMode.PERSISTENT);
@@ -1132,13 +1134,13 @@ public final class ZKUtil {
    */
   public static void createAndFailSilent(ZKWatcher zkw,
       String znode, byte[] data)
-  throws KeeperException {
+    throws KeeperException {
     createAndFailSilent(zkw,
         (CreateAndFailSilent)ZKUtilOp.createAndFailSilent(znode, data));
   }
 
   private static void createAndFailSilent(ZKWatcher zkw, CreateAndFailSilent cafs)
-  throws KeeperException {
+    throws KeeperException {
     CreateRequest create = (CreateRequest)toZooKeeperOp(zkw, cafs).toRequestRecord();
     String znode = create.getPath();
     try {
@@ -1173,7 +1175,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static void createWithParents(ZKWatcher zkw, String znode)
-  throws KeeperException {
+    throws KeeperException {
     createWithParents(zkw, znode, new byte[0]);
   }
 
@@ -1191,7 +1193,7 @@ public final class ZKUtil {
    * @throws KeeperException if unexpected zookeeper exception
    */
   public static void createWithParents(ZKWatcher zkw, String znode, byte[] data)
-  throws KeeperException {
+    throws KeeperException {
     try {
       if(znode == null) {
         return;
@@ -1216,7 +1218,7 @@ public final class ZKUtil {
    * Delete the specified node.  Sets no watches.  Throws all exceptions.
    */
   public static void deleteNode(ZKWatcher zkw, String node)
-  throws KeeperException {
+    throws KeeperException {
     deleteNode(zkw, node, -1);
   }
 
@@ -1226,7 +1228,7 @@ public final class ZKUtil {
    */
   public static boolean deleteNode(ZKWatcher zkw, String node,
                                    int version)
-  throws KeeperException {
+    throws KeeperException {
     try {
       zkw.getRecoverableZooKeeper().delete(node, version);
       return true;
@@ -1246,7 +1248,7 @@ public final class ZKUtil {
    * @throws KeeperException if a ZooKeeper operation fails
    */
   public static void deleteNodeFailSilent(ZKWatcher zkw, String node)
-  throws KeeperException {
+    throws KeeperException {
     deleteNodeFailSilent(zkw,
       (DeleteNodeFailSilent)ZKUtilOp.deleteNodeFailSilent(node));
   }
@@ -1272,7 +1274,7 @@ public final class ZKUtil {
    * children.
    */
   public static void deleteNodeRecursively(ZKWatcher zkw, String node)
-  throws KeeperException {
+    throws KeeperException {
     deleteNodeRecursivelyMultiOrSequential(zkw, true, node);
   }
 
@@ -1334,10 +1336,7 @@ public final class ZKUtil {
         ops.add(ZKUtilOp.deleteNodeFailSilent(children.get(i)));
       }
     }
-    // atleast one element should exist
-    if (ops.size() > 0) {
-      multiOrSequential(zkw, ops, runSequentialOnMultiFailure);
-    }
+    submitBatchedMultiOrSequential(zkw, runSequentialOnMultiFailure, ops);
   }
 
   /**
@@ -1393,10 +1392,61 @@ public final class ZKUtil {
         zkw.interruptedException(e);
       }
     }
-    // atleast one element should exist
-    if (ops.size() > 0) {
-      multiOrSequential(zkw, ops, runSequentialOnMultiFailure);
+    submitBatchedMultiOrSequential(zkw, runSequentialOnMultiFailure, ops);
+  }
+
+  /**
+   * Chunks the provided {@code ops} when their approximate size exceeds the the configured limit.
+   * Take caution that this can ONLY be used for operations where atomicity is not important,
+   * e.g. deletions. It must not be used when atomicity of the operations is critical.
+   */
+  static void submitBatchedMultiOrSequential(ZKWatcher zkw, boolean runSequentialOnMultiFailure,
+      List<ZKUtilOp> ops) throws KeeperException {
+    // at least one element should exist
+    if (ops.isEmpty()) {
+      return;
     }
+    final int maxMultiSize = zkw.getRecoverableZooKeeper().getMaxMultiSizeLimit();
+    // Batch up the items to over smashing through jute.maxbuffer with too many Ops.
+    final List<List<ZKUtilOp>> batchedOps = partitionOps(ops, maxMultiSize);
+    // Would use forEach() but have to handle KeeperException
+    for (List<ZKUtilOp> batch : batchedOps) {
+      multiOrSequential(zkw, batch, runSequentialOnMultiFailure);
+    }
+  }
+
+  /**
+   * Partition the list of {@code ops} by size (using {@link #estimateSize(ZKUtilOp)}).
+   */
+  static List<List<ZKUtilOp>> partitionOps(List<ZKUtilOp> ops, int maxPartitionSize) {
+    List<List<ZKUtilOp>> partitionedOps = new ArrayList<>();
+    List<ZKUtilOp> currentPartition = new ArrayList<>();
+    int currentPartitionSize = 0;
+    partitionedOps.add(currentPartition);
+    Iterator<ZKUtilOp> iter = ops.iterator();
+    while (iter.hasNext()) {
+      ZKUtilOp currentOp = iter.next();
+      int currentOpSize = estimateSize(currentOp);
+
+      // Roll a new partition if necessary
+      // If the current partition is empty, put the element in there anyways.
+      // We can roll a new partition if we get another element
+      if (!currentPartition.isEmpty() && currentOpSize + currentPartitionSize > maxPartitionSize) {
+        currentPartition = new ArrayList<>();
+        partitionedOps.add(currentPartition);
+        currentPartitionSize = 0;
+      }
+
+      // Add the current op to the partition
+      currentPartition.add(currentOp);
+      // And record its size
+      currentPartitionSize += currentOpSize;
+    }
+    return partitionedOps;
+  }
+
+  static int estimateSize(ZKUtilOp op) {
+    return Bytes.toBytes(op.getPath()).length;
   }
 
   /**
@@ -1500,8 +1550,15 @@ public final class ZKUtil {
     /**
      * @return a setData ZKUtilOp
      */
-    public static ZKUtilOp setData(String path, byte [] data) {
+    public static ZKUtilOp setData(String path, byte[] data) {
       return new SetData(path, data);
+    }
+
+    /**
+     * @return a setData ZKUtilOp
+     */
+    public static ZKUtilOp setData(String path, byte[] data, int version) {
+      return new SetData(path, data, version);
     }
 
     /**
@@ -1578,15 +1635,26 @@ public final class ZKUtil {
      * ZKUtilOp representing setData in ZooKeeper
      */
     public static final class SetData extends ZKUtilOp {
-      private byte [] data;
+      private byte[] data;
+      private int version = -1;
 
-      private SetData(String path, byte [] data) {
+      private SetData(String path, byte[] data) {
         super(path);
         this.data = data;
       }
 
+      private SetData(String path, byte[] data, int version) {
+        super(path);
+        this.data = data;
+        this.version = version;
+      }
+
       public byte[] getData() {
         return data;
+      }
+
+      public int getVersion() {
+        return version;
       }
 
       @Override
@@ -1599,13 +1667,15 @@ public final class ZKUtil {
         }
 
         SetData op = (SetData) o;
-        return getPath().equals(op.getPath()) && Arrays.equals(data, op.data);
+        return getPath().equals(op.getPath()) && Arrays.equals(data, op.data)
+            && getVersion() == op.getVersion();
       }
 
       @Override
       public int hashCode() {
         int ret = getPath().hashCode();
-        return ret * 31 + Bytes.hashCode(data);
+        ret = ret * 31 + Bytes.hashCode(data);
+        return ret * 31 + Integer.hashCode(version);
       }
     }
   }
@@ -1626,8 +1696,8 @@ public final class ZKUtil {
       DeleteNodeFailSilent dnfs = (DeleteNodeFailSilent)op;
       return Op.delete(dnfs.getPath(), -1);
     } else if (op instanceof SetData) {
-      SetData sd = (SetData)op;
-      return Op.setData(sd.getPath(), sd.getData(), -1);
+      SetData sd = (SetData) op;
+      return Op.setData(sd.getPath(), sd.getData(), sd.getVersion());
     } else {
       throw new UnsupportedOperationException("Unexpected ZKUtilOp type: "
         + op.getClass().getName());
@@ -1715,7 +1785,7 @@ public final class ZKUtil {
   public static String dump(ZKWatcher zkw) {
     StringBuilder sb = new StringBuilder();
     try {
-      sb.append("HBase is rooted at ").append(zkw.znodePaths.baseZNode);
+      sb.append("HBase is rooted at ").append(zkw.getZNodePaths().baseZNode);
       sb.append("\nActive master address: ");
       try {
         sb.append(MasterAddressTracker.getMasterAddress(zkw));
@@ -1723,20 +1793,21 @@ public final class ZKUtil {
         sb.append("<<FAILED LOOKUP: " + e.getMessage() + ">>");
       }
       sb.append("\nBackup master addresses:");
-      for (String child : listChildrenNoWatch(zkw, zkw.znodePaths.backupMasterAddressesZNode)) {
+      for (String child : listChildrenNoWatch(zkw,
+              zkw.getZNodePaths().backupMasterAddressesZNode)) {
         sb.append("\n ").append(child);
       }
       sb.append("\nRegion server holding hbase:meta: "
-        + new MetaTableLocator().getMetaRegionLocation(zkw));
+        + MetaTableLocator.getMetaRegionLocation(zkw));
       Configuration conf = HBaseConfiguration.create();
       int numMetaReplicas = conf.getInt(HConstants.META_REPLICAS_NUM,
                HConstants.DEFAULT_META_REPLICA_NUM);
       for (int i = 1; i < numMetaReplicas; i++) {
         sb.append("\nRegion server holding hbase:meta, replicaId " + i + " "
-                    + new MetaTableLocator().getMetaRegionLocation(zkw, i));
+                    + MetaTableLocator.getMetaRegionLocation(zkw, i));
       }
       sb.append("\nRegion servers:");
-      for (String child : listChildrenNoWatch(zkw, zkw.znodePaths.rsZNode)) {
+      for (String child : listChildrenNoWatch(zkw, zkw.getZNodePaths().rsZNode)) {
         sb.append("\n ").append(child);
       }
       try {
@@ -1779,7 +1850,7 @@ public final class ZKUtil {
    */
   private static void getReplicationZnodesDump(ZKWatcher zkw, StringBuilder sb)
       throws KeeperException {
-    String replicationZnode = zkw.znodePaths.replicationZNode;
+    String replicationZnode = zkw.getZNodePaths().replicationZNode;
 
     if (ZKUtil.checkExists(zkw, replicationZnode) == -1) {
       return;
@@ -1790,11 +1861,11 @@ public final class ZKUtil {
     List<String> children = ZKUtil.listChildrenNoWatch(zkw, replicationZnode);
     for (String child : children) {
       String znode = ZNodePaths.joinZNode(replicationZnode, child);
-      if (znode.equals(zkw.znodePaths.peersZNode)) {
+      if (znode.equals(zkw.getZNodePaths().peersZNode)) {
         appendPeersZnodes(zkw, znode, sb);
-      } else if (znode.equals(zkw.znodePaths.queuesZNode)) {
+      } else if (znode.equals(zkw.getZNodePaths().queuesZNode)) {
         appendRSZnodes(zkw, znode, sb);
-      } else if (znode.equals(zkw.znodePaths.hfileRefsZNode)) {
+      } else if (znode.equals(zkw.getZNodePaths().hfileRefsZNode)) {
         appendHFileRefsZnodes(zkw, znode, sb);
       }
     }
@@ -1924,7 +1995,7 @@ public final class ZKUtil {
    * @throws IOException When the socket communication fails.
    */
   public static String[] getServerStats(String server, int timeout)
-  throws IOException {
+    throws IOException {
     String[] sp = server.split(":");
     if (sp == null || sp.length == 0) {
       return null;
@@ -1932,7 +2003,7 @@ public final class ZKUtil {
 
     String host = sp[0];
     int port = sp.length > 1 ? Integer.parseInt(sp[1])
-        : HConstants.DEFAULT_ZOOKEPER_CLIENT_PORT;
+        : HConstants.DEFAULT_ZOOKEEPER_CLIENT_PORT;
 
     InetSocketAddress sockAddr = new InetSocketAddress(host, port);
     try (Socket socket = new Socket()) {
@@ -1969,9 +2040,9 @@ public final class ZKUtil {
       " byte(s) of data from znode " + znode +
       (watcherSet? " and set watcher; ": "; data=") +
       (data == null? "null": data.length == 0? "empty": (
-          znode.startsWith(zkw.znodePaths.metaZNodePrefix)?
+          znode.startsWith(zkw.getZNodePaths().metaZNodePrefix)?
             getServerNameOrEmptyString(data):
-          znode.startsWith(zkw.znodePaths.backupMasterAddressesZNode)?
+          znode.startsWith(zkw.getZNodePaths().backupMasterAddressesZNode)?
             getServerNameOrEmptyString(data):
           StringUtils.abbreviate(Bytes.toStringBinary(data), 32)))));
   }

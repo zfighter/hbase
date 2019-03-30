@@ -57,7 +57,23 @@ public abstract class ProcedurePrepareLatch {
     return hasProcedureSupport(major, minor) ? noopLatch : new CompatibilityLatch();
   }
 
+  /**
+   * Creates a latch which blocks.
+   */
+  public static ProcedurePrepareLatch createBlockingLatch() {
+    return new CompatibilityLatch();
+  }
+
+  /**
+   * Returns the singleton latch which does nothing.
+   */
+  public static ProcedurePrepareLatch getNoopLatch() {
+    return noopLatch;
+  }
+
   private static boolean hasProcedureSupport(int major, int minor) {
+    // Note: this won't work if the shortcut similar to the one in HRegionServer is used
+    //       without the corresponding version handling.
     return VersionInfoUtil.currentClientHasMinimumVersion(major, minor);
   }
 
@@ -85,7 +101,7 @@ public abstract class ProcedurePrepareLatch {
     @Override
     protected void countDown(final Procedure proc) {
       if (proc.hasException()) {
-        exception = proc.getException().unwrapRemoteIOException();
+        exception = MasterProcedureUtil.unwrapRemoteIOException(proc);
       }
       latch.countDown();
     }

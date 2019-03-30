@@ -31,7 +31,6 @@ import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.commons.cli.CommandLine;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -89,6 +88,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
+import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 
 /**
  * Test Bulk Load and MR on a distributed cluster.
@@ -212,7 +212,7 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
     Admin admin = util.getAdmin();
     TableDescriptor desc = admin.getDescriptor(t);
     TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(desc);
-    builder.addCoprocessor(SlowMeCoproScanOperations.class.getName());
+    builder.setCoprocessor(SlowMeCoproScanOperations.class.getName());
     HBaseTestingUtility.modifyTableSync(admin, builder.build());
   }
 
@@ -670,9 +670,9 @@ public class IntegrationTestBulkLoad extends IntegrationTestBase {
       LOG.error("Failure in chain verification: " + msg);
       try (Connection connection = ConnectionFactory.createConnection(context.getConfiguration());
           Admin admin = connection.getAdmin()) {
-        LOG.error("cluster status:\n" + admin.getClusterStatus());
+        LOG.error("cluster metrics:\n" + admin.getClusterMetrics());
         LOG.error("table regions:\n"
-            + Joiner.on("\n").join(admin.getTableRegions(table)));
+            + Joiner.on("\n").join(admin.getRegions(table)));
       }
     }
   }

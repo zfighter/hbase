@@ -106,7 +106,7 @@ public class TestRegionSnapshotTask {
    * not be moved around if a snapshot operation is in progress.
    * See HBASE-18398
    */
-  @Test(timeout = 30000)
+  @Test
   public void testAddRegionWithCompactions() throws Exception {
     final TableName tableName = TableName.valueOf("test_table");
     Table table = setupTable(tableName);
@@ -124,7 +124,7 @@ public class TestRegionSnapshotTask {
 
     final HRegion region = spy(hRegions.get(0));
 
-    Path workingDir = SnapshotDescriptionUtils.getWorkingSnapshotDir(snapshot, rootDir);
+    Path workingDir = SnapshotDescriptionUtils.getWorkingSnapshotDir(snapshot, rootDir, conf);
     final SnapshotManifest manifest =
         SnapshotManifest.create(conf, fs, workingDir, snapshot, monitor);
     manifest.addTableDescriptor(table.getTableDescriptor());
@@ -166,7 +166,7 @@ public class TestRegionSnapshotTask {
   private void addRegionToSnapshot(SnapshotProtos.SnapshotDescription snapshot,
       HRegion region, SnapshotManifest manifest) throws Exception {
     LOG.info("Adding region to snapshot: " + region.getRegionInfo().getRegionNameAsString());
-    Path workingDir = SnapshotDescriptionUtils.getWorkingSnapshotDir(snapshot, rootDir);
+    Path workingDir = SnapshotDescriptionUtils.getWorkingSnapshotDir(snapshot, rootDir, conf);
     SnapshotManifest.RegionVisitor visitor = createRegionVisitorWithDelay(snapshot, workingDir);
     manifest.addRegion(region, visitor);
     LOG.info("Added the region to snapshot: " + region.getRegionInfo().getRegionNameAsString());

@@ -18,8 +18,11 @@
 package org.apache.hadoop.hbase;
 
 import edu.umd.cs.findbugs.annotations.Nullable;
+
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,32 +51,40 @@ public final class ServerMetricsBuilder {
     return newBuilder(sn).build();
   }
 
+  public static ServerMetrics of(ServerName sn, int versionNumber, String version) {
+    return newBuilder(sn).setVersionNumber(versionNumber).setVersion(version).build();
+  }
+
   public static ServerMetrics toServerMetrics(ClusterStatusProtos.LiveServerInfo serverInfo) {
-    return toServerMetrics(ProtobufUtil.toServerName(serverInfo.getServer()),
-        serverInfo.getServerLoad());
+    return toServerMetrics(ProtobufUtil.toServerName(serverInfo.getServer()), 0, "0.0.0",
+      serverInfo.getServerLoad());
   }
 
   public static ServerMetrics toServerMetrics(ServerName serverName,
       ClusterStatusProtos.ServerLoad serverLoadPB) {
+    return toServerMetrics(serverName, 0, "0.0.0", serverLoadPB);
+  }
+
+  public static ServerMetrics toServerMetrics(ServerName serverName, int versionNumber,
+      String version, ClusterStatusProtos.ServerLoad serverLoadPB) {
     return ServerMetricsBuilder.newBuilder(serverName)
-        .setRequestCountPerSecond(serverLoadPB.getNumberOfRequests())
-        .setRequestCount(serverLoadPB.getTotalNumberOfRequests())
-        .setInfoServerPort(serverLoadPB.getInfoServerPort())
-        .setMaxHeapSize(new Size(serverLoadPB.getMaxHeapMB(), Size.Unit.MEGABYTE))
-        .setUsedHeapSize(new Size(serverLoadPB.getUsedHeapMB(), Size.Unit.MEGABYTE))
-        .setCoprocessorNames(serverLoadPB.getCoprocessorsList().stream()
-            .map(HBaseProtos.Coprocessor::getName).collect(Collectors.toList()))
-        .setRegionMetrics(serverLoadPB.getRegionLoadsList().stream()
-            .map(RegionMetricsBuilder::toRegionMetrics)
-            .collect(Collectors.toList()))
-        .setReplicationLoadSources(serverLoadPB.getReplLoadSourceList().stream()
-            .map(ProtobufUtil::toReplicationLoadSource)
-            .collect(Collectors.toList()))
-        .setReplicationLoadSink(serverLoadPB.hasReplLoadSink() ?
-            ProtobufUtil.toReplicationLoadSink(serverLoadPB.getReplLoadSink()) : null)
-        .setReportTimestamp(serverLoadPB.getReportEndTime())
-        .setLastReportTimestamp(serverLoadPB.getReportStartTime())
-        .build();
+      .setRequestCountPerSecond(serverLoadPB.getNumberOfRequests())
+      .setRequestCount(serverLoadPB.getTotalNumberOfRequests())
+      .setInfoServerPort(serverLoadPB.getInfoServerPort())
+      .setMaxHeapSize(new Size(serverLoadPB.getMaxHeapMB(), Size.Unit.MEGABYTE))
+      .setUsedHeapSize(new Size(serverLoadPB.getUsedHeapMB(), Size.Unit.MEGABYTE))
+      .setCoprocessorNames(serverLoadPB.getCoprocessorsList().stream()
+        .map(HBaseProtos.Coprocessor::getName).collect(Collectors.toList()))
+      .setRegionMetrics(serverLoadPB.getRegionLoadsList().stream()
+        .map(RegionMetricsBuilder::toRegionMetrics).collect(Collectors.toList()))
+      .setReplicationLoadSources(serverLoadPB.getReplLoadSourceList().stream()
+          .map(ProtobufUtil::toReplicationLoadSource).collect(Collectors.toList()))
+      .setReplicationLoadSink(serverLoadPB.hasReplLoadSink()
+        ? ProtobufUtil.toReplicationLoadSink(serverLoadPB.getReplLoadSink())
+        : null)
+      .setReportTimestamp(serverLoadPB.getReportEndTime())
+      .setLastReportTimestamp(serverLoadPB.getReportStartTime()).setVersionNumber(versionNumber)
+      .setVersion(version).build();
   }
 
   public static List<HBaseProtos.Coprocessor> toCoprocessor(Collection<String> names) {
@@ -110,6 +121,8 @@ public final class ServerMetricsBuilder {
   }
 
   private final ServerName serverName;
+  private int versionNumber;
+  private String version = "0.0.0";
   private long requestCountPerSecond;
   private long requestCount;
   private Size usedHeapSize = Size.ZERO;
@@ -124,6 +137,16 @@ public final class ServerMetricsBuilder {
   private long lastReportTimestamp = 0;
   private ServerMetricsBuilder(ServerName serverName) {
     this.serverName = serverName;
+  }
+
+  public ServerMetricsBuilder setVersionNumber(int versionNumber) {
+    this.versionNumber = versionNumber;
+    return this;
+  }
+
+  public ServerMetricsBuilder setVersion(String version) {
+    this.version = version;
+    return this;
   }
 
   public ServerMetricsBuilder setRequestCountPerSecond(long value) {
@@ -184,6 +207,8 @@ public final class ServerMetricsBuilder {
   public ServerMetrics build() {
     return new ServerMetricsImpl(
         serverName,
+        versionNumber,
+        version,
         requestCountPerSecond,
         requestCount,
         usedHeapSize,
@@ -199,6 +224,8 @@ public final class ServerMetricsBuilder {
 
   private static class ServerMetricsImpl implements ServerMetrics {
     private final ServerName serverName;
+    private final int versionNumber;
+    private final String version;
     private final long requestCountPerSecond;
     private final long requestCount;
     private final Size usedHeapSize;
@@ -212,11 +239,14 @@ public final class ServerMetricsBuilder {
     private final long reportTimestamp;
     private final long lastReportTimestamp;
 
-    ServerMetricsImpl(ServerName serverName, long requestCountPerSecond, long requestCount,
-      Size usedHeapSize, Size maxHeapSize, int infoServerPort, List<ReplicationLoadSource> sources,
-      ReplicationLoadSink sink, Map<byte[], RegionMetrics> regionStatus,
-      Set<String> coprocessorNames, long reportTimestamp, long lastReportTimestamp) {
+    ServerMetricsImpl(ServerName serverName, int versionNumber, String version,
+        long requestCountPerSecond, long requestCount, Size usedHeapSize, Size maxHeapSize,
+        int infoServerPort, List<ReplicationLoadSource> sources, ReplicationLoadSink sink,
+        Map<byte[], RegionMetrics> regionStatus, Set<String> coprocessorNames, long reportTimestamp,
+        long lastReportTimestamp) {
       this.serverName = Preconditions.checkNotNull(serverName);
+      this.versionNumber = versionNumber;
+      this.version = version;
       this.requestCountPerSecond = requestCountPerSecond;
       this.requestCount = requestCount;
       this.usedHeapSize = Preconditions.checkNotNull(usedHeapSize);
@@ -234,6 +264,16 @@ public final class ServerMetricsBuilder {
     public ServerName getServerName() {
       return serverName;
     }
+
+    @Override
+    public int getVersionNumber() {
+      return versionNumber;
+    }
+
+    public String getVersion() {
+      return version;
+    }
+
     @Override
     public long getRequestCountPerSecond() {
       return requestCountPerSecond;
@@ -262,6 +302,16 @@ public final class ServerMetricsBuilder {
     @Override
     public List<ReplicationLoadSource> getReplicationLoadSourceList() {
       return Collections.unmodifiableList(sources);
+    }
+
+    @Override
+    public Map<String, List<ReplicationLoadSource>> getReplicationLoadSourceMap(){
+      Map<String,List<ReplicationLoadSource>> sourcesMap = new HashMap<>();
+      for(ReplicationLoadSource loadSource : sources){
+        sourcesMap.computeIfAbsent(loadSource.getPeerID(),
+          peerId -> new ArrayList()).add(loadSource);
+      }
+      return sourcesMap;
     }
 
     @Override
@@ -299,6 +349,7 @@ public final class ServerMetricsBuilder {
       long storefileIndexSizeKB = 0;
       long rootLevelIndexSizeKB = 0;
       long readRequestsCount = 0;
+      long cpRequestsCount = 0;
       long writeRequestsCount = 0;
       long filteredReadRequestsCount = 0;
       long bloomFilterSizeMB = 0;
@@ -312,6 +363,7 @@ public final class ServerMetricsBuilder {
         memStoreSizeMB += r.getMemStoreSize().get(Size.Unit.MEGABYTE);
         storefileIndexSizeKB += r.getStoreFileUncompressedDataIndexSize().get(Size.Unit.KILOBYTE);
         readRequestsCount += r.getReadRequestCount();
+        cpRequestsCount += r.getCpRequestCount();
         writeRequestsCount += r.getWriteRequestCount();
         filteredReadRequestsCount += r.getFilteredReadRequestCount();
         rootLevelIndexSizeKB += r.getStoreFileRootLevelIndexSize().get(Size.Unit.KILOBYTE);
@@ -335,6 +387,7 @@ public final class ServerMetricsBuilder {
       }
       Strings.appendKeyValue(sb, "memstoreSizeMB", memStoreSizeMB);
       Strings.appendKeyValue(sb, "readRequestsCount", readRequestsCount);
+      Strings.appendKeyValue(sb, "cpRequestsCount", cpRequestsCount);
       Strings.appendKeyValue(sb, "filteredReadRequestsCount", filteredReadRequestsCount);
       Strings.appendKeyValue(sb, "writeRequestsCount", writeRequestsCount);
       Strings.appendKeyValue(sb, "rootIndexSizeKB", rootLevelIndexSizeKB);

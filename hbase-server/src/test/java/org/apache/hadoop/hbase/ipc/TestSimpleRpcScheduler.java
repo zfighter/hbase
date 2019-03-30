@@ -104,7 +104,7 @@ public class TestSimpleRpcScheduler {
     CallRunner task = createMockTask();
     task.setStatus(new MonitoredRPCHandlerImpl());
     scheduler.dispatch(task);
-    verify(task, timeout(1000)).run();
+    verify(task, timeout(10000)).run();
     scheduler.stop();
   }
 
@@ -218,7 +218,7 @@ public class TestSimpleRpcScheduler {
       scheduler.dispatch(task);
     }
     for (CallRunner task : tasks) {
-      verify(task, timeout(1000)).run();
+      verify(task, timeout(10000)).run();
     }
     scheduler.stop();
 
@@ -428,6 +428,8 @@ public class TestSimpleRpcScheduler {
 
     schedConf.setInt(HConstants.REGION_SERVER_HANDLER_COUNT, 0);
     schedConf.setInt("hbase.ipc.server.max.callqueue.length", 5);
+    schedConf.set(RpcExecutor.CALL_QUEUE_TYPE_CONF_KEY,
+      RpcExecutor.CALL_QUEUE_TYPE_DEADLINE_CONF_VALUE);
 
     PriorityFunction priority = mock(PriorityFunction.class);
     when(priority.getPriority(any(), any(), any())).thenReturn(HConstants.NORMAL_QOS);

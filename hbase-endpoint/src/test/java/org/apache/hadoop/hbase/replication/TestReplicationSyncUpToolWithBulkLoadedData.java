@@ -26,14 +26,12 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
-import java.util.UUID;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.replication.regionserver.TestSourceFSConfigurationProvider;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
@@ -62,12 +60,6 @@ public class TestReplicationSyncUpToolWithBulkLoadedData extends TestReplication
     conf1.set(HConstants.REPLICATION_CLUSTER_ID, "12345");
     conf1.set("hbase.replication.source.fs.conf.provider",
       TestSourceFSConfigurationProvider.class.getCanonicalName());
-    String classes = conf1.get(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY, "");
-    if (!classes.contains("org.apache.hadoop.hbase.security.access.SecureBulkLoadEndpoint")) {
-      classes = classes + ",org.apache.hadoop.hbase.security.access.SecureBulkLoadEndpoint";
-      conf1.set(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY, classes);
-    }
-
     TestReplicationBase.setUpBeforeClass();
   }
 
@@ -85,7 +77,7 @@ public class TestReplicationSyncUpToolWithBulkLoadedData extends TestReplication
     Iterator<String> randomHFileRangeListIterator = null;
     Set<String> randomHFileRanges = new HashSet<>(16);
     for (int i = 0; i < 16; i++) {
-      randomHFileRanges.add(UUID.randomUUID().toString());
+      randomHFileRanges.add(utility1.getRandomUUID().toString());
     }
     List<String> randomHFileRangeList = new ArrayList<>(randomHFileRanges);
     Collections.sort(randomHFileRangeList);

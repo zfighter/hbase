@@ -23,6 +23,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -72,7 +73,9 @@ public class TestMasterFailoverWithProcedures {
   @Before
   public void setup() throws Exception {
     setupConf(UTIL.getConfiguration());
-    UTIL.startMiniCluster(2, 1);
+    // Set master number and use default values for other options.
+    StartMiniClusterOption option = StartMiniClusterOption.builder().numMasters(2).build();
+    UTIL.startMiniCluster(option);
 
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
     ProcedureTestingUtility.setToggleKillBeforeStoreUpdate(procExec, false);
@@ -202,7 +205,7 @@ public class TestMasterFailoverWithProcedures {
     UTIL.waitUntilAllRegionsAssigned(tableName);
 
     // validate the table regions and layout
-    regions = UTIL.getAdmin().getTableRegions(tableName).toArray(new RegionInfo[0]);
+    regions = UTIL.getAdmin().getRegions(tableName).toArray(new RegionInfo[0]);
     if (preserveSplits) {
       assertEquals(1 + splitKeys.length, regions.length);
     } else {
@@ -286,7 +289,7 @@ public class TestMasterFailoverWithProcedures {
 
     // Start the Delete procedure && kill the executor
     long procId = procExec.submitProcedure(
-        new EnableTableProcedure(procExec.getEnvironment(), tableName, false));
+        new EnableTableProcedure(procExec.getEnvironment(), tableName));
     testRecoveryAndDoubleExecution(UTIL, procId, step);
 
     MasterProcedureTestingUtility.validateTableIsEnabled(

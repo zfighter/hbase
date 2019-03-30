@@ -49,7 +49,6 @@ public class TestRegionReplicasWithModifyTable {
 
   private static final int NB_SERVERS = 3;
   private static Table table;
-  private static final byte[] row = "TestRegionReplicasWithModifyTable".getBytes();
 
   private static final HBaseTestingUtility HTU = new HBaseTestingUtility();
   private static final byte[] f = HConstants.CATALOG_FAMILY;
@@ -107,7 +106,7 @@ public class TestRegionReplicasWithModifyTable {
     return HTU.getMiniHBaseCluster().getRegionServer(2);
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRegionReplicasUsingEnableTable() throws Exception {
     TableName tableName = null;
     try {
@@ -128,7 +127,7 @@ public class TestRegionReplicasWithModifyTable {
     HTU.getAdmin().deleteTable(tableName);
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRegionReplicasUsingEnableTableForMultipleRegions() throws Exception {
     TableName tableName = null;
     try {
@@ -144,7 +143,7 @@ public class TestRegionReplicasWithModifyTable {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRegionReplicasByEnableTableWhenReplicaCountIsIncreased() throws Exception {
     TableName tableName = null;
     try {
@@ -160,7 +159,7 @@ public class TestRegionReplicasWithModifyTable {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRegionReplicasByEnableTableWhenReplicaCountIsDecreased() throws Exception {
     TableName tableName = null;
     try {
@@ -176,7 +175,7 @@ public class TestRegionReplicasWithModifyTable {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRegionReplicasByEnableTableWhenReplicaCountIsDecreasedWithMultipleRegions()
       throws Exception {
     TableName tableName = null;
@@ -193,7 +192,7 @@ public class TestRegionReplicasWithModifyTable {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testRegionReplicasByEnableTableWhenReplicaCountIsIncreasedWithmultipleRegions()
       throws Exception {
     TableName tableName = null;

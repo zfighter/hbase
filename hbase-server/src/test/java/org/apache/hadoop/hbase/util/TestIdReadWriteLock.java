@@ -60,12 +60,12 @@ public class TestIdReadWriteLock {
   private static final int NUM_SECONDS = 15;
 
   @Parameterized.Parameter
-  public IdReadWriteLock idLock;
+  public IdReadWriteLock<Long> idLock;
 
   @Parameterized.Parameters
   public static Iterable<Object[]> data() {
-    return Arrays.asList(new Object[][] { { new IdReadWriteLock(ReferenceType.WEAK) },
-        { new IdReadWriteLock(ReferenceType.SOFT) } });
+    return Arrays.asList(new Object[][] { { new IdReadWriteLock<Long>(ReferenceType.WEAK) },
+      { new IdReadWriteLock<Long>(ReferenceType.SOFT) } });
   }
 
   private Map<Long, String> idOwner = new ConcurrentHashMap<>();
@@ -115,7 +115,7 @@ public class TestIdReadWriteLock {
 
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testMultipleClients() throws Exception {
     ExecutorService exec = Executors.newFixedThreadPool(NUM_THREADS);
     try {

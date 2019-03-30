@@ -77,10 +77,9 @@ public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
     connection = (ClusterConnection) TEST_UTIL.getConnection();
 
     admin = connection.getAdmin();
-    admin.setBalancerRunning(false, true);
+    admin.balancerSwitch(false, true);
 
     TEST_UTIL.waitUntilAllRegionsAssigned(TableName.META_TABLE_NAME);
-    TEST_UTIL.waitUntilAllRegionsAssigned(TableName.NAMESPACE_TABLE_NAME);
   }
 
   @AfterClass
@@ -100,7 +99,7 @@ public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
   /**
    * This creates a table and then corrupts a mob file.  Hbck should quarantine the file.
    */
-  @Test(timeout=180000)
+  @Test
   public void testQuarantineCorruptMobFile() throws Exception {
     TableName table = TableName.valueOf(name.getMethodName());
     try {

@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hbase.replication.regionserver;
 
-import static org.apache.hadoop.hbase.HConstants.HBASE_MASTER_LOGCLEANER_PLUGINS;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,28 +28,22 @@ import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellScanner;
-import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
-import org.apache.hadoop.hbase.master.cleaner.HFileCleaner;
 import org.apache.hadoop.hbase.regionserver.ReplicationSinkService;
 import org.apache.hadoop.hbase.regionserver.ReplicationSourceService;
-import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
 import org.apache.hadoop.hbase.replication.ReplicationFactory;
 import org.apache.hadoop.hbase.replication.ReplicationPeers;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
 import org.apache.hadoop.hbase.replication.ReplicationStorageFactory;
 import org.apache.hadoop.hbase.replication.ReplicationTracker;
-import org.apache.hadoop.hbase.replication.master.ReplicationHFileCleaner;
-import org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner;
+import org.apache.hadoop.hbase.replication.ReplicationUtils;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hadoop.hbase.wal.WALEdit;
-import org.apache.hadoop.hbase.wal.WALKey;
-import org.apache.hadoop.hbase.wal.WALKeyImpl;
+import org.apache.hadoop.hbase.wal.SyncReplicationWALProvider;
+import org.apache.hadoop.hbase.wal.WALProvider;
 import org.apache.hadoop.hbase.zookeeper.ZKClusterId;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.zookeeper.KeeperException;
@@ -61,22 +53,22 @@ import org.slf4j.LoggerFactory;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.WALEntry;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
+
 /**
- * Gateway to Replication.  Used by {@link org.apache.hadoop.hbase.regionserver.HRegionServer}.
+ * Gateway to Replication. Used by {@link org.apache.hadoop.hbase.regionserver.HRegionServer}.
  */
 @InterfaceAudience.Private
-public class Replication implements
-  ReplicationSourceService, ReplicationSinkService, WALActionsListener {
+public class Replication implements ReplicationSourceService, ReplicationSinkService {
   private static final Logger LOG =
       LoggerFactory.getLogger(Replication.class);
-  private boolean replicationForBulkLoadData;
+  private boolean isReplicationForBulkLoadDataEnabled;
   private ReplicationSourceManager replicationManager;
   private ReplicationQueueStorage queueStorage;
   private ReplicationPeers replicationPeers;
   private ReplicationTracker replicationTracker;
   private Configuration conf;
   private ReplicationSink replicationSink;
+  private SyncReplicationPeerInfoProvider syncReplicationPeerInfoProvider;
   // Hosting server
   private Server server;
   /** Statistics thread schedule pool */
@@ -88,18 +80,6 @@ public class Replication implements
   private PeerProcedureHandler peerProcedureHandler;
 
   /**
-   * Instantiate the replication management (if rep is enabled).
-   * @param server Hosting server
-   * @param fs handle to the filesystem
-   * @param logDir
-   * @param oldLogDir directory where logs are archived
-   * @throws IOException
-   */
-  public Replication(Server server, FileSystem fs, Path logDir, Path oldLogDir) throws IOException {
-    initialize(server, fs, logDir, oldLogDir, p -> OptionalLong.empty());
-  }
-
-  /**
    * Empty constructor
    */
   public Replication() {
@@ -107,16 +87,17 @@ public class Replication implements
 
   @Override
   public void initialize(Server server, FileSystem fs, Path logDir, Path oldLogDir,
-      WALFileLengthProvider walFileLengthProvider) throws IOException {
+      WALProvider walProvider) throws IOException {
     this.server = server;
     this.conf = this.server.getConfiguration();
-    this.replicationForBulkLoadData = isReplicationForBulkLoadDataEnabled(this.conf);
+    this.isReplicationForBulkLoadDataEnabled =
+      ReplicationUtils.isReplicationForBulkLoadDataEnabled(this.conf);
     this.scheduleThreadPool = Executors.newScheduledThreadPool(1,
       new ThreadFactoryBuilder()
         .setNameFormat(server.getServerName().toShortString() + "Replication Statistics #%d")
         .setDaemon(true)
         .build());
-    if (this.replicationForBulkLoadData) {
+    if (this.isReplicationForBulkLoadDataEnabled) {
       if (conf.get(HConstants.REPLICATION_CLUSTER_ID) == null
           || conf.get(HConstants.REPLICATION_CLUSTER_ID).isEmpty()) {
         throw new IllegalArgumentException(HConstants.REPLICATION_CLUSTER_ID
@@ -142,32 +123,40 @@ public class Replication implements
     } catch (KeeperException ke) {
       throw new IOException("Could not read cluster id", ke);
     }
-    this.replicationManager =
-        new ReplicationSourceManager(queueStorage, replicationPeers, replicationTracker, conf,
-            this.server, fs, logDir, oldLogDir, clusterId, walFileLengthProvider);
+    SyncReplicationPeerMappingManager mapping = new SyncReplicationPeerMappingManager();
+    this.replicationManager = new ReplicationSourceManager(queueStorage, replicationPeers,
+        replicationTracker, conf, this.server, fs, logDir, oldLogDir, clusterId,
+        walProvider != null ? walProvider.getWALFileLengthProvider() : p -> OptionalLong.empty(),
+        mapping);
+    this.syncReplicationPeerInfoProvider =
+        new SyncReplicationPeerInfoProviderImpl(replicationPeers, mapping);
+    PeerActionListener peerActionListener = PeerActionListener.DUMMY;
+    if (walProvider != null) {
+      walProvider
+        .addWALActionsListener(new ReplicationSourceWALActionListener(conf, replicationManager));
+      if (walProvider instanceof SyncReplicationWALProvider) {
+        SyncReplicationWALProvider syncWALProvider = (SyncReplicationWALProvider) walProvider;
+        peerActionListener = syncWALProvider;
+        syncWALProvider.setPeerInfoProvider(syncReplicationPeerInfoProvider);
+        // for sync replication state change, we need to reload the state twice, you can see the
+        // code in PeerProcedureHandlerImpl, so here we need to go over the sync replication peers
+        // to see if any of them are in the middle of the two refreshes, if so, we need to manually
+        // repeat the action we have done in the first refresh, otherwise when the second refresh
+        // comes we will be in trouble, such as NPE.
+        replicationPeers.getAllPeerIds().stream().map(replicationPeers::getPeer)
+            .filter(p -> p.getPeerConfig().isSyncReplication())
+            .filter(p -> p.getNewSyncReplicationState() != SyncReplicationState.NONE)
+            .forEach(p -> syncWALProvider.peerSyncReplicationStateChange(p.getId(),
+              p.getSyncReplicationState(), p.getNewSyncReplicationState(), 0));
+      }
+    }
     this.statsThreadPeriod =
         this.conf.getInt("replication.stats.thread.period.seconds", 5 * 60);
-    LOG.debug("ReplicationStatisticsThread " + this.statsThreadPeriod);
+    LOG.debug("Replication stats-in-log period={} seconds",  this.statsThreadPeriod);
     this.replicationLoad = new ReplicationLoad();
 
-    this.peerProcedureHandler = new PeerProcedureHandlerImpl(replicationManager);
-  }
-
-  /**
-   * @param c Configuration to look at
-   * @return True if replication for bulk load data is enabled.
-   */
-  public static boolean isReplicationForBulkLoadDataEnabled(final Configuration c) {
-    return c.getBoolean(HConstants.REPLICATION_BULKLOAD_ENABLE_KEY,
-      HConstants.REPLICATION_BULKLOAD_ENABLE_DEFAULT);
-  }
-
-   /*
-    * Returns an object to listen to new wal changes
-    **/
-  @Override
-  public WALActionsListener getWALActionsListener() {
-    return this;
+    this.peerProcedureHandler =
+      new PeerProcedureHandlerImpl(replicationManager, peerActionListener);
   }
 
   @Override
@@ -225,7 +214,7 @@ public class Replication implements
     this.replicationManager.init();
     this.replicationSink = new ReplicationSink(this.conf, this.server);
     this.scheduleThreadPool.scheduleAtFixedRate(
-      new ReplicationStatisticsThread(this.replicationSink, this.replicationManager),
+      new ReplicationStatisticsTask(this.replicationSink, this.replicationManager),
       statsThreadPeriod, statsThreadPeriod, TimeUnit.SECONDS);
   }
 
@@ -235,45 +224,6 @@ public class Replication implements
    */
   public ReplicationSourceManager getReplicationManager() {
     return this.replicationManager;
-  }
-
-  @Override
-  public void visitLogEntryBeforeWrite(WALKey logKey, WALEdit logEdit) throws IOException {
-    scopeWALEdits(logKey, logEdit, this.conf, this.getReplicationManager());
-  }
-
-  /**
-   * Utility method used to set the correct scopes on each log key. Doesn't set a scope on keys from
-   * compaction WAL edits and if the scope is local.
-   * @param logKey Key that may get scoped according to its edits
-   * @param logEdit Edits used to lookup the scopes
-   * @param replicationManager Manager used to add bulk load events hfile references
-   * @throws IOException If failed to parse the WALEdit
-   */
-  public static void scopeWALEdits(WALKey logKey,
-      WALEdit logEdit, Configuration conf, ReplicationSourceManager replicationManager)
-          throws IOException {
-    boolean replicationForBulkLoadEnabled = isReplicationForBulkLoadDataEnabled(conf);
-    boolean foundOtherEdits = false;
-    for (Cell cell : logEdit.getCells()) {
-      if (!CellUtil.matchingFamily(cell, WALEdit.METAFAMILY)) {
-        foundOtherEdits = true;
-        break;
-      }
-    }
-
-    if (!foundOtherEdits && logEdit.getCells().size() > 0) {
-      WALProtos.RegionEventDescriptor maybeEvent =
-          WALEdit.getRegionEventDescriptor(logEdit.getCells().get(0));
-      if (maybeEvent != null && (maybeEvent.getEventType() ==
-          WALProtos.RegionEventDescriptor.EventType.REGION_CLOSE)) {
-        // In serially replication, we use scopes when reading close marker.
-        foundOtherEdits = true;
-      }
-    }
-    if ((!replicationForBulkLoadEnabled && !foundOtherEdits) || logEdit.isReplay()) {
-      ((WALKeyImpl)logKey).serializeReplicationScope(false);
-    }
   }
 
   void addHFileRefsToQueue(TableName tableName, byte[] family, List<Pair<Path, Path>> pairs)
@@ -286,62 +236,16 @@ public class Replication implements
     }
   }
 
-  @Override
-  public void preLogRoll(Path oldPath, Path newPath) throws IOException {
-    getReplicationManager().preLogRoll(newPath);
-  }
-
-  @Override
-  public void postLogRoll(Path oldPath, Path newPath) throws IOException {
-    getReplicationManager().postLogRoll(newPath);
-  }
-
   /**
-   * This method modifies the master's configuration in order to inject replication-related features
-   * @param conf
+   * Statistics task. Periodically prints the cache statistics to the log.
    */
-  public static void decorateMasterConfiguration(Configuration conf) {
-    String plugins = conf.get(HBASE_MASTER_LOGCLEANER_PLUGINS);
-    String cleanerClass = ReplicationLogCleaner.class.getCanonicalName();
-    if (!plugins.contains(cleanerClass)) {
-      conf.set(HBASE_MASTER_LOGCLEANER_PLUGINS, plugins + "," + cleanerClass);
-    }
-    if (isReplicationForBulkLoadDataEnabled(conf)) {
-      plugins = conf.get(HFileCleaner.MASTER_HFILE_CLEANER_PLUGINS);
-      cleanerClass = ReplicationHFileCleaner.class.getCanonicalName();
-      if (!plugins.contains(cleanerClass)) {
-        conf.set(HFileCleaner.MASTER_HFILE_CLEANER_PLUGINS, plugins + "," + cleanerClass);
-      }
-    }
-  }
-
-  /**
-   * This method modifies the region server's configuration in order to inject replication-related
-   * features
-   * @param conf region server configurations
-   */
-  public static void decorateRegionServerConfiguration(Configuration conf) {
-    if (isReplicationForBulkLoadDataEnabled(conf)) {
-      String plugins = conf.get(CoprocessorHost.REGIONSERVER_COPROCESSOR_CONF_KEY, "");
-      String rsCoprocessorClass = ReplicationObserver.class.getCanonicalName();
-      if (!plugins.contains(rsCoprocessorClass)) {
-        conf.set(CoprocessorHost.REGIONSERVER_COPROCESSOR_CONF_KEY,
-          plugins + "," + rsCoprocessorClass);
-      }
-    }
-  }
-
-  /*
-   * Statistics thread. Periodically prints the cache statistics to the log.
-   */
-  static class ReplicationStatisticsThread extends Thread {
+  private final static class ReplicationStatisticsTask implements Runnable {
 
     private final ReplicationSink replicationSink;
     private final ReplicationSourceManager replicationManager;
 
-    public ReplicationStatisticsThread(final ReplicationSink replicationSink,
-                            final ReplicationSourceManager replicationManager) {
-      super("ReplicationStatisticsThread");
+    public ReplicationStatisticsTask(ReplicationSink replicationSink,
+        ReplicationSourceManager replicationManager) {
       this.replicationManager = replicationManager;
       this.replicationSink = replicationSink;
     }
@@ -370,24 +274,21 @@ public class Replication implements
   }
 
   private void buildReplicationLoad() {
-    List<MetricsSource> sourceMetricsList = new ArrayList<>();
-
-    // get source
-    List<ReplicationSourceInterface> sources = this.replicationManager.getSources();
-    for (ReplicationSourceInterface source : sources) {
-      sourceMetricsList.add(source.getSourceMetrics());
-    }
-
-    // get old source
-    List<ReplicationSourceInterface> oldSources = this.replicationManager.getOldSources();
-    for (ReplicationSourceInterface source : oldSources) {
-      if (source instanceof ReplicationSource) {
-        sourceMetricsList.add(((ReplicationSource) source).getSourceMetrics());
-      }
-    }
-
+    List<ReplicationSourceInterface> allSources = new ArrayList<>();
+    allSources.addAll(this.replicationManager.getSources());
+    allSources.addAll(this.replicationManager.getOldSources());
     // get sink
     MetricsSink sinkMetrics = this.replicationSink.getSinkMetrics();
-    this.replicationLoad.buildReplicationLoad(sourceMetricsList, sinkMetrics);
+    this.replicationLoad.buildReplicationLoad(allSources, sinkMetrics);
+  }
+
+  @Override
+  public SyncReplicationPeerInfoProvider getSyncReplicationPeerInfoProvider() {
+    return syncReplicationPeerInfoProvider;
+  }
+
+  @Override
+  public ReplicationPeers getReplicationPeers() {
+    return replicationPeers;
   }
 }

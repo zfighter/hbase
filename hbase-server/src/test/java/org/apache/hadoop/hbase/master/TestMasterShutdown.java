@@ -29,6 +29,7 @@ import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.LocalHBaseCluster;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
@@ -55,9 +56,8 @@ public class TestMasterShutdown {
    * <p>
    * Starts with three masters.  Tells the active master to shutdown the cluster.
    * Verifies that all masters are properly shutdown.
-   * @throws Exception
    */
-  @Test (timeout=120000)
+  @Test
   public void testMasterShutdown() throws Exception {
     final int NUM_MASTERS = 3;
     final int NUM_RS = 3;
@@ -67,7 +67,9 @@ public class TestMasterShutdown {
 
     // Start the cluster
     HBaseTestingUtility htu = new HBaseTestingUtility(conf);
-    htu.startMiniCluster(NUM_MASTERS, NUM_RS);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numMasters(NUM_MASTERS).numRegionServers(NUM_RS).numDataNodes(NUM_RS).build();
+    htu.startMiniCluster(option);
     MiniHBaseCluster cluster = htu.getHBaseCluster();
 
     // get all the master threads
@@ -103,7 +105,7 @@ public class TestMasterShutdown {
     htu.shutdownMiniCluster();
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testMasterShutdownBeforeStartingAnyRegionServer() throws Exception {
     final int NUM_MASTERS = 1;
     final int NUM_RS = 0;
@@ -130,16 +132,17 @@ public class TestMasterShutdown {
       public void run() {
         LOG.info("Before call to shutdown master");
         try {
-          try (Connection connection =
-              ConnectionFactory.createConnection(util.getConfiguration())) {
+          try (
+            Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
             try (Admin admin = connection.getAdmin()) {
               admin.shutdown();
             }
           }
-          LOG.info("After call to shutdown master");
-          cluster.waitOnMaster(MASTER_INDEX);
         } catch (Exception e) {
+          LOG.info("Error while calling Admin.shutdown, which is expected: " + e.getMessage());
         }
+        LOG.info("After call to shutdown master");
+        cluster.waitOnMaster(MASTER_INDEX);
       }
     };
     shutdownThread.start();

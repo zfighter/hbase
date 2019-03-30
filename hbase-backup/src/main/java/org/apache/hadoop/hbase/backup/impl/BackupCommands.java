@@ -18,10 +18,14 @@
 
 package org.apache.hadoop.hbase.backup.impl;
 
+import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_BACKUP_LIST_DESC;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_BANDWIDTH;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_BANDWIDTH_DESC;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_DEBUG;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_DEBUG_DESC;
+import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_KEEP;
+import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_KEEP_DESC;
+import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_LIST;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_PATH;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_PATH_DESC;
 import static org.apache.hadoop.hbase.backup.BackupRestoreConstants.OPTION_RECORD_NUMBER;
@@ -41,9 +45,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 
-import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.Options;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
@@ -58,14 +59,17 @@ import org.apache.hadoop.hbase.backup.BackupRequest;
 import org.apache.hadoop.hbase.backup.BackupRestoreConstants;
 import org.apache.hadoop.hbase.backup.BackupRestoreConstants.BackupCommand;
 import org.apache.hadoop.hbase.backup.BackupType;
+import org.apache.hadoop.hbase.backup.HBackupFileSystem;
 import org.apache.hadoop.hbase.backup.util.BackupSet;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.yetus.audience.InterfaceAudience;
-
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
+import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
+import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
+import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
+import org.apache.yetus.audience.InterfaceAudience;
 
 /**
  * General backup commands, options and usage messages
@@ -105,8 +109,7 @@ public final class BackupCommands {
 
   public static final String HISTORY_CMD_USAGE = "Usage: hbase backup history [options]";
 
-  public static final String DELETE_CMD_USAGE = "Usage: hbase backup delete <backup_id>\n"
-      + "  backup_id       Backup image id\n";
+  public static final String DELETE_CMD_USAGE = "Usage: hbase backup delete [options]";
 
   public static final String REPAIR_CMD_USAGE = "Usage: hbase backup repair\n";
 
@@ -403,7 +406,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class HelpCommand extends Command {
+  public static class HelpCommand extends Command {
     HelpCommand(Configuration conf, CommandLine cmdline) {
       super(conf);
       this.cmdline = cmdline;
@@ -454,7 +457,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class DescribeCommand extends Command {
+  public static class DescribeCommand extends Command {
     DescribeCommand(Configuration conf, CommandLine cmdline) {
       super(conf);
       this.cmdline = cmdline;
@@ -492,7 +495,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class ProgressCommand extends Command {
+  public static class ProgressCommand extends Command {
     ProgressCommand(Configuration conf, CommandLine cmdline) {
       super(conf);
       this.cmdline = cmdline;
@@ -547,7 +550,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class DeleteCommand extends Command {
+  public static class DeleteCommand extends Command {
     DeleteCommand(Configuration conf, CommandLine cmdline) {
       super(conf);
       this.cmdline = cmdline;
@@ -560,33 +563,97 @@ public final class BackupCommands {
 
     @Override
     public void execute() throws IOException {
-      if (cmdline == null || cmdline.getArgs() == null || cmdline.getArgs().length < 2) {
+
+      if (cmdline == null || cmdline.getArgs() == null || cmdline.getArgs().length < 1) {
         printUsage();
         throw new IOException(INCORRECT_USAGE);
       }
 
+      if (!cmdline.hasOption(OPTION_KEEP) && !cmdline.hasOption(OPTION_LIST)) {
+        printUsage();
+        throw new IOException(INCORRECT_USAGE);
+      }
       super.execute();
+      if (cmdline.hasOption(OPTION_KEEP)) {
+        executeDeleteOlderThan(cmdline);
+      } else if (cmdline.hasOption(OPTION_LIST)) {
+        executeDeleteListOfBackups(cmdline);
+      }
+    }
 
-      String[] args = cmdline.getArgs();
-      String[] backupIds = new String[args.length - 1];
-      System.arraycopy(args, 1, backupIds, 0, backupIds.length);
-      try (BackupAdminImpl admin = new BackupAdminImpl(conn)) {
+    private void executeDeleteOlderThan(CommandLine cmdline) throws IOException {
+      String value = cmdline.getOptionValue(OPTION_KEEP);
+      int days = 0;
+      try {
+        days = Integer.parseInt(value);
+      } catch (NumberFormatException e) {
+        throw new IOException(value + " is not an integer number");
+      }
+      final long fdays = days;
+      BackupInfo.Filter dateFilter = new BackupInfo.Filter() {
+        @Override
+        public boolean apply(BackupInfo info) {
+          long currentTime = EnvironmentEdgeManager.currentTime();
+          long maxTsToDelete = currentTime - fdays * 24 * 3600 * 1000;
+          return info.getCompleteTs() <= maxTsToDelete;
+        }
+      };
+      List<BackupInfo> history = null;
+      try (final BackupSystemTable sysTable = new BackupSystemTable(conn);
+          BackupAdminImpl admin = new BackupAdminImpl(conn)) {
+        history = sysTable.getBackupHistory(-1, dateFilter);
+        String[] backupIds = convertToBackupIds(history);
         int deleted = admin.deleteBackups(backupIds);
-        System.out.println("Deleted " + deleted + " backups. Total requested: " + (args.length -1));
+        System.out.println("Deleted " + deleted + " backups. Total older than " + days + " days: "
+            + backupIds.length);
       } catch (IOException e) {
         System.err.println("Delete command FAILED. Please run backup repair tool to restore backup "
-                + "system integrity");
+            + "system integrity");
         throw e;
       }
+    }
+
+    private String[] convertToBackupIds(List<BackupInfo> history) {
+      String[] ids = new String[history.size()];
+      for (int i = 0; i < ids.length; i++) {
+        ids[i] = history.get(i).getBackupId();
+      }
+      return ids;
+    }
+
+    private void executeDeleteListOfBackups(CommandLine cmdline) throws IOException {
+      String value = cmdline.getOptionValue(OPTION_LIST);
+      String[] backupIds = value.split(",");
+
+      try (BackupAdminImpl admin = new BackupAdminImpl(conn)) {
+        int deleted = admin.deleteBackups(backupIds);
+        System.out.println("Deleted " + deleted + " backups. Total requested: " + backupIds.length);
+      } catch (IOException e) {
+        System.err.println("Delete command FAILED. Please run backup repair tool to restore backup "
+            + "system integrity");
+        throw e;
+      }
+
     }
 
     @Override
     protected void printUsage() {
       System.out.println(DELETE_CMD_USAGE);
+      Options options = new Options();
+      options.addOption(OPTION_KEEP, true, OPTION_KEEP_DESC);
+      options.addOption(OPTION_LIST, true, OPTION_BACKUP_LIST_DESC);
+
+      HelpFormatter helpFormatter = new HelpFormatter();
+      helpFormatter.setLeftPadding(2);
+      helpFormatter.setDescPadding(8);
+      helpFormatter.setWidth(100);
+      helpFormatter.setSyntaxPrefix("Options:");
+      helpFormatter.printHelp(" ", null, options, USAGE_FOOTER);
+
     }
   }
 
-  private static class RepairCommand extends Command {
+  public static class RepairCommand extends Command {
     RepairCommand(Configuration conf, CommandLine cmdline) {
       super(conf);
       this.cmdline = cmdline;
@@ -661,8 +728,9 @@ public final class BackupCommands {
       System.out.println("DELETE operation finished OK: " + StringUtils.join(backupIds));
     }
 
-    private void repairFailedBackupMergeIfAny(Connection conn, BackupSystemTable sysTable)
+    public static void repairFailedBackupMergeIfAny(Connection conn, BackupSystemTable sysTable)
         throws IOException {
+
       String[] backupIds = sysTable.getListOfBackupIdsFromMergeOperation();
       if (backupIds == null || backupIds.length == 0) {
         System.out.println("No failed backup MERGE operation found");
@@ -671,17 +739,52 @@ public final class BackupCommands {
         return;
       }
       System.out.println("Found failed MERGE operation for: " + StringUtils.join(backupIds));
-      System.out.println("Running MERGE again ...");
+      // Check if backup .tmp exists
+      BackupInfo bInfo = sysTable.readBackupInfo(backupIds[0]);
+      String backupRoot = bInfo.getBackupRootDir();
+      FileSystem fs = FileSystem.get(new Path(backupRoot).toUri(), new Configuration());
+      String backupId = BackupUtils.findMostRecentBackupId(backupIds);
+      Path tmpPath = HBackupFileSystem.getBackupTmpDirPathForBackupId(backupRoot, backupId);
+      if (fs.exists(tmpPath)) {
+        // Move data back
+        Path destPath = HBackupFileSystem.getBackupPath(backupRoot, backupId);
+        if (!fs.delete(destPath, true)) {
+          System.out.println("Failed to delete " + destPath);
+        }
+        boolean res = fs.rename(tmpPath, destPath);
+        if (!res) {
+          throw new IOException("MERGE repair: failed  to rename from "+ tmpPath+" to "+ destPath);
+        }
+        System.out.println("MERGE repair: renamed from "+ tmpPath+" to "+ destPath+" res="+ res);
+      } else {
+        checkRemoveBackupImages(fs, backupRoot, backupIds);
+      }
       // Restore table from snapshot
       BackupSystemTable.restoreFromSnapshot(conn);
-      // Unlock backupo system
+      // Unlock backup system
       sysTable.finishBackupExclusiveOperation();
       // Finish previous failed session
       sysTable.finishMergeOperation();
-      try (BackupAdmin admin = new BackupAdminImpl(conn)) {
-        admin.mergeBackups(backupIds);
+
+      System.out.println("MERGE repair operation finished OK: " + StringUtils.join(backupIds));
+    }
+
+    private static void checkRemoveBackupImages(FileSystem fs, String backupRoot,
+      String[] backupIds) throws IOException {
+      String mergedBackupId = BackupUtils.findMostRecentBackupId(backupIds);
+      for (String backupId: backupIds) {
+        if (backupId.equals(mergedBackupId)) {
+          continue;
+        }
+        Path path = HBackupFileSystem.getBackupPath(backupRoot, backupId);
+        if (fs.exists(path)) {
+          if (!fs.delete(path, true)) {
+            System.out.println("MERGE repair removing: "+ path +" - FAILED");
+          } else {
+            System.out.println("MERGE repair removing: "+ path +" - OK");
+          }
+        }
       }
-      System.out.println("MERGE operation finished OK: " + StringUtils.join(backupIds));
     }
 
     @Override
@@ -690,7 +793,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class MergeCommand extends Command {
+  public static class MergeCommand extends Command {
     MergeCommand(Configuration conf, CommandLine cmdline) {
       super(conf);
       this.cmdline = cmdline;
@@ -739,7 +842,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class HistoryCommand extends Command {
+  public static class HistoryCommand extends Command {
     private final static int DEFAULT_HISTORY_LENGTH = 10;
 
     HistoryCommand(Configuration conf, CommandLine cmdline) {
@@ -862,7 +965,7 @@ public final class BackupCommands {
     }
   }
 
-  private static class BackupSetCommand extends Command {
+  public static class BackupSetCommand extends Command {
     private final static String SET_ADD_CMD = "add";
     private final static String SET_REMOVE_CMD = "remove";
     private final static String SET_DELETE_CMD = "delete";

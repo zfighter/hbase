@@ -35,6 +35,7 @@ import org.apache.hadoop.hbase.*;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -90,20 +91,14 @@ public class TestCanaryTool {
 
   @Test
   public void testBasicZookeeperCanaryWorks() throws Exception {
-    Integer port =
-        Iterables.getOnlyElement(testingUtility.getZkCluster().getClientPortList(), null);
-    testingUtility.getConfiguration().set(HConstants.ZOOKEEPER_QUORUM,
-        "localhost:" + port + "/hbase");
-    ExecutorService executor = new ScheduledThreadPoolExecutor(2);
-    Canary.ZookeeperStdOutSink sink = spy(new Canary.ZookeeperStdOutSink());
-    Canary canary = new Canary(executor, sink);
-    String[] args = { "-t", "10000", "-zookeeper" };
-    assertEquals(0, ToolRunner.run(testingUtility.getConfiguration(), canary, args));
+    final String[] args = { "-t", "10000", "-zookeeper" };
+    testZookeeperCanaryWithArgs(args);
+  }
 
-    String baseZnode = testingUtility.getConfiguration()
-        .get(HConstants.ZOOKEEPER_ZNODE_PARENT, HConstants.DEFAULT_ZOOKEEPER_ZNODE_PARENT);
-    verify(sink, atLeastOnce())
-        .publishReadTiming(eq(baseZnode), eq("localhost:" + port), anyLong());
+  @Test
+  public void testZookeeperCanaryPermittedFailuresArgumentWorks() throws Exception {
+    final String[] args = { "-t", "10000", "-zookeeper", "-treatFailureAsError", "-permittedZookeeperFailures", "1" };
+    testZookeeperCanaryWithArgs(args);
   }
 
   @Test
@@ -120,11 +115,11 @@ public class TestCanaryTool {
     ExecutorService executor = new ScheduledThreadPoolExecutor(1);
     Canary.RegionStdOutSink sink = spy(new Canary.RegionStdOutSink());
     Canary canary = new Canary(executor, sink);
-    String[] args = { "-writeSniffing", "-t", "10000", name.getMethodName() };
+    String[] args = { "-writeSniffing", "-t", "10000", tableName.getNameAsString() };
     assertEquals(0, ToolRunner.run(testingUtility.getConfiguration(), canary, args));
     assertEquals("verify no read error count", 0, canary.getReadFailures().size());
     assertEquals("verify no write error count", 0, canary.getWriteFailures().size());
-    verify(sink, atLeastOnce()).publishReadTiming(isA(ServerName.class), isA(HRegionInfo.class),
+    verify(sink, atLeastOnce()).publishReadTiming(isA(ServerName.class), isA(RegionInfo.class),
       isA(ColumnFamilyDescriptor.class), anyLong());
   }
 
@@ -150,7 +145,8 @@ public class TestCanaryTool {
     Canary canary = new Canary(executor, sink);
     String configuredTimeoutStr = tableNames[0].getNameAsString() + "=" + Long.MAX_VALUE + "," +
       tableNames[1].getNameAsString() + "=0";
-    String[] args = { "-readTableTimeouts", configuredTimeoutStr, name.getMethodName() + "1", name.getMethodName() + "2"};
+    String[] args = {"-readTableTimeouts", configuredTimeoutStr, name.getMethodName() + "1",
+      name.getMethodName() + "2"};
     assertEquals(0, ToolRunner.run(testingUtility.getConfiguration(), canary, args));
     verify(sink, times(tableNames.length)).initializeAndGetReadLatencyForTable(isA(String.class));
     for (int i=0; i<2; i++) {
@@ -237,7 +233,7 @@ public class TestCanaryTool {
     conf.setBoolean(HConstants.HBASE_CANARY_READ_RAW_SCAN_KEY, true);
     assertEquals(0, ToolRunner.run(conf, canary, args));
     verify(sink, atLeastOnce())
-        .publishReadTiming(isA(ServerName.class), isA(HRegionInfo.class),
+        .publishReadTiming(isA(ServerName.class), isA(RegionInfo.class),
         isA(ColumnFamilyDescriptor.class), anyLong());
     assertEquals("verify no read error count", 0, canary.getReadFailures().size());
   }
@@ -250,4 +246,19 @@ public class TestCanaryTool {
     assertEquals("verify no read error count", 0, canary.getReadFailures().size());
   }
 
+  private void testZookeeperCanaryWithArgs(String[] args) throws Exception {
+    Integer port =
+      Iterables.getOnlyElement(testingUtility.getZkCluster().getClientPortList(), null);
+    testingUtility.getConfiguration().set(HConstants.ZOOKEEPER_QUORUM,
+      "localhost:" + port + "/hbase");
+    ExecutorService executor = new ScheduledThreadPoolExecutor(2);
+    Canary.ZookeeperStdOutSink sink = spy(new Canary.ZookeeperStdOutSink());
+    Canary canary = new Canary(executor, sink);
+    assertEquals(0, ToolRunner.run(testingUtility.getConfiguration(), canary, args));
+
+    String baseZnode = testingUtility.getConfiguration()
+      .get(HConstants.ZOOKEEPER_ZNODE_PARENT, HConstants.DEFAULT_ZOOKEEPER_ZNODE_PARENT);
+    verify(sink, atLeastOnce())
+      .publishReadTiming(eq(baseZnode), eq("localhost:" + port), anyLong());
+  }
 }

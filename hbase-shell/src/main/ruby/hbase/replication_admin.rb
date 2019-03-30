@@ -20,6 +20,7 @@
 include Java
 
 java_import org.apache.hadoop.hbase.client.replication.ReplicationPeerConfigUtil
+java_import org.apache.hadoop.hbase.replication.SyncReplicationState
 java_import org.apache.hadoop.hbase.replication.ReplicationPeerConfig
 java_import org.apache.hadoop.hbase.util.Bytes
 java_import org.apache.hadoop.hbase.zookeeper.ZKConfig
@@ -64,14 +65,23 @@ module Hbase
         table_cfs = args.fetch(TABLE_CFS, nil)
         namespaces = args.fetch(NAMESPACES, nil)
         peer_state = args.fetch(STATE, nil)
+        remote_wal_dir = args.fetch(REMOTE_WAL_DIR, nil)
+        serial = args.fetch(SERIAL, nil)
 
         # Create and populate a ReplicationPeerConfig
-        builder = org.apache.hadoop.hbase.replication.ReplicationPeerConfig
-          .newBuilder()
+        builder = ReplicationPeerConfig.newBuilder()
         builder.set_cluster_key(cluster_key)
 
         unless endpoint_classname.nil?
           builder.set_replication_endpoint_impl(endpoint_classname)
+        end
+
+        unless remote_wal_dir.nil?
+          builder.setRemoteWALDir(remote_wal_dir)
+        end
+
+        unless serial.nil?
+          builder.setSerial(serial)
         end
 
         unless config.nil?
@@ -200,6 +210,38 @@ module Hbase
       @admin.removeReplicationPeerTableCFs(id, map)
     end
 
+    # Append exclude-tableCFs to the exclude-tableCFs config for the specified peer
+    def append_peer_exclude_tableCFs(id, excludeTableCFs)
+      unless excludeTableCFs.nil?
+        # convert tableCFs to TableName
+        map = java.util.HashMap.new
+        excludeTableCFs.each do |key, val|
+          map.put(org.apache.hadoop.hbase.TableName.valueOf(key), val)
+        end
+        rpc = get_peer_config(id)
+        unless rpc.nil?
+          rpc = ReplicationPeerConfigUtil.appendExcludeTableCFsToReplicationPeerConfig(map, rpc)
+          @admin.updateReplicationPeerConfig(id, rpc)
+        end
+      end
+    end
+
+    # Remove some exclude-tableCFs from the exclude-tableCFs config for the specified peer
+    def remove_peer_exclude_tableCFs(id, excludeTableCFs)
+      unless excludeTableCFs.nil?
+        # convert tableCFs to TableName
+        map = java.util.HashMap.new
+        excludeTableCFs.each do |key, val|
+          map.put(org.apache.hadoop.hbase.TableName.valueOf(key), val)
+        end
+        rpc = get_peer_config(id)
+        unless rpc.nil?
+          rpc = ReplicationPeerConfigUtil.removeExcludeTableCFsFromReplicationPeerConfig(map, rpc, id)
+          @admin.updateReplicationPeerConfig(id, rpc)
+        end
+      end
+    end
+
     # Set new namespaces config for the specified peer
     def set_peer_namespaces(id, namespaces)
       unless namespaces.nil?
@@ -228,8 +270,7 @@ module Hbase
           namespaces.each do |n|
             ns_set.add(n)
           end
-          builder = org.apache.hadoop.hbase.replication.ReplicationPeerConfig
-            .newBuilder(rpc)
+          builder = ReplicationPeerConfig.newBuilder(rpc)
           builder.setNamespaces(ns_set)
           @admin.updateReplicationPeerConfig(id, builder.build)
         end
@@ -248,8 +289,7 @@ module Hbase
               ns_set.remove(n)
             end
           end
-          builder = org.apache.hadoop.hbase.replication.ReplicationPeerConfig
-            .newBuilder(rpc)
+          builder = ReplicationPeerConfig.newBuilder(rpc)
           builder.setNamespaces(ns_set)
           @admin.updateReplicationPeerConfig(id, builder.build)
         end
@@ -277,11 +317,59 @@ module Hbase
       end
     end
 
+    # Append exclude namespaces config for the specified peer
+    def append_peer_exclude_namespaces(id, namespaces)
+      unless namespaces.nil?
+        rpc = get_peer_config(id)
+        unless rpc.nil?
+          if rpc.getExcludeNamespaces.nil?
+            ns_set = java.util.HashSet.new
+          else
+            ns_set = java.util.HashSet.new(rpc.getExcludeNamespaces)
+          end
+          namespaces.each do |n|
+            ns_set.add(n)
+          end
+          builder = ReplicationPeerConfig.newBuilder(rpc)
+          builder.setExcludeNamespaces(ns_set)
+          @admin.updateReplicationPeerConfig(id, builder.build)
+        end
+      end
+    end
+
+    # Remove exclude namespaces config for the specified peer
+    def remove_peer_exclude_namespaces(id, namespaces)
+      unless namespaces.nil?
+        rpc = get_peer_config(id)
+        unless rpc.nil?
+          ns_set = rpc.getExcludeNamespaces
+          unless ns_set.nil?
+            ns_set = java.util.HashSet.new(ns_set)
+            namespaces.each do |n|
+              ns_set.remove(n)
+            end
+          end
+          builder = ReplicationPeerConfig.newBuilder(rpc)
+          builder.setExcludeNamespaces(ns_set)
+          @admin.updateReplicationPeerConfig(id, builder.build)
+        end
+      end
+    end
+
     def set_peer_replicate_all(id, replicate_all)
       rpc = get_peer_config(id)
       return if rpc.nil?
       rpc.setReplicateAllUserTables(replicate_all)
       @admin.updateReplicationPeerConfig(id, rpc)
+    end
+
+    def set_peer_serial(id, peer_serial)
+      rpc = get_peer_config(id)
+      return if rpc.nil?
+      rpc_builder = org.apache.hadoop.hbase.replication.ReplicationPeerConfig
+                       .newBuilder(rpc)
+      new_rpc = rpc_builder.setSerial(peer_serial).build
+      @admin.updateReplicationPeerConfig(id, new_rpc)
     end
 
     # Set exclude namespaces config for the specified peer
@@ -327,6 +415,20 @@ module Hbase
       '!' + ReplicationPeerConfigUtil.convertToString(tableCFs)
     end
 
+    # Transit current cluster to a new state in the specified synchronous
+    # replication peer
+    def transit_peer_sync_replication_state(id, state)
+      if 'ACTIVE'.eql?(state)
+        @admin.transitReplicationPeerSyncReplicationState(id, SyncReplicationState::ACTIVE)
+      elsif 'DOWNGRADE_ACTIVE'.eql?(state)
+        @admin.transitReplicationPeerSyncReplicationState(id, SyncReplicationState::DOWNGRADE_ACTIVE)
+      elsif 'STANDBY'.eql?(state)
+        @admin.transitReplicationPeerSyncReplicationState(id, SyncReplicationState::STANDBY)
+      else
+        raise(ArgumentError, 'synchronous replication state must be ACTIVE, DOWNGRADE_ACTIVE or STANDBY')
+      end
+    end
+
     #----------------------------------------------------------------------------------------------
     # Enables a table's replication switch
     def enable_tablerep(table_name)
@@ -362,7 +464,7 @@ module Hbase
       # Create and populate a ReplicationPeerConfig
       replication_peer_config = get_peer_config(id)
       builder = org.apache.hadoop.hbase.replication.ReplicationPeerConfig
-        .newBuilder(replication_peer_config)
+                   .newBuilder(replication_peer_config)
       unless config.nil?
         builder.putAllConfiguration(config)
       end

@@ -52,6 +52,7 @@ public class ServerLoad implements ServerMetrics {
   private int memstoreSizeMB = 0;
   private long storefileIndexSizeKB = 0;
   private long readRequestsCount = 0;
+  private long cpRequestsCount = 0;
   private long filteredReadRequestsCount = 0;
   private long writeRequestsCount = 0;
   private int rootIndexSizeKB = 0;
@@ -86,6 +87,7 @@ public class ServerLoad implements ServerMetrics {
       storefileSizeMB += rl.getStoreFileSize().get(Size.Unit.MEGABYTE);
       memstoreSizeMB += rl.getMemStoreSize().get(Size.Unit.MEGABYTE);
       readRequestsCount += rl.getReadRequestCount();
+      cpRequestsCount += rl.getCpRequestCount();
       filteredReadRequestsCount += rl.getFilteredReadRequestCount();
       writeRequestsCount += rl.getWriteRequestCount();
       storefileIndexSizeKB += rl.getStoreFileIndexSize().get(Size.Unit.KILOBYTE);
@@ -283,6 +285,15 @@ public class ServerLoad implements ServerMetrics {
    *     Use {@link #getRegionMetrics} instead.
    */
   @Deprecated
+  public long getCpRequestsCount() {
+    return cpRequestsCount;
+  }
+
+  /**
+   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0
+   *     Use {@link #getRegionMetrics} instead.
+   */
+  @Deprecated
   public long getFilteredReadRequestsCount() {
     return filteredReadRequestsCount;
   }
@@ -391,6 +402,15 @@ public class ServerLoad implements ServerMetrics {
 
   /**
    * Call directly from client such as hbase shell
+   * @return a map of ReplicationLoadSource list per peer id
+   */
+  @Override
+  public Map<String, List<ReplicationLoadSource>> getReplicationLoadSourceMap() {
+    return metrics.getReplicationLoadSourceMap();
+  }
+
+  /**
+   * Call directly from client such as hbase shell
    * @return ReplicationLoadSink
    */
   @Override
@@ -448,7 +468,7 @@ public class ServerLoad implements ServerMetrics {
         .collect(Collectors.toMap(Map.Entry::getKey, e -> new RegionLoad(e.getValue()),
           (v1, v2) -> {
             throw new RuntimeException("key collisions?");
-          }, () -> new TreeMap(Bytes.BYTES_COMPARATOR)));
+          }, () -> new TreeMap<>(Bytes.BYTES_COMPARATOR)));
   }
 
   /**
@@ -501,6 +521,7 @@ public class ServerLoad implements ServerMetrics {
     Strings.appendKeyValue(sb, "storefileIndexSizeKB",
         Long.valueOf(this.storefileIndexSizeKB));
     Strings.appendKeyValue(sb, "readRequestsCount", Long.valueOf(this.readRequestsCount));
+    Strings.appendKeyValue(sb, "cpRequestsCount", Long.valueOf(this.cpRequestsCount));
     Strings.appendKeyValue(sb, "filteredReadRequestsCount",
         Long.valueOf(this.filteredReadRequestsCount));
     Strings.appendKeyValue(sb, "writeRequestsCount", Long.valueOf(this.writeRequestsCount));
@@ -547,9 +568,9 @@ public class ServerLoad implements ServerMetrics {
   public int hashCode() {
     return Objects
         .hashCode(stores, storefiles, storeUncompressedSizeMB, storefileSizeMB, memstoreSizeMB,
-            storefileIndexSizeKB, readRequestsCount, filteredReadRequestsCount, writeRequestsCount,
-            rootIndexSizeKB, totalStaticIndexSizeKB, totalStaticBloomSizeKB, totalCompactingKVs,
-            currentCompactedKVs);
+            storefileIndexSizeKB, readRequestsCount, cpRequestsCount, filteredReadRequestsCount,
+            writeRequestsCount, rootIndexSizeKB, totalStaticIndexSizeKB, totalStaticBloomSizeKB,
+            totalCompactingKVs, currentCompactedKVs);
   }
 
   @Override
@@ -562,6 +583,7 @@ public class ServerLoad implements ServerMetrics {
           && storefileSizeMB == sl.storefileSizeMB && memstoreSizeMB == sl.memstoreSizeMB
           && storefileIndexSizeKB == sl.storefileIndexSizeKB
           && readRequestsCount == sl.readRequestsCount
+          && cpRequestsCount == sl.cpRequestsCount
           && filteredReadRequestsCount == sl.filteredReadRequestsCount
           && writeRequestsCount == sl.writeRequestsCount && rootIndexSizeKB == sl.rootIndexSizeKB
           && totalStaticIndexSizeKB == sl.totalStaticIndexSizeKB

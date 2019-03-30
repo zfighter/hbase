@@ -123,7 +123,7 @@ public class TestDurability {
 
   @Test
   public void testDurability() throws Exception {
-    WALFactory wals = new WALFactory(CONF, null,
+    WALFactory wals = new WALFactory(CONF,
         ServerName.valueOf("TestDurability", 16010, System.currentTimeMillis()).toString());
     HRegion region = createHRegion(wals, Durability.USE_DEFAULT);
     WAL wal = region.getWAL();
@@ -187,7 +187,7 @@ public class TestDurability {
     byte[] col3 = Bytes.toBytes("col3");
 
     // Setting up region
-    WALFactory wals = new WALFactory(CONF, null,
+    WALFactory wals = new WALFactory(CONF,
         ServerName.valueOf("TestIncrement", 16010, System.currentTimeMillis()).toString());
     HRegion region = createHRegion(wals, Durability.USE_DEFAULT);
     WAL wal = region.getWAL();
@@ -208,14 +208,13 @@ public class TestDurability {
     assertEquals(1, Bytes.toLong(res.getValue(FAMILY, col1)));
     verifyWALCount(wals, wal, 2);
 
-    // col1: amount = 0, 0 write back to WAL
+    // col1: amount = 0, 1 write back to WAL
     inc1 = new Increment(row1);
     inc1.addColumn(FAMILY, col1, 0);
     res = region.increment(inc1);
     assertEquals(1, res.size());
     assertEquals(1, Bytes.toLong(res.getValue(FAMILY, col1)));
-    verifyWALCount(wals, wal, 2);
-
+    verifyWALCount(wals, wal, 3);
     // col1: amount = 0, col2: amount = 0, col3: amount = 0
     // 1 write back to WAL
     inc1 = new Increment(row1);
@@ -227,7 +226,7 @@ public class TestDurability {
     assertEquals(1, Bytes.toLong(res.getValue(FAMILY, col1)));
     assertEquals(0, Bytes.toLong(res.getValue(FAMILY, col2)));
     assertEquals(0, Bytes.toLong(res.getValue(FAMILY, col3)));
-    verifyWALCount(wals, wal, 3);
+    verifyWALCount(wals, wal, 4);
 
     // col1: amount = 5, col2: amount = 4, col3: amount = 3
     // 1 write back to WAL
@@ -240,7 +239,7 @@ public class TestDurability {
     assertEquals(6, Bytes.toLong(res.getValue(FAMILY, col1)));
     assertEquals(4, Bytes.toLong(res.getValue(FAMILY, col2)));
     assertEquals(3, Bytes.toLong(res.getValue(FAMILY, col3)));
-    verifyWALCount(wals, wal, 4);
+    verifyWALCount(wals, wal, 5);
   }
 
   /**
@@ -253,7 +252,7 @@ public class TestDurability {
     byte[] col1 = Bytes.toBytes("col1");
 
     // Setting up region
-    WALFactory wals = new WALFactory(CONF, null,
+    WALFactory wals = new WALFactory(CONF,
         ServerName
             .valueOf("testIncrementWithReturnResultsSetToFalse", 16010, System.currentTimeMillis())
             .toString());
@@ -291,7 +290,7 @@ public class TestDurability {
   private HRegion createHRegion(WALFactory wals, Durability durability) throws IOException {
     TableName tableName = TableName.valueOf(name.getMethodName().replaceAll("[^A-Za-z0-9-_]", "_"));
     TableDescriptor htd = TableDescriptorBuilder.newBuilder(tableName)
-        .addColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILY)).build();
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILY)).build();
     RegionInfo info = RegionInfoBuilder.newBuilder(tableName).build();
     Path path = new Path(DIR, tableName.getNameAsString());
     if (FS.exists(path)) {

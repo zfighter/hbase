@@ -27,7 +27,7 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.snapshot.RestoreSnapshotHelper;
@@ -64,7 +64,7 @@ public class TestTableSnapshotScanner {
   public static void blockUntilSplitFinished(HBaseTestingUtility util, TableName tableName,
       int expectedRegionSize) throws Exception {
     for (int i = 0; i < 100; i++) {
-      List<HRegionInfo> hRegionInfoList = util.getAdmin().getTableRegions(tableName);
+      List<RegionInfo> hRegionInfoList = util.getAdmin().getRegions(tableName);
       if (hRegionInfoList.size() >= expectedRegionSize) {
         break;
       }
@@ -74,7 +74,10 @@ public class TestTableSnapshotScanner {
 
   public void setupCluster() throws Exception {
     setupConf(UTIL.getConfiguration());
-    UTIL.startMiniCluster(NUM_REGION_SERVERS, true);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numRegionServers(NUM_REGION_SERVERS).numDataNodes(NUM_REGION_SERVERS)
+        .createRootDir(true).build();
+    UTIL.startMiniCluster(option);
     rootDir = UTIL.getHBaseCluster().getMaster().getMasterFileSystem().getRootDir();
     fs = rootDir.getFileSystem(UTIL.getConfiguration());
   }

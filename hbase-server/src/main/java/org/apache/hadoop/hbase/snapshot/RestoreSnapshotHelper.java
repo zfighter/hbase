@@ -56,6 +56,7 @@ import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.security.access.AccessControlClient;
+import org.apache.hadoop.hbase.security.access.Permission;
 import org.apache.hadoop.hbase.security.access.ShadedAccessControlUtil;
 import org.apache.hadoop.hbase.security.access.TablePermission;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -195,11 +196,33 @@ public class RestoreSnapshotHelper {
     // this instance, by removing the regions already present in the restore dir.
     Set<String> regionNames = new HashSet<>(regionManifests.keySet());
 
+    List<RegionInfo> tableRegions = getTableRegions();
+
     RegionInfo mobRegion = MobUtils.getMobRegionInfo(snapshotManifest.getTableDescriptor()
         .getTableName());
+    if (tableRegions != null) {
+      // restore the mob region in case
+      if (regionNames.contains(mobRegion.getEncodedName())) {
+        monitor.rethrowException();
+        status.setStatus("Restoring mob region...");
+        List<RegionInfo> mobRegions = new ArrayList<>(1);
+        mobRegions.add(mobRegion);
+        restoreHdfsMobRegions(exec, regionManifests, mobRegions);
+        regionNames.remove(mobRegion.getEncodedName());
+        status.setStatus("Finished restoring mob region.");
+      }
+    }
+    if (regionNames.contains(mobRegion.getEncodedName())) {
+      // add the mob region
+      monitor.rethrowException();
+      status.setStatus("Cloning mob region...");
+      cloneHdfsMobRegion(regionManifests, mobRegion);
+      regionNames.remove(mobRegion.getEncodedName());
+      status.setStatus("Finished cloning mob region.");
+    }
+
     // Identify which region are still available and which not.
     // NOTE: we rely upon the region name as: "table name, start key, end key"
-    List<RegionInfo> tableRegions = getTableRegions();
     if (tableRegions != null) {
       monitor.rethrowException();
       for (RegionInfo regionInfo: tableRegions) {
@@ -207,55 +230,46 @@ public class RestoreSnapshotHelper {
         if (regionNames.contains(regionName)) {
           LOG.info("region to restore: " + regionName);
           regionNames.remove(regionName);
-          metaChanges.addRegionToRestore(regionInfo);
+          metaChanges.addRegionToRestore(ProtobufUtil.toRegionInfo(regionManifests.get(regionName)
+              .getRegionInfo()));
         } else {
           LOG.info("region to remove: " + regionName);
           metaChanges.addRegionToRemove(regionInfo);
         }
       }
-
-      // Restore regions using the snapshot data
-      monitor.rethrowException();
-      status.setStatus("Restoring table regions...");
-      if (regionNames.contains(mobRegion.getEncodedName())) {
-        // restore the mob region in case
-        List<RegionInfo> mobRegions = new ArrayList<>(1);
-        mobRegions.add(mobRegion);
-        restoreHdfsMobRegions(exec, regionManifests, mobRegions);
-        regionNames.remove(mobRegion.getEncodedName());
-      }
-      restoreHdfsRegions(exec, regionManifests, metaChanges.getRegionsToRestore());
-      status.setStatus("Finished restoring all table regions.");
-
-      // Remove regions from the current table
-      monitor.rethrowException();
-      status.setStatus("Starting to delete excess regions from table");
-      removeHdfsRegions(exec, metaChanges.getRegionsToRemove());
-      status.setStatus("Finished deleting excess regions from table.");
     }
 
     // Regions to Add: present in the snapshot but not in the current table
+    List<RegionInfo> regionsToAdd = new ArrayList<>(regionNames.size());
     if (regionNames.size() > 0) {
-      List<RegionInfo> regionsToAdd = new ArrayList<>(regionNames.size());
-
       monitor.rethrowException();
-      // add the mob region
-      if (regionNames.contains(mobRegion.getEncodedName())) {
-        cloneHdfsMobRegion(regionManifests, mobRegion);
-        regionNames.remove(mobRegion.getEncodedName());
-      }
       for (String regionName: regionNames) {
         LOG.info("region to add: " + regionName);
-        regionsToAdd.add(ProtobufUtil.toRegionInfo(regionManifests.get(regionName).getRegionInfo()));
+        regionsToAdd.add(ProtobufUtil.toRegionInfo(regionManifests.get(regionName)
+            .getRegionInfo()));
       }
-
-      // Create new regions cloning from the snapshot
-      monitor.rethrowException();
-      status.setStatus("Cloning regions...");
-      RegionInfo[] clonedRegions = cloneHdfsRegions(exec, regionManifests, regionsToAdd);
-      metaChanges.setNewRegions(clonedRegions);
-      status.setStatus("Finished cloning regions.");
     }
+
+    // Create new regions cloning from the snapshot
+    // HBASE-19980: We need to call cloneHdfsRegions() before restoreHdfsRegions() because
+    // regionsMap is constructed in cloneHdfsRegions() and it can be used in restoreHdfsRegions().
+    monitor.rethrowException();
+    status.setStatus("Cloning regions...");
+    RegionInfo[] clonedRegions = cloneHdfsRegions(exec, regionManifests, regionsToAdd);
+    metaChanges.setNewRegions(clonedRegions);
+    status.setStatus("Finished cloning regions.");
+
+    // Restore regions using the snapshot data
+    monitor.rethrowException();
+    status.setStatus("Restoring table regions...");
+    restoreHdfsRegions(exec, regionManifests, metaChanges.getRegionsToRestore());
+    status.setStatus("Finished restoring all table regions.");
+
+    // Remove regions from the current table
+    monitor.rethrowException();
+    status.setStatus("Starting to delete excess regions from table");
+    removeHdfsRegions(exec, metaChanges.getRegionsToRemove());
+    status.setStatus("Finished deleting excess regions from table.");
 
     LOG.info("finishing restore table regions using snapshot=" + snapshotDesc);
 
@@ -393,7 +407,7 @@ public class RestoreSnapshotHelper {
         }
 
         LOG.debug("Update splits parent " + regionInfo.getEncodedName() + " -> " + daughters);
-        MetaTableAccessor.addSpiltsToParent(connection, regionInfo,
+        MetaTableAccessor.addSplitsToParent(connection, regionInfo,
           regionsByName.get(daughters.getFirst()),
           regionsByName.get(daughters.getSecond()));
       }
@@ -608,7 +622,7 @@ public class RestoreSnapshotHelper {
   private void cloneHdfsMobRegion(final Map<String, SnapshotRegionManifest> regionManifests,
       final RegionInfo region) throws IOException {
     // clone region info (change embedded tableName with the new one)
-    Path clonedRegionPath = MobUtils.getMobRegionPath(conf, tableDesc.getTableName());
+    Path clonedRegionPath = MobUtils.getMobRegionPath(rootDir, tableDesc.getTableName());
     cloneRegion(clonedRegionPath, region, regionManifests.get(region.getEncodedName()));
   }
 
@@ -742,11 +756,16 @@ public class RestoreSnapshotHelper {
 
     // Add the daughter region to the map
     String regionName = Bytes.toString(regionsMap.get(regionInfo.getEncodedNameAsBytes()));
+    if (regionName == null) {
+      regionName = regionInfo.getEncodedName();
+    }
     LOG.debug("Restore reference " + regionName + " to " + clonedRegionName);
     synchronized (parentsMap) {
       Pair<String, String> daughters = parentsMap.get(clonedRegionName);
       if (daughters == null) {
-        daughters = new Pair<>(regionName, null);
+        // In case one side of the split is already compacted, regionName is put as both first and
+        // second of Pair
+        daughters = new Pair<>(regionName, regionName);
         parentsMap.put(clonedRegionName, daughters);
       } else if (!regionName.equals(daughters.getFirst())) {
         daughters.setSecond(regionName);
@@ -840,15 +859,14 @@ public class RestoreSnapshotHelper {
       Configuration conf) throws IOException {
     if (snapshot.hasUsersAndPermissions() && snapshot.getUsersAndPermissions() != null) {
       LOG.info("Restore snapshot acl to table. snapshot: " + snapshot + ", table: " + newTableName);
-      ListMultimap<String, TablePermission> perms =
+      ListMultimap<String, Permission> perms =
           ShadedAccessControlUtil.toUserTablePermissions(snapshot.getUsersAndPermissions());
       try (Connection conn = ConnectionFactory.createConnection(conf)) {
-        for (Entry<String, TablePermission> e : perms.entries()) {
+        for (Entry<String, Permission> e : perms.entries()) {
           String user = e.getKey();
-          TablePermission perm = e.getValue();
-          perm.setTableName(newTableName);
-          AccessControlClient.grant(conn, perm.getTableName(), user, perm.getFamily(),
-            perm.getQualifier(), perm.getActions());
+          TablePermission tablePerm = (TablePermission) e.getValue();
+          AccessControlClient.grant(conn, newTableName, user, tablePerm.getFamily(),
+            tablePerm.getQualifier(), tablePerm.getActions());
         }
       } catch (Throwable e) {
         throw new IOException("Grant acl into newly creatd table failed. snapshot: " + snapshot

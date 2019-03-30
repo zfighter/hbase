@@ -20,11 +20,10 @@ package org.apache.hadoop.hbase.client;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.lang.reflect.Type;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.hadoop.hbase.Cell;
@@ -62,10 +61,14 @@ import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.BuilderStyleTest;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.GsonUtil;
 import org.junit.Assert;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+
+import org.apache.hbase.thirdparty.com.google.common.reflect.TypeToken;
+import org.apache.hbase.thirdparty.com.google.gson.Gson;
 
 /**
  * Run tests that use the functionality of the Operation superclass for
@@ -83,7 +86,7 @@ public class TestOperation {
   private static byte [] QUALIFIER = Bytes.toBytes("testQualifier");
   private static byte [] VALUE = Bytes.toBytes("testValue");
 
-  private static ObjectMapper mapper = new ObjectMapper();
+  private static Gson GSON = GsonUtil.createGson().create();
 
   private static List<Long> TS_LIST = Arrays.asList(2L, 3L, 5L);
   private static TimestampsFilter TS_FILTER = new TimestampsFilter(TS_LIST);
@@ -291,7 +294,9 @@ public class TestOperation {
     scan.addColumn(FAMILY, QUALIFIER);
     // get its JSON representation, and parse it
     String json = scan.toJSON();
-    Map<String, Object> parsedJSON = mapper.readValue(json, HashMap.class);
+    Type typeOfHashMap = new TypeToken<Map<String, Object>>() {
+    }.getType();
+    Map<String, Object> parsedJSON = GSON.fromJson(json, typeOfHashMap);
     // check for the row
     assertEquals("startRow incorrect in Scan.toJSON()",
         Bytes.toStringBinary(ROW), parsedJSON.get("startRow"));
@@ -309,7 +314,7 @@ public class TestOperation {
     get.addColumn(FAMILY, QUALIFIER);
     // get its JSON representation, and parse it
     json = get.toJSON();
-    parsedJSON = mapper.readValue(json, HashMap.class);
+    parsedJSON = GSON.fromJson(json, typeOfHashMap);
     // check for the row
     assertEquals("row incorrect in Get.toJSON()",
         Bytes.toStringBinary(ROW), parsedJSON.get("row"));
@@ -327,7 +332,7 @@ public class TestOperation {
     put.addColumn(FAMILY, QUALIFIER, VALUE);
     // get its JSON representation, and parse it
     json = put.toJSON();
-    parsedJSON = mapper.readValue(json, HashMap.class);
+    parsedJSON = GSON.fromJson(json, typeOfHashMap);
     // check for the row
     assertEquals("row absent in Put.toJSON()",
         Bytes.toStringBinary(ROW), parsedJSON.get("row"));
@@ -340,15 +345,15 @@ public class TestOperation {
     assertEquals("Qualifier incorrect in Put.toJSON()",
         Bytes.toStringBinary(QUALIFIER),
         kvMap.get("qualifier"));
-    assertEquals("Value length incorrect in Put.toJSON()",
-        VALUE.length, kvMap.get("vlen"));
+    assertEquals("Value length incorrect in Put.toJSON()", VALUE.length,
+      ((Number) kvMap.get("vlen")).intValue());
 
     // produce a Delete operation
     Delete delete = new Delete(ROW);
     delete.addColumn(FAMILY, QUALIFIER);
     // get its JSON representation, and parse it
     json = delete.toJSON();
-    parsedJSON = mapper.readValue(json, HashMap.class);
+    parsedJSON = GSON.fromJson(json, typeOfHashMap);
     // check for the row
     assertEquals("row absent in Delete.toJSON()",
         Bytes.toStringBinary(ROW), parsedJSON.get("row"));
@@ -367,14 +372,14 @@ public class TestOperation {
     Put p = new Put(ROW);
     List<Cell> c = p.get(FAMILY, QUALIFIER);
     Assert.assertEquals(0, c.size());
-    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimeStamp());
+    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimestamp());
 
     p.addColumn(FAMILY, ByteBuffer.wrap(QUALIFIER), 1984L, ByteBuffer.wrap(VALUE));
     c = p.get(FAMILY, QUALIFIER);
     Assert.assertEquals(1, c.size());
     Assert.assertEquals(1984L, c.get(0).getTimestamp());
     Assert.assertArrayEquals(VALUE, CellUtil.cloneValue(c.get(0)));
-    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimeStamp());
+    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimestamp());
     Assert.assertEquals(0, CellComparatorImpl.COMPARATOR.compare(c.get(0), new KeyValue(c.get(0))));
 
     p = new Put(ROW);
@@ -383,7 +388,7 @@ public class TestOperation {
     Assert.assertEquals(1, c.size());
     Assert.assertEquals(2013L, c.get(0).getTimestamp());
     Assert.assertArrayEquals(new byte[]{}, CellUtil.cloneValue(c.get(0)));
-    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimeStamp());
+    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimestamp());
     Assert.assertEquals(0, CellComparatorImpl.COMPARATOR.compare(c.get(0), new KeyValue(c.get(0))));
 
     p = new Put(ByteBuffer.wrap(ROW));
@@ -393,7 +398,7 @@ public class TestOperation {
     Assert.assertEquals(2001L, c.get(0).getTimestamp());
     Assert.assertArrayEquals(new byte[]{}, CellUtil.cloneValue(c.get(0)));
     Assert.assertArrayEquals(ROW, CellUtil.cloneRow(c.get(0)));
-    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimeStamp());
+    Assert.assertEquals(HConstants.LATEST_TIMESTAMP, p.getTimestamp());
     Assert.assertEquals(0, CellComparatorImpl.COMPARATOR.compare(c.get(0), new KeyValue(c.get(0))));
 
     p = new Put(ByteBuffer.wrap(ROW), 1970L);
@@ -403,7 +408,7 @@ public class TestOperation {
     Assert.assertEquals(2001L, c.get(0).getTimestamp());
     Assert.assertArrayEquals(new byte[]{}, CellUtil.cloneValue(c.get(0)));
     Assert.assertArrayEquals(ROW, CellUtil.cloneRow(c.get(0)));
-    Assert.assertEquals(1970L, p.getTimeStamp());
+    Assert.assertEquals(1970L, p.getTimestamp());
     Assert.assertEquals(0, CellComparatorImpl.COMPARATOR.compare(c.get(0), new KeyValue(c.get(0))));
   }
 

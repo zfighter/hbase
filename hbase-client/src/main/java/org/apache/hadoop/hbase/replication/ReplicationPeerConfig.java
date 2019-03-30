@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.replication;
 
 import java.util.Collection;
@@ -25,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -46,6 +46,9 @@ public class ReplicationPeerConfig {
   private Map<TableName, ? extends Collection<String>> excludeTableCFsMap = null;
   private Set<String> excludeNamespaces = null;
   private long bandwidth = 0;
+  private final boolean serial;
+  // Used by synchronous replication
+  private String remoteWALDir;
 
   private ReplicationPeerConfig(ReplicationPeerConfigBuilderImpl builder) {
     this.clusterKey = builder.clusterKey;
@@ -64,6 +67,8 @@ public class ReplicationPeerConfig {
         builder.excludeNamespaces != null ? Collections.unmodifiableSet(builder.excludeNamespaces)
             : null;
     this.bandwidth = builder.bandwidth;
+    this.serial = builder.serial;
+    this.remoteWALDir = builder.remoteWALDir;
   }
 
   private Map<TableName, List<String>>
@@ -82,6 +87,7 @@ public class ReplicationPeerConfig {
   public ReplicationPeerConfig() {
     this.peerData = new TreeMap<>(Bytes.BYTES_COMPARATOR);
     this.configuration = new HashMap<>(0);
+    this.serial = false;
   }
 
   /**
@@ -210,20 +216,36 @@ public class ReplicationPeerConfig {
     return this;
   }
 
+  public String getRemoteWALDir() {
+    return this.remoteWALDir;
+  }
+
+  /**
+   * Use remote wal dir to decide whether a peer is sync replication peer
+   */
+  public boolean isSyncReplication() {
+    return !StringUtils.isBlank(this.remoteWALDir);
+  }
+
   public static ReplicationPeerConfigBuilder newBuilder() {
     return new ReplicationPeerConfigBuilderImpl();
+  }
+
+  public boolean isSerial() {
+    return serial;
   }
 
   public static ReplicationPeerConfigBuilder newBuilder(ReplicationPeerConfig peerConfig) {
     ReplicationPeerConfigBuilderImpl builder = new ReplicationPeerConfigBuilderImpl();
     builder.setClusterKey(peerConfig.getClusterKey())
-        .setReplicationEndpointImpl(peerConfig.getReplicationEndpointImpl())
-        .putAllPeerData(peerConfig.getPeerData()).putAllConfiguration(peerConfig.getConfiguration())
-        .setTableCFsMap(peerConfig.getTableCFsMap()).setNamespaces(peerConfig.getNamespaces())
-        .setReplicateAllUserTables(peerConfig.replicateAllUserTables())
-        .setExcludeTableCFsMap(peerConfig.getExcludeTableCFsMap())
-        .setExcludeNamespaces(peerConfig.getExcludeNamespaces())
-        .setBandwidth(peerConfig.getBandwidth());
+      .setReplicationEndpointImpl(peerConfig.getReplicationEndpointImpl())
+      .putAllPeerData(peerConfig.getPeerData()).putAllConfiguration(peerConfig.getConfiguration())
+      .setTableCFsMap(peerConfig.getTableCFsMap()).setNamespaces(peerConfig.getNamespaces())
+      .setReplicateAllUserTables(peerConfig.replicateAllUserTables())
+      .setExcludeTableCFsMap(peerConfig.getExcludeTableCFsMap())
+      .setExcludeNamespaces(peerConfig.getExcludeNamespaces())
+      .setBandwidth(peerConfig.getBandwidth()).setSerial(peerConfig.isSerial())
+      .setRemoteWALDir(peerConfig.getRemoteWALDir());
     return builder;
   }
 
@@ -249,6 +271,10 @@ public class ReplicationPeerConfig {
     private Set<String> excludeNamespaces = null;
 
     private long bandwidth = 0;
+
+    private boolean serial = false;
+
+    private String remoteWALDir = null;
 
     @Override
     public ReplicationPeerConfigBuilder setClusterKey(String clusterKey) {
@@ -313,6 +339,18 @@ public class ReplicationPeerConfig {
     }
 
     @Override
+    public ReplicationPeerConfigBuilder setSerial(boolean serial) {
+      this.serial = serial;
+      return this;
+    }
+
+    @Override
+    public ReplicationPeerConfigBuilder setRemoteWALDir(String dir) {
+      this.remoteWALDir = dir;
+      return this;
+    }
+
+    @Override
     public ReplicationPeerConfig build() {
       // It would be nice to validate the configuration, but we have to work with "old" data
       // from ZK which makes it much more difficult.
@@ -340,7 +378,11 @@ public class ReplicationPeerConfig {
         builder.append("tableCFs=").append(tableCFsMap.toString()).append(",");
       }
     }
-    builder.append("bandwidth=").append(bandwidth);
+    builder.append("bandwidth=").append(bandwidth).append(",");
+    builder.append("serial=").append(serial);
+    if (this.remoteWALDir != null) {
+      builder.append(",remoteWALDir=").append(remoteWALDir);
+    }
     return builder.toString();
   }
 

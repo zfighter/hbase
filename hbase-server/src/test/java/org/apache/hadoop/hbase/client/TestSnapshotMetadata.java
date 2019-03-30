@@ -178,7 +178,7 @@ public class TestSnapshotMetadata {
     admin.createTable(htd);
     Table original = UTIL.getConnection().getTable(originalTableName);
     originalTableName = TableName.valueOf(sourceTableNameAsString);
-    originalTableDescriptor = admin.getTableDescriptor(originalTableName);
+    originalTableDescriptor = new HTableDescriptor(admin.getDescriptor(originalTableName));
     originalTableDescription = originalTableDescriptor.toStringCustomizedValues();
 
     original.close();
@@ -188,14 +188,14 @@ public class TestSnapshotMetadata {
   /**
    * Verify that the describe for a cloned table matches the describe from the original.
    */
-  @Test (timeout=300000)
+  @Test
   public void testDescribeMatchesAfterClone() throws Exception {
     // Clone the original table
     final String clonedTableNameAsString = "clone" + originalTableName;
     final TableName clonedTableName = TableName.valueOf(clonedTableNameAsString);
     final String snapshotNameAsString = "snapshot" + originalTableName
         + System.currentTimeMillis();
-    final byte[] snapshotName = Bytes.toBytes(snapshotNameAsString);
+    final String snapshotName = snapshotNameAsString;
 
     // restore the snapshot into a cloned table and examine the output
     List<byte[]> familiesList = new ArrayList<>();
@@ -207,7 +207,7 @@ public class TestSnapshotMetadata {
 
     admin.cloneSnapshot(snapshotName, clonedTableName);
     Table clonedTable = UTIL.getConnection().getTable(clonedTableName);
-    HTableDescriptor cloneHtd = admin.getTableDescriptor(clonedTableName);
+    HTableDescriptor cloneHtd = new HTableDescriptor(admin.getDescriptor(clonedTableName));
     assertEquals(
       originalTableDescription.replace(originalTableName.getNameAsString(),clonedTableNameAsString),
       cloneHtd.toStringCustomizedValues());
@@ -229,7 +229,7 @@ public class TestSnapshotMetadata {
   /**
    * Verify that the describe for a restored table matches the describe for one the original.
    */
-  @Test (timeout=300000)
+  @Test
   public void testDescribeMatchesAfterRestore() throws Exception {
     runRestoreWithAdditionalMetadata(false);
   }
@@ -238,7 +238,7 @@ public class TestSnapshotMetadata {
    * Verify that if metadata changed after a snapshot was taken, that the old metadata replaces the
    * new metadata during a restore
    */
-  @Test (timeout=300000)
+  @Test
   public void testDescribeMatchesAfterMetadataChangeAndRestore() throws Exception {
     runRestoreWithAdditionalMetadata(true);
   }
@@ -248,7 +248,7 @@ public class TestSnapshotMetadata {
    * the restored table's original metadata
    * @throws Exception
    */
-  @Test (timeout=300000)
+  @Test
   public void testDescribeOnEmptyTableMatchesAfterMetadataChangeAndRestore() throws Exception {
     runRestoreWithAdditionalMetadata(true, false);
   }
@@ -287,7 +287,6 @@ public class TestSnapshotMetadata {
     // take a "disabled" snapshot
     final String snapshotNameAsString = "snapshot" + originalTableName
         + System.currentTimeMillis();
-    final byte[] snapshotName = Bytes.toBytes(snapshotNameAsString);
 
     SnapshotTestingUtils.createSnapshotAndValidate(admin, originalTableName,
       familiesWithDataList, emptyFamiliesList, snapshotNameAsString, rootDir, fs,
@@ -303,7 +302,7 @@ public class TestSnapshotMetadata {
       HColumnDescriptor hcd = new HColumnDescriptor(newFamilyName);
       admin.addColumnFamily(originalTableName, hcd);
       assertTrue("New column family was not added.",
-        admin.getTableDescriptor(originalTableName).toString().contains(newFamilyNameAsString));
+        admin.getDescriptor(originalTableName).toString().contains(newFamilyNameAsString));
     }
 
     // restore it
@@ -311,16 +310,14 @@ public class TestSnapshotMetadata {
       admin.disableTable(originalTableName);
     }
 
-    admin.restoreSnapshot(snapshotName);
+    admin.restoreSnapshot(snapshotNameAsString);
     admin.enableTable(originalTableName);
 
     // verify that the descrption is reverted
-    Table original = UTIL.getConnection().getTable(originalTableName);
-    try {
-      assertTrue(originalTableDescriptor.equals(admin.getTableDescriptor(originalTableName)));
-      assertTrue(originalTableDescriptor.equals(original.getTableDescriptor()));
-    } finally {
-      original.close();
+    try (Table original = UTIL.getConnection().getTable(originalTableName)) {
+      assertEquals(originalTableDescriptor,
+        new HTableDescriptor(admin.getDescriptor(originalTableName)));
+      assertEquals(originalTableDescriptor, new HTableDescriptor(original.getDescriptor()));
     }
   }
 }

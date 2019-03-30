@@ -107,6 +107,10 @@ public class TestChangingEncoding {
   public static void setUpBeforeClass() throws Exception {
     // Use a small flush size to create more HFiles.
     conf.setInt(HConstants.HREGION_MEMSTORE_FLUSH_SIZE, 1024 * 1024);
+    // Disabling split to make sure split does not cause modify column to wait which timesout test
+    // sometime
+    conf.set(HConstants.HBASE_REGION_SPLIT_POLICY_KEY,
+        "org.apache.hadoop.hbase.regionserver.DisabledRegionSplitPolicy");
     // ((Log4JLogger)RpcServerImplementation.LOG).getLogger().setLevel(Level.TRACE);
     // ((Log4JLogger)RpcClient.LOG).getLogger().setLevel(Level.TRACE);
     TEST_UTIL.startMiniCluster();
@@ -198,7 +202,7 @@ public class TestChangingEncoding {
     TEST_UTIL.waitUntilNoRegionsInTransition(TIMEOUT_MS);
   }
 
-  @Test(timeout=TIMEOUT_MS)
+  @Test
   public void testChangingEncoding() throws Exception {
     prepareTest("ChangingEncoding");
     for (boolean onlineChange : new boolean[]{false, true}) {
@@ -210,7 +214,7 @@ public class TestChangingEncoding {
     }
   }
 
-  @Test(timeout=TIMEOUT_MS)
+  @Test
   public void testChangingEncodingWithCompaction() throws Exception {
     prepareTest("ChangingEncodingWithCompaction");
     for (boolean onlineChange : new boolean[]{false, true}) {

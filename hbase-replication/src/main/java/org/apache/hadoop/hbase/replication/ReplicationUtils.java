@@ -23,17 +23,38 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.CompoundConfiguration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Helper class for replication.
  */
 @InterfaceAudience.Private
 public final class ReplicationUtils {
+
+  private static final Logger LOG = LoggerFactory.getLogger(ReplicationUtils.class);
+
+  public static final String REPLICATION_ATTR_NAME = "__rep__";
+
+  public static final String REMOTE_WAL_DIR_NAME = "remoteWALs";
+
+  public static final String SYNC_WAL_SUFFIX = ".syncrep";
+
+  public static final String REMOTE_WAL_REPLAY_SUFFIX = "-replay";
+
+  public static final String REMOTE_WAL_SNAPSHOT_SUFFIX = "-snapshot";
+
+  // This is used for copying sync replication log from local to remote and overwrite the old one
+  // since some FileSystem implementation may not support atomic rename.
+  public static final String RENAME_WAL_SUFFIX = ".ren";
 
   private ReplicationUtils() {
   }
@@ -110,7 +131,8 @@ public final class ReplicationUtils {
     return true;
   }
 
-  public static boolean isKeyConfigEqual(ReplicationPeerConfig rpc1, ReplicationPeerConfig rpc2) {
+  public static boolean isNamespacesAndTableCFsEqual(ReplicationPeerConfig rpc1,
+      ReplicationPeerConfig rpc2) {
     if (rpc1.replicateAllUserTables() != rpc2.replicateAllUserTables()) {
       return false;
     }
@@ -121,5 +143,97 @@ public final class ReplicationUtils {
       return isNamespacesEqual(rpc1.getNamespaces(), rpc2.getNamespaces()) &&
         isTableCFsEqual(rpc1.getTableCFsMap(), rpc2.getTableCFsMap());
     }
+  }
+
+  /**
+   * @param c Configuration to look at
+   * @return True if replication for bulk load data is enabled.
+   */
+  public static boolean isReplicationForBulkLoadDataEnabled(final Configuration c) {
+    return c.getBoolean(HConstants.REPLICATION_BULKLOAD_ENABLE_KEY,
+      HConstants.REPLICATION_BULKLOAD_ENABLE_DEFAULT);
+  }
+
+  /**
+   * Returns whether we should replicate the given table.
+   */
+  public static boolean contains(ReplicationPeerConfig peerConfig, TableName tableName) {
+    String namespace = tableName.getNamespaceAsString();
+    if (peerConfig.replicateAllUserTables()) {
+      // replicate all user tables, but filter by exclude namespaces and table-cfs config
+      Set<String> excludeNamespaces = peerConfig.getExcludeNamespaces();
+      if (excludeNamespaces != null && excludeNamespaces.contains(namespace)) {
+        return false;
+      }
+      Map<TableName, List<String>> excludedTableCFs = peerConfig.getExcludeTableCFsMap();
+      // trap here, must check existence first since HashMap allows null value.
+      if (excludedTableCFs == null || !excludedTableCFs.containsKey(tableName)) {
+        return true;
+      }
+      List<String> cfs = excludedTableCFs.get(tableName);
+      // if cfs is null or empty then we can make sure that we do not need to replicate this table,
+      // otherwise, we may still need to replicate the table but filter out some families.
+      return cfs != null && !cfs.isEmpty();
+    } else {
+      // Not replicate all user tables, so filter by namespaces and table-cfs config
+      Set<String> namespaces = peerConfig.getNamespaces();
+      Map<TableName, List<String>> tableCFs = peerConfig.getTableCFsMap();
+
+      if (namespaces == null && tableCFs == null) {
+        return false;
+      }
+
+      // First filter by namespaces config
+      // If table's namespace in peer config, all the tables data are applicable for replication
+      if (namespaces != null && namespaces.contains(namespace)) {
+        return true;
+      }
+      return tableCFs != null && tableCFs.containsKey(tableName);
+    }
+  }
+
+  public static FileSystem getRemoteWALFileSystem(Configuration conf, String remoteWALDir)
+      throws IOException {
+    return new Path(remoteWALDir).getFileSystem(conf);
+  }
+
+  public static Path getPeerRemoteWALDir(String remoteWALDir, String peerId) {
+    return new Path(remoteWALDir, peerId);
+  }
+
+  public static Path getPeerRemoteWALDir(Path remoteWALDir, String peerId) {
+    return new Path(remoteWALDir, peerId);
+  }
+
+  public static Path getPeerReplayWALDir(Path remoteWALDir, String peerId) {
+    return getPeerRemoteWALDir(remoteWALDir, peerId).suffix(REMOTE_WAL_REPLAY_SUFFIX);
+  }
+
+  public static Path getPeerSnapshotWALDir(String remoteWALDir, String peerId) {
+    return getPeerRemoteWALDir(remoteWALDir, peerId).suffix(REMOTE_WAL_SNAPSHOT_SUFFIX);
+  }
+
+  public static Path getPeerSnapshotWALDir(Path remoteWALDir, String peerId) {
+    return getPeerRemoteWALDir(remoteWALDir, peerId).suffix(REMOTE_WAL_SNAPSHOT_SUFFIX);
+  }
+
+  /**
+   * Do the sleeping logic
+   * @param msg Why we sleep
+   * @param sleepForRetries the base sleep time.
+   * @param sleepMultiplier by how many times the default sleeping time is augmented
+   * @param maxRetriesMultiplier the max retry multiplier
+   * @return True if <code>sleepMultiplier</code> is &lt; <code>maxRetriesMultiplier</code>
+   */
+  public static boolean sleepForRetries(String msg, long sleepForRetries, int sleepMultiplier,
+      int maxRetriesMultiplier) {
+    try {
+      LOG.trace("{}, sleeping {} times {}", msg, sleepForRetries, sleepMultiplier);
+      Thread.sleep(sleepForRetries * sleepMultiplier);
+    } catch (InterruptedException e) {
+      LOG.debug("Interrupted while sleeping between retries");
+      Thread.currentThread().interrupt();
+    }
+    return sleepMultiplier < maxRetriesMultiplier;
   }
 }

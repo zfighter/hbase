@@ -92,15 +92,12 @@ public abstract class ReaderBase implements AbstractFSWALProvider.Reader {
     if (e == null) {
       e = new Entry();
     }
-    if (compressionContext != null) {
-      e.setCompressionContext(compressionContext);
-    }
 
     boolean hasEntry = false;
     try {
       hasEntry = readNext(e);
     } catch (IllegalArgumentException iae) {
-      TableName tableName = e.getKey().getTablename();
+      TableName tableName = e.getKey().getTableName();
       if (tableName != null && tableName.equals(TableName.OLD_ROOT_TABLE_NAME)) {
         // It is old ROOT table edit, ignore it
         LOG.info("Got an old ROOT edit, ignoring ");
@@ -139,7 +136,7 @@ public abstract class ReaderBase implements AbstractFSWALProvider.Reader {
    * Initializes the compression after the shared stuff has been initialized. Called once.
    */
   protected abstract void initAfterCompression() throws IOException;
-  
+
   /**
    * Initializes the compression after the shared stuff has been initialized. Called once.
    * @param cellCodecClsName class name of cell Codec

@@ -32,6 +32,7 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl.WriteEntry;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
 import org.apache.hadoop.hbase.regionserver.wal.WALCoprocessorHost;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -55,8 +56,7 @@ class DisabledWALProvider implements WALProvider {
   WAL disabled;
 
   @Override
-  public void init(final WALFactory factory, final Configuration conf,
-      final List<WALActionsListener> listeners, String providerId) throws IOException {
+  public void init(WALFactory factory, Configuration conf, String providerId) throws IOException {
     if (null != disabled) {
       throw new IllegalStateException("WALProvider.init should only be called once.");
     }
@@ -163,6 +163,13 @@ class DisabledWALProvider implements WALProvider {
     @Override
     public long append(RegionInfo info, WALKeyImpl key, WALEdit edits, boolean inMemstore)
         throws IOException {
+      WriteEntry writeEntry = key.getMvcc().begin();
+      if (!edits.isReplay()) {
+        for (Cell cell : edits.getCells()) {
+          PrivateCellUtil.setSequenceId(cell, writeEntry.getWriteNumber());
+        }
+      }
+      key.setWriteEntry(writeEntry);
       if (!this.listeners.isEmpty()) {
         final long start = System.nanoTime();
         long len = 0;
@@ -249,5 +256,10 @@ class DisabledWALProvider implements WALProvider {
   @Override
   public long getLogFileSize() {
     return 0;
+  }
+
+  @Override
+  public void addWALActionsListener(WALActionsListener listener) {
+    disabled.registerWALActionsListener(listener);
   }
 }

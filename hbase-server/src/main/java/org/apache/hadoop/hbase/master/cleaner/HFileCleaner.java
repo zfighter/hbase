@@ -23,6 +23,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.hadoop.conf.Configuration;
@@ -31,6 +32,8 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Stoppable;
 import org.apache.hadoop.hbase.io.HFileLink;
+import org.apache.hadoop.hbase.master.HMaster;
+import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.util.StealJobQueue;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -43,6 +46,7 @@ import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesti
  */
 @InterfaceAudience.Private
 public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
+  private MasterServices master;
 
   public static final String MASTER_HFILE_CLEANER_PLUGINS = "hbase.master.hfilecleaner.plugins";
 
@@ -76,6 +80,16 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
       "hbase.regionserver.hfilecleaner.small.thread.count";
   public final static int DEFAULT_SMALL_HFILE_DELETE_THREAD_NUMBER = 1;
 
+  public static final String HFILE_DELETE_THREAD_TIMEOUT_MSEC =
+      "hbase.regionserver.hfilecleaner.thread.timeout.msec";
+  @VisibleForTesting
+  static final long DEFAULT_HFILE_DELETE_THREAD_TIMEOUT_MSEC = 60 * 1000L;
+
+  public static final String HFILE_DELETE_THREAD_CHECK_INTERVAL_MSEC =
+      "hbase.regionserver.hfilecleaner.thread.check.interval.msec";
+  @VisibleForTesting
+  static final long DEFAULT_HFILE_DELETE_THREAD_CHECK_INTERVAL_MSEC = 1000L;
+
   private static final Logger LOG = LoggerFactory.getLogger(HFileCleaner.class);
 
   StealJobQueue<HFileDeleteTask> largeFileQueue;
@@ -85,6 +99,8 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
   private int smallQueueInitSize;
   private int largeFileDeleteThreadNumber;
   private int smallFileDeleteThreadNumber;
+  private long cleanerThreadTimeoutMsec;
+  private long cleanerThreadCheckIntervalMsec;
   private List<Thread> threads = new ArrayList<Thread>();
   private boolean running;
 
@@ -115,6 +131,11 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
         conf.getInt(LARGE_HFILE_DELETE_THREAD_NUMBER, DEFAULT_LARGE_HFILE_DELETE_THREAD_NUMBER);
     smallFileDeleteThreadNumber =
         conf.getInt(SMALL_HFILE_DELETE_THREAD_NUMBER, DEFAULT_SMALL_HFILE_DELETE_THREAD_NUMBER);
+    cleanerThreadTimeoutMsec =
+        conf.getLong(HFILE_DELETE_THREAD_TIMEOUT_MSEC, DEFAULT_HFILE_DELETE_THREAD_TIMEOUT_MSEC);
+    cleanerThreadCheckIntervalMsec =
+        conf.getLong(HFILE_DELETE_THREAD_CHECK_INTERVAL_MSEC,
+            DEFAULT_HFILE_DELETE_THREAD_CHECK_INTERVAL_MSEC);
     startHFileDeleteThreads();
   }
 
@@ -146,7 +167,7 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
     }
     // wait for each submitted task to finish
     for (HFileDeleteTask task : tasks) {
-      if (task.getResult()) {
+      if (task.getResult(cleanerThreadCheckIntervalMsec)) {
         deletedFiles++;
       }
     }
@@ -159,7 +180,7 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
    * @return HFileDeleteTask to track progress
    */
   private HFileDeleteTask deleteFile(FileStatus file) {
-    HFileDeleteTask task = new HFileDeleteTask(file);
+    HFileDeleteTask task = new HFileDeleteTask(file, cleanerThreadTimeoutMsec);
     boolean enqueued = dispatch(task);
     return enqueued ? task : null;
   }
@@ -204,7 +225,7 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
       large.setDaemon(true);
       large.setName(n + "-HFileCleaner.large." + i + "-" + System.currentTimeMillis());
       large.start();
-      LOG.debug("Starting hfile cleaner for large files: {}", large);
+      LOG.debug("Starting for large file={}", large);
       threads.add(large);
     }
 
@@ -219,7 +240,7 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
       small.setDaemon(true);
       small.setName(n + "-HFileCleaner.small." + i + "-" + System.currentTimeMillis());
       small.start();
-      LOG.debug("Starting hfile cleaner for small files: {}", small);
+      LOG.debug("Starting for small files={}", small);
       threads.add(small);
     }
   }
@@ -235,12 +256,12 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
           break;
         }
         if (task != null) {
-          LOG.debug("Removing: {} from archive", task.filePath);
+          LOG.trace("Removing {}", task.filePath);
           boolean succeed;
           try {
             succeed = this.fs.delete(task.filePath, false);
           } catch (IOException e) {
-            LOG.warn("Failed to delete file {}", task.filePath, e);
+            LOG.warn("Failed to delete {}", task.filePath, e);
             succeed = false;
           }
           task.setResult(succeed);
@@ -250,7 +271,7 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
         }
       }
     } finally {
-      LOG.debug("Exit thread: {}", Thread.currentThread());
+      LOG.debug("Exit {}", Thread.currentThread());
     }
   }
 
@@ -258,13 +279,13 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
   private void countDeletedFiles(boolean isLargeFile, boolean fromLargeQueue) {
     if (isLargeFile) {
       if (deletedLargeFiles.get() == Long.MAX_VALUE) {
-        LOG.info("Deleted more than Long.MAX_VALUE large files, reset counter to 0");
+        LOG.debug("Deleted more than Long.MAX_VALUE large files, reset counter to 0");
         deletedLargeFiles.set(0L);
       }
       deletedLargeFiles.incrementAndGet();
     } else {
       if (deletedSmallFiles.get() == Long.MAX_VALUE) {
-        LOG.info("Deleted more than Long.MAX_VALUE small files, reset counter to 0");
+        LOG.debug("Deleted more than Long.MAX_VALUE small files, reset counter to 0");
         deletedSmallFiles.set(0L);
       }
       if (fromLargeQueue) {
@@ -300,17 +321,17 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
   };
 
   private static final class HFileDeleteTask {
-    private static final long MAX_WAIT = 60 * 1000L;
-    private static final long WAIT_UNIT = 1000L;
 
     boolean done = false;
     boolean result;
     final Path filePath;
     final long fileLength;
+    final long timeoutMsec;
 
-    public HFileDeleteTask(FileStatus file) {
+    public HFileDeleteTask(FileStatus file, long timeoutMsec) {
       this.filePath = file.getPath();
       this.fileLength = file.getLen();
+      this.timeoutMsec = timeoutMsec;
     }
 
     public synchronized void setResult(boolean result) {
@@ -319,17 +340,19 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
       notify();
     }
 
-    public synchronized boolean getResult() {
-      long waitTime = 0;
+    public synchronized boolean getResult(long waitIfNotFinished) {
+      long waitTimeMsec = 0;
       try {
         while (!done) {
-          wait(WAIT_UNIT);
-          waitTime += WAIT_UNIT;
+          long startTimeNanos = System.nanoTime();
+          wait(waitIfNotFinished);
+          waitTimeMsec += TimeUnit.MILLISECONDS.convert(System.nanoTime() - startTimeNanos,
+              TimeUnit.NANOSECONDS);
           if (done) {
             return this.result;
           }
-          if (waitTime > MAX_WAIT) {
-            LOG.warn("Wait more than " + MAX_WAIT + " ms for deleting " + this.filePath
+          if (waitTimeMsec > timeoutMsec) {
+            LOG.warn("Wait more than " + timeoutMsec + " ms for deleting " + this.filePath
                 + ", exit...");
             return false;
           }
@@ -371,6 +394,16 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
   @VisibleForTesting
   public long getThrottlePoint() {
     return throttlePoint;
+  }
+
+  @VisibleForTesting
+  long getCleanerThreadTimeoutMsec() {
+    return cleanerThreadTimeoutMsec;
+  }
+
+  @VisibleForTesting
+  long getCleanerThreadCheckIntervalMsec() {
+    return cleanerThreadCheckIntervalMsec;
   }
 
   @Override
@@ -443,6 +476,19 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
       this.smallFileDeleteThreadNumber = smallFileDeleteThreadNumber;
       updated = true;
     }
+    long cleanerThreadTimeoutMsec =
+        conf.getLong(HFILE_DELETE_THREAD_TIMEOUT_MSEC, DEFAULT_HFILE_DELETE_THREAD_TIMEOUT_MSEC);
+    if (cleanerThreadTimeoutMsec != this.cleanerThreadTimeoutMsec) {
+      this.cleanerThreadTimeoutMsec = cleanerThreadTimeoutMsec;
+      updated = true;
+    }
+    long cleanerThreadCheckIntervalMsec =
+        conf.getLong(HFILE_DELETE_THREAD_CHECK_INTERVAL_MSEC,
+            DEFAULT_HFILE_DELETE_THREAD_CHECK_INTERVAL_MSEC);
+    if (cleanerThreadCheckIntervalMsec != this.cleanerThreadCheckIntervalMsec) {
+      this.cleanerThreadCheckIntervalMsec = cleanerThreadCheckIntervalMsec;
+      updated = true;
+    }
     return updated;
   }
 
@@ -451,6 +497,12 @@ public class HFileCleaner extends CleanerChore<BaseHFileCleanerDelegate> {
     super.cancel(mayInterruptIfRunning);
     for (Thread t: this.threads) {
       t.interrupt();
+    }
+  }
+
+  public void init(Map<String, Object> params) {
+    if (params != null && params.containsKey(HMaster.MASTER)) {
+      this.master = (MasterServices) params.get(HMaster.MASTER);
     }
   }
 }

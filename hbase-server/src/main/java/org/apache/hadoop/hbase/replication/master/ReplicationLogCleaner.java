@@ -80,10 +80,8 @@ public class ReplicationLogCleaner extends BaseLogCleanerDelegate {
       public boolean apply(FileStatus file) {
         String wal = file.getPath().getName();
         boolean logInReplicationQueue = wals.contains(wal);
-        if (LOG.isDebugEnabled()) {
           if (logInReplicationQueue) {
-            LOG.debug("Found log in ZK, keeping: " + wal);
-          }
+            LOG.debug("Found up in ZooKeeper, NOT deleting={}", wal);
         }
         return !logInReplicationQueue && (file.getModificationTime() < readZKTimestamp);
       }
@@ -111,6 +109,13 @@ public class ReplicationLogCleaner extends BaseLogCleanerDelegate {
     } catch (Exception e) {
       LOG.error("Error while configuring " + this.getClass().getName(), e);
     }
+  }
+  @VisibleForTesting
+  public void setConf(Configuration conf, ZKWatcher zk,
+      ReplicationQueueStorage replicationQueueStorage) {
+    super.setConf(conf);
+    this.zkw = zk;
+    this.queueStorage = replicationQueueStorage;
   }
 
   @Override

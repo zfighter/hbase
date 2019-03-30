@@ -155,11 +155,11 @@ public class IncrementalTableBackupClient extends TableBackupClient {
           String fam = famEntry.getKey();
           Path famDir = new Path(regionDir, fam);
           List<Path> files;
-          if (!mapForSrc[srcIdx].containsKey(fam.getBytes())) {
+          if (!mapForSrc[srcIdx].containsKey(Bytes.toBytes(fam))) {
             files = new ArrayList<>();
-            mapForSrc[srcIdx].put(fam.getBytes(), files);
+            mapForSrc[srcIdx].put(Bytes.toBytes(fam), files);
           } else {
-            files = mapForSrc[srcIdx].get(fam.getBytes());
+            files = mapForSrc[srcIdx].get(Bytes.toBytes(fam));
           }
           Path archiveDir = HFileArchiveUtil.getStoreArchivePath(conf, srcTable, regionName, fam);
           String tblName = srcTable.getQualifierAsString();
@@ -361,6 +361,7 @@ public class IncrementalTableBackupClient extends TableBackupClient {
   protected void deleteBulkLoadDirectory() throws IOException {
     // delete original bulk load directory on method exit
     Path path = getBulkOutputDir();
+    FileSystem fs = FileSystem.get(path.toUri(), conf);
     boolean result = fs.delete(path, true);
     if (!result) {
       LOG.warn("Could not delete " + path);
@@ -374,14 +375,17 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     Set<TableName> tableSet = backupManager.getIncrementalBackupTableSet();
     // filter missing files out (they have been copied by previous backups)
     incrBackupFileList = filterMissingFiles(incrBackupFileList);
+    List<String> tableList = new ArrayList<String>();
     for (TableName table : tableSet) {
       // Check if table exists
       if (tableExists(table, conn)) {
-        walToHFiles(incrBackupFileList, table);
+        tableList.add(table.getNameAsString());
       } else {
         LOG.warn("Table " + table + " does not exists. Skipping in WAL converter");
       }
     }
+    walToHFiles(incrBackupFileList, tableList);
+
   }
 
   protected boolean tableExists(TableName table, Connection conn) throws IOException {
@@ -390,20 +394,21 @@ public class IncrementalTableBackupClient extends TableBackupClient {
     }
   }
 
-  protected void walToHFiles(List<String> dirPaths, TableName tableName) throws IOException {
+  protected void walToHFiles(List<String> dirPaths, List<String> tableList) throws IOException {
     Tool player = new WALPlayer();
 
     // Player reads all files in arbitrary directory structure and creates
     // a Map task for each file. We use ';' as separator
     // because WAL file names contains ','
     String dirs = StringUtils.join(dirPaths, ';');
-    String jobname = "Incremental_Backup-" + backupId + "-" + tableName.getNameAsString();
+    String jobname = "Incremental_Backup-" + backupId ;
 
-    Path bulkOutputPath = getBulkOutputDirForTable(tableName);
+    Path bulkOutputPath = getBulkOutputDir();
     conf.set(WALPlayer.BULK_OUTPUT_CONF_KEY, bulkOutputPath.toString());
     conf.set(WALPlayer.INPUT_FILES_SEPARATOR_KEY, ";");
+    conf.setBoolean(WALPlayer.MULTI_TABLES_SUPPORT, true);
     conf.set(JOB_NAME_CONF_KEY, jobname);
-    String[] playerArgs = { dirs, tableName.getNameAsString() };
+    String[] playerArgs = { dirs, StringUtils.join(tableList, ",") };
 
     try {
       player.setConf(conf);

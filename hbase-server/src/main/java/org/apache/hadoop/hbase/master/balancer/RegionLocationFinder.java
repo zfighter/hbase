@@ -192,7 +192,7 @@ class RegionLocationFinder {
    */
   protected HDFSBlocksDistribution internalGetTopBlockLocation(RegionInfo region) {
     try {
-      TableDescriptor tableDescriptor = getTableDescriptor(region.getTable());
+      TableDescriptor tableDescriptor = getDescriptor(region.getTable());
       if (tableDescriptor != null) {
         HDFSBlocksDistribution blocksDistribution =
             HRegion.computeHDFSBlocksDistribution(getConf(), tableDescriptor, region);
@@ -213,15 +213,14 @@ class RegionLocationFinder {
    * @return TableDescriptor
    * @throws IOException
    */
-  protected TableDescriptor getTableDescriptor(TableName tableName) throws IOException {
+  protected TableDescriptor getDescriptor(TableName tableName) throws IOException {
     TableDescriptor tableDescriptor = null;
     try {
       if (this.services != null && this.services.getTableDescriptors() != null) {
         tableDescriptor = this.services.getTableDescriptors().get(tableName);
       }
     } catch (FileNotFoundException fnfe) {
-      LOG.debug("FileNotFoundException during getTableDescriptors." + " Current table name = "
-          + tableName, fnfe);
+      LOG.debug("tableName={}", tableName, fnfe);
     }
 
     return tableDescriptor;
@@ -277,8 +276,7 @@ class RegionLocationFinder {
         blockDistbn = cache.get(hri);
         return blockDistbn;
       } else {
-        LOG.debug("HDFSBlocksDistribution not found in cache for region "
-            + hri.getRegionNameAsString());
+        LOG.trace("HDFSBlocksDistribution not found in cache for {}", hri.getRegionNameAsString());
         blockDistbn = internalGetTopBlockLocation(hri);
         cache.put(hri, blockDistbn);
         return blockDistbn;

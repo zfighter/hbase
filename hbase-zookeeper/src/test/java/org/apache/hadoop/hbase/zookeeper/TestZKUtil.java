@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.zookeeper;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -32,6 +33,7 @@ import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.ZKTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
+import org.apache.hadoop.hbase.zookeeper.ZKUtil.ZKUtilOp;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs;
@@ -46,6 +48,7 @@ import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.hbase.thirdparty.com.google.common.io.Closeables;
 
 @Category({ ZKTests.class, MediumTests.class })
@@ -117,6 +120,28 @@ public class TestZKUtil {
     assertNull(ZKUtil.getDataNoWatch(ZKW, "/l1/l2", null));
   }
 
+  private int getZNodeDataVersion(String znode) throws KeeperException {
+    Stat stat = new Stat();
+    ZKUtil.getDataNoWatch(ZKW, znode, stat);
+    return stat.getVersion();
+  }
+
+  @Test
+  public void testSetDataWithVersion() throws Exception {
+    ZKUtil.createWithParents(ZKW, "/s1/s2/s3");
+    int v0 = getZNodeDataVersion("/s1/s2/s3");
+    assertEquals(0, v0);
+
+    ZKUtil.setData(ZKW, "/s1/s2/s3", Bytes.toBytes(12L));
+    int v1 = getZNodeDataVersion("/s1/s2/s3");
+    assertEquals(1, v1);
+
+    ZKUtil.multiOrSequential(ZKW,
+      ImmutableList.of(ZKUtilOp.setData("/s1/s2/s3", Bytes.toBytes(13L), v1)), false);
+    int v2 = getZNodeDataVersion("/s1/s2/s3");
+    assertEquals(2, v2);
+  }
+
   /**
    * A test for HBASE-3238
    * @throws IOException A connection attempt to zk failed
@@ -132,7 +157,7 @@ public class TestZKUtil {
     String quorumServers = ZKConfig.getZKQuorumServersString(c);
     int sessionTimeout = 5 * 1000; // 5 seconds
     ZooKeeper zk = new ZooKeeper(quorumServers, sessionTimeout, EmptyWatcher.instance);
-    zk.addAuthInfo("digest", "hbase:rox".getBytes());
+    zk.addAuthInfo("digest", Bytes.toBytes("hbase:rox"));
 
     // Save the previous ACL
     Stat s = null;
@@ -198,7 +223,7 @@ public class TestZKUtil {
 
     // Restore the ACL
     ZooKeeper zk3 = new ZooKeeper(quorumServers, sessionTimeout, EmptyWatcher.instance);
-    zk3.addAuthInfo("digest", "hbase:rox".getBytes());
+    zk3.addAuthInfo("digest", Bytes.toBytes("hbase:rox"));
     try {
       zk3.setACL("/", oldACL, -1);
     } finally {

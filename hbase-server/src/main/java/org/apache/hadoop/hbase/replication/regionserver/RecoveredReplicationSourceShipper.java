@@ -1,5 +1,4 @@
-/*
- *
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,12 +19,10 @@ package org.apache.hadoop.hbase.replication.regionserver;
 
 import java.io.IOException;
 import java.util.concurrent.PriorityBlockingQueue;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
-import org.apache.hadoop.hbase.replication.regionserver.ReplicationSourceWALReader.WALEntryBatch;
 import org.apache.hadoop.hbase.util.Threads;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -51,47 +48,8 @@ public class RecoveredReplicationSourceShipper extends ReplicationSourceShipper 
   }
 
   @Override
-  public void run() {
-    setWorkerState(WorkerState.RUNNING);
-    // Loop until we close down
-    while (isActive()) {
-      int sleepMultiplier = 1;
-      // Sleep until replication is enabled again
-      if (!source.isPeerEnabled()) {
-        if (source.sleepForRetries("Replication is disabled", sleepMultiplier)) {
-          sleepMultiplier++;
-        }
-        continue;
-      }
-
-      while (entryReader == null) {
-        if (source.sleepForRetries("Replication WAL entry reader thread not initialized",
-          sleepMultiplier)) {
-          sleepMultiplier++;
-        }
-      }
-
-      try {
-        WALEntryBatch entryBatch = entryReader.take();
-        shipEdits(entryBatch);
-        if (entryBatch.getWalEntries().isEmpty()
-            && entryBatch.getLastSeqIds().isEmpty()) {
-          LOG.debug("Finished recovering queue for group " + walGroupId + " of peer "
-              + source.getQueueId());
-          source.getSourceMetrics().incrCompletedRecoveryQueue();
-          setWorkerState(WorkerState.FINISHED);
-          continue;
-        }
-      } catch (InterruptedException e) {
-        LOG.trace("Interrupted while waiting for next replication entry batch", e);
-        Thread.currentThread().interrupt();
-      }
-    }
+  protected void postFinish() {
     source.tryFinish();
-    // If the worker exits run loop without finishing its task, mark it as stopped.
-    if (!isFinished()) {
-      setWorkerState(WorkerState.STOPPED);
-    }
   }
 
   @Override
@@ -114,39 +72,30 @@ public class RecoveredReplicationSourceShipper extends ReplicationSourceShipper 
   // normally has a position (unless the RS failed between 2 logs)
   private long getRecoveredQueueStartPos() {
     long startPosition = 0;
-    String peerClusterZnode = source.getQueueId();
+    String peerClusterZNode = source.getQueueId();
     try {
-      startPosition = this.replicationQueues.getWALPosition(source.getServerWALsBelongTo(),
-        peerClusterZnode, this.queue.peek().getName());
-      if (LOG.isTraceEnabled()) {
-        LOG.trace("Recovered queue started with log " + this.queue.peek() + " at position " +
-          startPosition);
-      }
+      startPosition = this.replicationQueues.getWALPosition(source.getServer().getServerName(),
+        peerClusterZNode, this.queue.peek().getName());
+      LOG.trace("Recovered queue started with log {} at position {}", this.queue.peek(),
+        startPosition);
     } catch (ReplicationException e) {
-      terminate("Couldn't get the position of this recovered queue " + peerClusterZnode, e);
+      terminate("Couldn't get the position of this recovered queue " + peerClusterZNode, e);
     }
     return startPosition;
   }
 
-  @Override
-  protected void updateLogPosition(long lastReadPosition) {
-    source.getSourceManager().logPositionAndCleanOldLogs(currentPath, source.getQueueId(),
-      lastReadPosition, true);
-    lastLoggedPosition = lastReadPosition;
-  }
-
   private void terminate(String reason, Exception cause) {
     if (cause == null) {
-      LOG.info("Closing worker for wal group " + this.walGroupId + " because: " + reason);
-
+      LOG.info("Closing worker for wal group {} because: {}", this.walGroupId, reason);
     } else {
-      LOG.error("Closing worker for wal group " + this.walGroupId
-          + " because an error occurred: " + reason, cause);
+      LOG.error(
+        "Closing worker for wal group " + this.walGroupId + " because an error occurred: " + reason,
+        cause);
     }
     entryReader.interrupt();
     Threads.shutdown(entryReader, sleepForRetries);
     this.interrupt();
     Threads.shutdown(this, sleepForRetries);
-    LOG.info("ReplicationSourceWorker " + this.getName() + " terminated");
+    LOG.info("ReplicationSourceWorker {} terminated", this.getName());
   }
 }

@@ -378,7 +378,7 @@ public class TestRegionObserverInterface {
 
   }
 
-  @Test(timeout = 300000)
+  @Test
   // HBase-3758
   public void testHBase3758() throws IOException {
     final TableName tableName = TableName.valueOf(name.getMethodName());
@@ -589,7 +589,7 @@ public class TestRegionObserverInterface {
       ServerName sn2 = rs1.getRegionServer().getServerName();
       String regEN = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
 
-      util.getAdmin().move(regEN.getBytes(), sn2.getServerName().getBytes());
+      util.getAdmin().move(Bytes.toBytes(regEN), Bytes.toBytes(sn2.getServerName()));
       while (!sn2.equals(locator.getAllRegionLocations().get(0).getServerName())) {
         Thread.sleep(100);
       }
@@ -639,7 +639,7 @@ public class TestRegionObserverInterface {
       ServerName sn2 = rs1.getRegionServer().getServerName();
       String regEN = locator.getAllRegionLocations().get(0).getRegionInfo().getEncodedName();
 
-      util.getAdmin().move(regEN.getBytes(), sn2.getServerName().getBytes());
+      util.getAdmin().move(Bytes.toBytes(regEN), Bytes.toBytes(sn2.getServerName()));
       while (!sn2.equals(locator.getAllRegionLocations().get(0).getServerName())) {
         Thread.sleep(100);
       }

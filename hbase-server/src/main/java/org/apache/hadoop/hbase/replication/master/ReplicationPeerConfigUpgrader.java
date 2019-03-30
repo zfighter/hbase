@@ -97,7 +97,7 @@ public class ReplicationPeerConfigUpgrader{
 
   @VisibleForTesting
   protected String getTableCFsNode(String peerId) {
-    String replicationZNode = ZNodePaths.joinZNode(zookeeper.znodePaths.baseZNode,
+    String replicationZNode = ZNodePaths.joinZNode(zookeeper.getZNodePaths().baseZNode,
       conf.get(REPLICATION_ZNODE, REPLICATION_ZNODE_DEFAULT));
     String peersZNode =
         ZNodePaths.joinZNode(replicationZNode, conf.get(PEERS_ZNODE, PEERS_ZNODE_DEFAULT));
@@ -113,7 +113,7 @@ public class ReplicationPeerConfigUpgrader{
         // We only need to copy data from tableCFs node to rpc Node the first time hmaster start.
         if (rpc.getTableCFsMap() == null || rpc.getTableCFsMap().isEmpty()) {
           // we copy TableCFs node into PeerNode
-          LOG.info("copy tableCFs into peerNode:" + peerId);
+          LOG.info("Copy table ColumnFamilies into peer=" + peerId);
           ReplicationProtos.TableCF[] tableCFs =
               ReplicationPeerConfigUtil.parseTableCFs(ZKUtil.getData(this.zookeeper, tableCFsNode));
           if (tableCFs != null && tableCFs.length > 0) {

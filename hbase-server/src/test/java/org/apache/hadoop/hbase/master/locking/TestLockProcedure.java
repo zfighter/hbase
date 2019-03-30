@@ -284,7 +284,7 @@ public class TestLockProcedure {
     sendHeartbeatAndCheckLocked(procId, true);
     Thread.sleep(HEARTBEAT_TIMEOUT / 2);
     sendHeartbeatAndCheckLocked(procId, true);
-    Thread.sleep(2 * HEARTBEAT_TIMEOUT);
+    Thread.sleep(4 * HEARTBEAT_TIMEOUT);
     sendHeartbeatAndCheckLocked(procId, false);
     ProcedureTestingUtility.waitProcedure(procExec, procId);
     ProcedureTestingUtility.assertProcNotFailed(procExec, procId);
@@ -300,6 +300,7 @@ public class TestLockProcedure {
     // Acquire namespace lock, then queue other locks.
     long nsProcId = queueLock(nsLock);
     assertTrue(awaitForLocked(nsProcId, 2000));
+    long start = System.currentTimeMillis();
     sendHeartbeatAndCheckLocked(nsProcId, true);
     long table1ProcId = queueLock(tableLock1);
     long table2ProcId = queueLock(tableLock2);
@@ -307,7 +308,9 @@ public class TestLockProcedure {
     long regions2ProcId = queueLock(regionsLock2);
 
     // Assert tables & region locks are waiting because of namespace lock.
-    Thread.sleep(HEARTBEAT_TIMEOUT / 2);
+    long now = System.currentTimeMillis();
+    // leave extra 10 msec in case more than half the HEARTBEAT_TIMEOUT has passed
+    Thread.sleep(Math.min(HEARTBEAT_TIMEOUT / 2, Math.max(HEARTBEAT_TIMEOUT-(now-start)-10, 0)));
     sendHeartbeatAndCheckLocked(nsProcId, true);
     sendHeartbeatAndCheckLocked(table1ProcId, false);
     sendHeartbeatAndCheckLocked(table2ProcId, false);
@@ -408,25 +411,25 @@ public class TestLockProcedure {
     ProcedureTestingUtility.assertProcNotFailed(procExec, procId);
   }
 
-  @Test(timeout = 20000)
+  @Test
   public void testRemoteTableLockRecovery() throws Exception {
     LockRequest lock = getTableExclusiveLock(tableName1, testMethodName);
     testRemoteLockRecovery(lock);
   }
 
-  @Test(timeout = 20000)
+  @Test
   public void testRemoteNamespaceLockRecovery() throws Exception {
     LockRequest lock = getNamespaceLock(namespace, testMethodName);
     testRemoteLockRecovery(lock);
   }
 
-  @Test(timeout = 20000)
+  @Test
   public void testRemoteRegionLockRecovery() throws Exception {
     LockRequest lock = getRegionLock(tableRegions1, testMethodName);
     testRemoteLockRecovery(lock);
   }
 
-  @Test (timeout = 20000)
+  @Test
   public void testLocalMasterLockRecovery() throws Exception {
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
     CountDownLatch latch = new CountDownLatch(1);

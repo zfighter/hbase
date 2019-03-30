@@ -36,7 +36,6 @@ import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
-import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.hbase.zookeeper.ZKClusterId;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
@@ -83,13 +82,14 @@ public class TestReplicationTrackerZKImpl {
     utility.startMiniZKCluster();
     conf = utility.getConfiguration();
     ZKWatcher zk = HBaseTestingUtility.getZooKeeperWatcher(utility);
-    ZKUtil.createWithParents(zk, zk.znodePaths.rsZNode);
+    ZKUtil.createWithParents(zk, zk.getZNodePaths().rsZNode);
   }
 
   @Before
   public void setUp() throws Exception {
     zkw = HBaseTestingUtility.getZooKeeperWatcher(utility);
-    String fakeRs1 = ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname1.example.org:1234");
+    String fakeRs1 = ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode,
+            "hostname1.example.org:1234");
     try {
       ZKClusterId.setClusterId(zkw, new ClusterId());
       rp = ReplicationFactory.getReplicationPeers(zkw, conf);
@@ -115,34 +115,34 @@ public class TestReplicationTrackerZKImpl {
 
     // 1 region server
     ZKUtil.createWithParents(zkw,
-      ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname1.example.org:1234"));
+      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname1.example.org:1234"));
     assertEquals(1, rt.getListOfRegionServers().size());
 
     // 2 region servers
     ZKUtil.createWithParents(zkw,
-      ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname2.example.org:1234"));
+      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname2.example.org:1234"));
     assertEquals(2, rt.getListOfRegionServers().size());
 
     // 1 region server
     ZKUtil.deleteNode(zkw,
-      ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname2.example.org:1234"));
+      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname2.example.org:1234"));
     assertEquals(1, rt.getListOfRegionServers().size());
 
     // 0 region server
     ZKUtil.deleteNode(zkw,
-      ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname1.example.org:1234"));
+      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname1.example.org:1234"));
     assertEquals(0, rt.getListOfRegionServers().size());
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testRegionServerRemovedEvent() throws Exception {
     ZKUtil.createAndWatch(zkw,
-      ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname2.example.org:1234"),
+      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname2.example.org:1234"),
       HConstants.EMPTY_BYTE_ARRAY);
     rt.registerListener(new DummyReplicationListener());
     // delete one
     ZKUtil.deleteNode(zkw,
-      ZNodePaths.joinZNode(zkw.znodePaths.rsZNode, "hostname2.example.org:1234"));
+      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname2.example.org:1234"));
     // wait for event
     while (rsRemovedCount.get() < 1) {
       Thread.sleep(5);
@@ -150,15 +150,17 @@ public class TestReplicationTrackerZKImpl {
     assertEquals("hostname2.example.org:1234", rsRemovedData);
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testPeerNameControl() throws Exception {
     int exists = 0;
     rp.getPeerStorage().addPeer("6",
-      ReplicationPeerConfig.newBuilder().setClusterKey(utility.getClusterKey()).build(), true);
+      ReplicationPeerConfig.newBuilder().setClusterKey(utility.getClusterKey()).build(), true,
+      SyncReplicationState.NONE);
 
     try {
       rp.getPeerStorage().addPeer("6",
-        ReplicationPeerConfig.newBuilder().setClusterKey(utility.getClusterKey()).build(), true);
+        ReplicationPeerConfig.newBuilder().setClusterKey(utility.getClusterKey()).build(), true,
+        SyncReplicationState.NONE);
     } catch (ReplicationException e) {
       if (e.getCause() instanceof KeeperException.NodeExistsException) {
         exists++;
@@ -207,11 +209,6 @@ public class TestReplicationTrackerZKImpl {
 
     @Override
     public ClusterConnection getConnection() {
-      return null;
-    }
-
-    @Override
-    public MetaTableLocator getMetaTableLocator() {
       return null;
     }
 

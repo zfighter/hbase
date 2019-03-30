@@ -24,19 +24,20 @@ import java.util.List;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureConstants;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureTestingUtility;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.procedure2.ProcedureMetrics;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
+import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -61,15 +62,14 @@ public class TestMergeTableRegionsProcedure {
       HBaseClassTestRule.forClass(TestMergeTableRegionsProcedure.class);
 
   private static final Logger LOG = LoggerFactory.getLogger(TestMergeTableRegionsProcedure.class);
-  @Rule public final TestName name = new TestName();
+  @Rule
+  public final TestName name = new TestName();
 
-  protected static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
-  private static long nonceGroup = HConstants.NO_NONCE;
-  private static long nonce = HConstants.NO_NONCE;
+  private static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
 
   private static final int initialRegionCount = 4;
   private final static byte[] FAMILY = Bytes.toBytes("FAMILY");
-  final static Configuration conf = UTIL.getConfiguration();
+  private final static Configuration conf = UTIL.getConfiguration();
   private static Admin admin;
 
   private AssignmentManager am;
@@ -95,26 +95,21 @@ public class TestMergeTableRegionsProcedure {
   public static void setupCluster() throws Exception {
     setupConf(conf);
     UTIL.startMiniCluster(1);
-    admin = UTIL.getHBaseAdmin();
+    admin = UTIL.getAdmin();
   }
 
   @AfterClass
   public static void cleanupTest() throws Exception {
-    try {
-      UTIL.shutdownMiniCluster();
-    } catch (Exception e) {
-      LOG.warn("failure shutting down cluster", e);
-    }
+    UTIL.shutdownMiniCluster();
   }
 
   @Before
   public void setup() throws Exception {
     resetProcExecutorTestingKillFlag();
-    nonceGroup =
-        MasterProcedureTestingUtility.generateNonceGroup(UTIL.getHBaseCluster().getMaster());
-    nonce = MasterProcedureTestingUtility.generateNonce(UTIL.getHBaseCluster().getMaster());
+    MasterProcedureTestingUtility.generateNonceGroup(UTIL.getHBaseCluster().getMaster());
+    MasterProcedureTestingUtility.generateNonce(UTIL.getHBaseCluster().getMaster());
     // Turn off balancer so it doesn't cut in and mess up our placements.
-    UTIL.getHBaseAdmin().setBalancerRunning(false, true);
+    admin.balancerSwitch(false, true);
     // Turn off the meta scanner so it don't remove parent on us.
     UTIL.getHBaseCluster().getMaster().setCatalogJanitorEnabled(false);
     resetProcExecutorTestingKillFlag();
@@ -127,7 +122,7 @@ public class TestMergeTableRegionsProcedure {
   @After
   public void tearDown() throws Exception {
     resetProcExecutorTestingKillFlag();
-    for (HTableDescriptor htd: UTIL.getHBaseAdmin().listTables()) {
+    for (TableDescriptor htd: admin.listTableDescriptors()) {
       LOG.info("Tear down, remove table=" + htd.getTableName());
       UTIL.deleteTable(htd.getTableName());
     }
@@ -233,6 +228,7 @@ public class TestMergeTableRegionsProcedure {
     List<RegionInfo> tableRegions = createTable(tableName);
 
     ProcedureTestingUtility.waitNoProcedureRunning(procExec);
+    ProcedureTestingUtility.setKillIfHasParent(procExec, false);
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(procExec, true);
 
     RegionInfo[] regionsToMerge = new RegionInfo[2];
@@ -266,17 +262,20 @@ public class TestMergeTableRegionsProcedure {
     long procId = procExec.submitProcedure(
       new MergeTableRegionsProcedure(procExec.getEnvironment(), regionsToMerge, true));
 
-    // Failing before MERGE_TABLE_REGIONS_CREATE_MERGED_REGION we should trigger the rollback
-    // NOTE: the 5 (number before MERGE_TABLE_REGIONS_CREATE_MERGED_REGION step) is
+    // Failing before MERGE_TABLE_REGIONS_UPDATE_META we should trigger the rollback
+    // NOTE: the 8 (number of MERGE_TABLE_REGIONS_UPDATE_META step) is
     // hardcoded, so you have to look at this test at least once when you add a new step.
-    int numberOfSteps = 5;
-    MasterProcedureTestingUtility.testRollbackAndDoubleExecution(procExec, procId, numberOfSteps,
-        true);
+    int lastStep = 8;
+    MasterProcedureTestingUtility.testRollbackAndDoubleExecution(procExec, procId, lastStep, true);
+    assertEquals(initialRegionCount, UTIL.getAdmin().getRegions(tableName).size());
+    UTIL.waitUntilAllRegionsAssigned(tableName);
+    List<HRegion> regions = UTIL.getMiniHBaseCluster().getRegions(tableName);
+    assertEquals(initialRegionCount, regions.size());
   }
 
   @Test
   public void testMergeWithoutPONR() throws Exception {
-    final TableName tableName = TableName.valueOf("testRecoveryAndDoubleExecution");
+    final TableName tableName = TableName.valueOf("testMergeWithoutPONR");
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
 
     List<RegionInfo> tableRegions = createTable(tableName);
@@ -289,7 +288,7 @@ public class TestMergeTableRegionsProcedure {
     regionsToMerge[1] = tableRegions.get(1);
 
     long procId = procExec.submitProcedure(
-        new MergeTableRegionsProcedure(procExec.getEnvironment(), regionsToMerge, true));
+      new MergeTableRegionsProcedure(procExec.getEnvironment(), regionsToMerge, true));
 
     // Execute until step 9 of split procedure
     // NOTE: step 9 is after step MERGE_TABLE_REGIONS_UPDATE_META
@@ -303,10 +302,9 @@ public class TestMergeTableRegionsProcedure {
     assertRegionCount(tableName, initialRegionCount - 1);
   }
 
-  private List<RegionInfo> createTable(final TableName tableName)
-      throws Exception {
-    HTableDescriptor desc = new HTableDescriptor(tableName);
-    desc.addFamily(new HColumnDescriptor(FAMILY));
+  private List<RegionInfo> createTable(final TableName tableName) throws Exception {
+    TableDescriptor desc = TableDescriptorBuilder.newBuilder(tableName)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILY)).build();
     byte[][] splitRows = new byte[initialRegionCount - 1][];
     for (int i = 0; i < splitRows.length; ++i) {
       splitRows[i] = Bytes.toBytes(String.format("%d", i));

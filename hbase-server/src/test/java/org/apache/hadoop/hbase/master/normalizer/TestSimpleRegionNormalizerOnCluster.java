@@ -92,7 +92,7 @@ public class TestSimpleRegionNormalizerOnCluster {
     TEST_UTIL.shutdownMiniCluster();
   }
 
-  @Test(timeout = 90000)
+  @Test
   @SuppressWarnings("deprecation")
   public void testRegionNormalizationSplitOnCluster() throws Exception {
     testRegionNormalizationSplitOnCluster(false);
@@ -141,9 +141,9 @@ public class TestSimpleRegionNormalizerOnCluster {
       region.flush(true);
     }
 
-    HTableDescriptor htd = new HTableDescriptor(admin.getTableDescriptor(TABLENAME));
+    HTableDescriptor htd = new HTableDescriptor(admin.getDescriptor(TABLENAME));
     htd.setNormalizationEnabled(true);
-    admin.modifyTable(TABLENAME, htd);
+    admin.modifyTable(htd);
 
     admin.flush(TABLENAME);
 
@@ -179,7 +179,7 @@ public class TestSimpleRegionNormalizerOnCluster {
     admin.deleteTable(TABLENAME);
   }
 
-  @Test(timeout = 60000)
+  @Test
   @SuppressWarnings("deprecation")
   public void testRegionNormalizationMergeOnCluster() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
@@ -213,9 +213,9 @@ public class TestSimpleRegionNormalizerOnCluster {
       region.flush(true);
     }
 
-    HTableDescriptor htd = new HTableDescriptor(admin.getTableDescriptor(tableName));
+    HTableDescriptor htd = new HTableDescriptor(admin.getDescriptor(tableName));
     htd.setNormalizationEnabled(true);
-    admin.modifyTable(tableName, htd);
+    admin.modifyTable(htd);
 
     admin.flush(tableName);
 

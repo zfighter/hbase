@@ -24,6 +24,7 @@ import java.util.Set;
 
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.errorhandling.ForeignException;
 import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.mob.MobUtils;
@@ -49,7 +50,7 @@ public class EnabledTableSnapshotHandler extends TakeSnapshotHandler {
   private final ProcedureCoordinator coordinator;
 
   public EnabledTableSnapshotHandler(SnapshotDescription snapshot, MasterServices master,
-      final SnapshotManager manager) {
+      final SnapshotManager manager) throws IOException {
     super(snapshot, master, manager);
     this.coordinator = manager.getCoordinator();
   }
@@ -98,7 +99,8 @@ public class EnabledTableSnapshotHandler extends TakeSnapshotHandler {
       // Take the offline regions as disabled
       for (Pair<RegionInfo, ServerName> region : regions) {
         RegionInfo regionInfo = region.getFirst();
-        if (regionInfo.isOffline() && (regionInfo.isSplit() || regionInfo.isSplitParent())) {
+        if (regionInfo.isOffline() && (regionInfo.isSplit() || regionInfo.isSplitParent()) &&
+            RegionReplicaUtil.isDefaultReplica(regionInfo)) {
           LOG.info("Take disabled snapshot of offline region=" + regionInfo);
           snapshotDisabledRegion(regionInfo);
         }
@@ -129,5 +131,13 @@ public class EnabledTableSnapshotHandler extends TakeSnapshotHandler {
     snapshotManifest.addMobRegion(regionInfo);
     monitor.rethrowException();
     status.setStatus("Completed referencing HFiles for the mob region of table: " + snapshotTable);
+  }
+
+  @Override
+  protected boolean downgradeToSharedTableLock() {
+    // return true here to change from exclusive lock to shared lock, so we can still assign regions
+    // while taking snapshots. This is important, as region server crash can happen at any time, if
+    // we can not assign regions then the cluster will be in trouble as the regions can not online.
+    return true;
   }
 }

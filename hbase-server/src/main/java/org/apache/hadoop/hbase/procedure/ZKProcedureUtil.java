@@ -79,7 +79,7 @@ public abstract class ZKProcedureUtil
     // make sure we are listening for events
     watcher.registerListener(this);
     // setup paths for the zknodes used in procedures
-    this.baseZNode = ZNodePaths.joinZNode(watcher.znodePaths.baseZNode, procDescription);
+    this.baseZNode = ZNodePaths.joinZNode(watcher.getZNodePaths().baseZNode, procDescription);
     acquiredZnode = ZNodePaths.joinZNode(baseZNode, ACQUIRED_BARRIER_ZNODE_DEFAULT);
     reachedZnode = ZNodePaths.joinZNode(baseZNode, REACHED_BARRIER_ZNODE_DEFAULT);
     abortZnode = ZNodePaths.joinZNode(baseZNode, ABORT_ZNODE_DEFAULT);
@@ -269,8 +269,7 @@ public abstract class ZKProcedureUtil
   }
 
   public void clearChildZNodes() throws KeeperException {
-    LOG.info("Clearing all procedure znodes: " + acquiredZnode + " " + reachedZnode + " "
-        + abortZnode);
+    LOG.debug("Clearing all znodes {}, {}, {}", acquiredZnode, reachedZnode, abortZnode);
 
     // If the coordinator was shutdown mid-procedure, then we are going to lose
     // an procedure that was previously started by cleaning out all the previous state. Its much

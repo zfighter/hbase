@@ -55,6 +55,7 @@ import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.tool.LoadIncrementalHFiles;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -249,9 +250,9 @@ public final class BackupUtils {
    */
   public static List<String> getWALFilesOlderThan(final Configuration c,
       final HashMap<String, Long> hostTimestampMap) throws IOException {
-    Path rootDir = FSUtils.getRootDir(c);
-    Path logDir = new Path(rootDir, HConstants.HREGION_LOGDIR_NAME);
-    Path oldLogDir = new Path(rootDir, HConstants.HREGION_OLDLOGDIR_NAME);
+    Path walRootDir = CommonFSUtils.getWALRootDir(c);
+    Path logDir = new Path(walRootDir, HConstants.HREGION_LOGDIR_NAME);
+    Path oldLogDir = new Path(walRootDir, HConstants.HREGION_OLDLOGDIR_NAME);
     List<String> logFiles = new ArrayList<>();
 
     PathFilter filter = p -> {
@@ -271,9 +272,9 @@ public final class BackupUtils {
         return false;
       }
     };
-    FileSystem fs = FileSystem.get(c);
-    logFiles = BackupUtils.getFiles(fs, logDir, logFiles, filter);
-    logFiles = BackupUtils.getFiles(fs, oldLogDir, logFiles, filter);
+    FileSystem walFs = CommonFSUtils.getWALFileSystem(c);
+    logFiles = BackupUtils.getFiles(walFs, logDir, logFiles, filter);
+    logFiles = BackupUtils.getFiles(walFs, oldLogDir, logFiles, filter);
     return logFiles;
   }
 
@@ -327,7 +328,7 @@ public final class BackupUtils {
       if (expMsg.contains("No FileSystem for scheme")) {
         newMsg =
             "Unsupported filesystem scheme found in the backup target url. Error Message: "
-                + newMsg;
+                + expMsg;
         LOG.error(newMsg);
         throw new IOException(newMsg);
       } else {
@@ -563,7 +564,8 @@ public final class BackupUtils {
   private static List<BackupInfo> getHistory(Configuration conf, Path backupRootPath)
       throws IOException {
     // Get all (n) history from backup root destination
-    FileSystem fs = FileSystem.get(conf);
+
+    FileSystem fs = FileSystem.get(backupRootPath.toUri(), conf);
     RemoteIterator<LocatedFileStatus> it = fs.listLocatedStatus(backupRootPath);
 
     List<BackupInfo> infos = new ArrayList<>();
@@ -694,7 +696,7 @@ public final class BackupUtils {
       throws IOException {
     FileSystem fs = FileSystem.get(conf);
     String tmp = conf.get(HConstants.TEMPORARY_FS_DIRECTORY_KEY,
-            HConstants.DEFAULT_TEMPORARY_HDFS_DIRECTORY);
+            fs.getHomeDirectory() + "/hbase-staging");
     Path path =
         new Path(tmp + Path.SEPARATOR + "bulk_output-" + tableName + "-"
             + EnvironmentEdgeManager.currentTime());
@@ -740,4 +742,16 @@ public final class BackupUtils {
     }
     return loader;
   }
+
+  public static String findMostRecentBackupId(String[] backupIds) {
+    long recentTimestamp = Long.MIN_VALUE;
+    for (String backupId : backupIds) {
+      long ts = Long.parseLong(backupId.split("_")[1]);
+      if (ts > recentTimestamp) {
+        recentTimestamp = ts;
+      }
+    }
+    return BackupRestoreConstants.BACKUPID_PREFIX + recentTimestamp;
+  }
+
 }

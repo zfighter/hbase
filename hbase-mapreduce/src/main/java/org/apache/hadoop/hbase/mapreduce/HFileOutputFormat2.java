@@ -27,6 +27,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -72,6 +73,7 @@ import org.apache.hadoop.hbase.io.hfile.HFileWriterImpl;
 import org.apache.hadoop.hbase.regionserver.BloomType;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.StoreFileWriter;
+import org.apache.hadoop.hbase.util.BloomFilterUtil;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSUtils;
@@ -148,6 +150,8 @@ public class HFileOutputFormat2
       "hbase.hfileoutputformat.families.compression";
   static final String BLOOM_TYPE_FAMILIES_CONF_KEY =
       "hbase.hfileoutputformat.families.bloomtype";
+  static final String BLOOM_PARAM_FAMILIES_CONF_KEY =
+      "hbase.hfileoutputformat.families.bloomparam";
   static final String BLOCK_SIZE_FAMILIES_CONF_KEY =
       "hbase.mapreduce.hfileoutputformat.blocksize";
   static final String DATABLOCK_ENCODING_FAMILIES_CONF_KEY =
@@ -156,9 +160,11 @@ public class HFileOutputFormat2
   // This constant is public since the client can modify this when setting
   // up their conf object and thus refer to this symbol.
   // It is present for backwards compatibility reasons. Use it only to
-  // override the auto-detection of datablock encoding.
+  // override the auto-detection of datablock encoding and compression.
   public static final String DATABLOCK_ENCODING_OVERRIDE_CONF_KEY =
       "hbase.mapreduce.hfileoutputformat.datablock.encoding";
+  public static final String COMPRESSION_OVERRIDE_CONF_KEY =
+      "hbase.mapreduce.hfileoutputformat.compression";
 
   /**
    * Keep locality while generating HFiles for bulkload. See HBASE-12596
@@ -206,6 +212,14 @@ public class HFileOutputFormat2
         Compression.Algorithm.NONE.getName());
     final Algorithm defaultCompression = HFileWriterImpl
         .compressionByName(defaultCompressionStr);
+    String compressionStr = conf.get(COMPRESSION_OVERRIDE_CONF_KEY);
+    final Algorithm overriddenCompression;
+    if (compressionStr != null) {
+      overriddenCompression = Compression.getCompressionAlgorithmByName(compressionStr);
+    } else {
+      overriddenCompression = null;
+    }
+
     final boolean compactionExclude = conf.getBoolean(
         "hbase.mapreduce.hfileoutputformat.compaction.exclude", false);
 
@@ -215,6 +229,7 @@ public class HFileOutputFormat2
     // create a map from column family to the compression algorithm
     final Map<byte[], Algorithm> compressionMap = createFamilyCompressionMap(conf);
     final Map<byte[], BloomType> bloomTypeMap = createFamilyBloomTypeMap(conf);
+    final Map<byte[], String> bloomParamMap = createFamilyBloomParamMap(conf);
     final Map<byte[], Integer> blockSizeMap = createFamilyBlockSizeMap(conf);
 
     String dataBlockEncodingStr = conf.get(DATABLOCK_ENCODING_OVERRIDE_CONF_KEY);
@@ -251,6 +266,9 @@ public class HFileOutputFormat2
         byte[] tableNameBytes = null;
         if (writeMultipleTables) {
           tableNameBytes = MultiTableHFileOutputFormat.getTableName(row.get());
+          tableNameBytes =
+              TableName.valueOf(tableNameBytes).getNameWithNamespaceInclAsString()
+              .getBytes(Charset.defaultCharset());
           if (!allTableNames.contains(Bytes.toString(tableNameBytes))) {
             throw new IllegalArgumentException("TableName '" + Bytes.toString(tableNameBytes) +
                     "' not" + " expected");
@@ -258,15 +276,19 @@ public class HFileOutputFormat2
         } else {
           tableNameBytes = Bytes.toBytes(writeTableNames);
         }
+        String tableName = Bytes.toString(tableNameBytes);
+        Path tableRelPath = getTableRelativePath(tableNameBytes);
         byte[] tableAndFamily = getTableNameSuffixedWithFamily(tableNameBytes, family);
+
         WriterLength wl = this.writers.get(tableAndFamily);
 
         // If this is a new column family, verify that the directory exists
         if (wl == null) {
           Path writerPath = null;
           if (writeMultipleTables) {
-            writerPath = new Path(outputDir, new Path(Bytes.toString(tableNameBytes), Bytes
+            writerPath = new Path(outputDir,new Path(tableRelPath, Bytes
                     .toString(family)));
+
           }
           else {
             writerPath = new Path(outputDir, Bytes.toString(family));
@@ -289,7 +311,6 @@ public class HFileOutputFormat2
           if (conf.getBoolean(LOCALITY_SENSITIVE_CONF_KEY, DEFAULT_LOCALITY_SENSITIVE)) {
             HRegionLocation loc = null;
 
-            String tableName = Bytes.toString(tableNameBytes);
             if (tableName != null) {
               try (Connection connection = ConnectionFactory.createConnection(conf);
                      RegionLocator locator =
@@ -341,6 +362,15 @@ public class HFileOutputFormat2
         this.previousRow = rowKey;
       }
 
+      private Path getTableRelativePath(byte[] tableNameBytes) {
+        String tableName = Bytes.toString(tableNameBytes);
+        String[] tableNameParts = tableName.split(":");
+        Path tableRelPath = new Path(tableName.split(":")[0]);
+        if (tableNameParts.length > 1) {
+          tableRelPath = new Path(tableRelPath, tableName.split(":")[1]);
+        }
+        return tableRelPath;
+      }
       private void rollWriters(WriterLength writerLength) throws IOException {
         if (writerLength != null) {
           closeWriter(writerLength);
@@ -376,20 +406,23 @@ public class HFileOutputFormat2
         Path familydir = new Path(outputDir, Bytes.toString(family));
         if (writeMultipleTables) {
           familydir = new Path(outputDir,
-                  new Path(Bytes.toString(tableName), Bytes.toString(family)));
+                  new Path(getTableRelativePath(tableName), Bytes.toString(family)));
         }
         WriterLength wl = new WriterLength();
-        Algorithm compression = compressionMap.get(tableAndFamily);
+        Algorithm compression = overriddenCompression;
+        compression = compression == null ? compressionMap.get(tableAndFamily) : compression;
         compression = compression == null ? defaultCompression : compression;
         BloomType bloomType = bloomTypeMap.get(tableAndFamily);
         bloomType = bloomType == null ? BloomType.NONE : bloomType;
+        String bloomParam = bloomParamMap.get(tableAndFamily);
+        if (bloomType == BloomType.ROWPREFIX_FIXED_LENGTH) {
+          conf.set(BloomFilterUtil.PREFIX_LENGTH_KEY, bloomParam);
+        }
         Integer blockSize = blockSizeMap.get(tableAndFamily);
         blockSize = blockSize == null ? HConstants.DEFAULT_BLOCKSIZE : blockSize;
         DataBlockEncoding encoding = overriddenEncoding;
         encoding = encoding == null ? datablockEncodingMap.get(tableAndFamily) : encoding;
         encoding = encoding == null ? DataBlockEncoding.NONE : encoding;
-        Configuration tempConf = new Configuration(conf);
-        tempConf.setFloat(HConstants.HFILE_BLOCK_CACHE_SIZE_KEY, 0.0f);
         HFileContextBuilder contextBuilder = new HFileContextBuilder()
                                     .withCompression(compression)
                                     .withChecksumType(HStore.getChecksumType(conf))
@@ -404,12 +437,12 @@ public class HFileOutputFormat2
         HFileContext hFileContext = contextBuilder.build();
         if (null == favoredNodes) {
           wl.writer =
-              new StoreFileWriter.Builder(conf, new CacheConfig(tempConf), fs)
+              new StoreFileWriter.Builder(conf, CacheConfig.DISABLED, fs)
                   .withOutputDir(familydir).withBloomType(bloomType)
                   .withComparator(CellComparator.getInstance()).withFileContext(hFileContext).build();
         } else {
           wl.writer =
-              new StoreFileWriter.Builder(conf, new CacheConfig(tempConf), new HFileSystem(fs))
+              new StoreFileWriter.Builder(conf, CacheConfig.DISABLED, new HFileSystem(fs))
                   .withOutputDir(familydir).withBloomType(bloomType)
                   .withComparator(CellComparator.getInstance()).withFileContext(hFileContext)
                   .withFavoredNodes(favoredNodes).build();
@@ -627,7 +660,10 @@ public class HFileOutputFormat2
     for( TableInfo tableInfo : multiTableInfo )
     {
       regionLocators.add(tableInfo.getRegionLocator());
-      allTableNames.add(tableInfo.getRegionLocator().getName().getNameAsString());
+      String tn = writeMultipleTables?
+        tableInfo.getRegionLocator().getName().getNameWithNamespaceInclAsString():
+        tableInfo.getRegionLocator().getName().getNameAsString();
+      allTableNames.add(tn);
       tableDescriptors.add(tableInfo.getTableDescriptor());
     }
     // Record tablenames for creating writer by favored nodes, and decoding compression, block size and other attributes of columnfamily per table
@@ -648,6 +684,8 @@ public class HFileOutputFormat2
             tableDescriptors));
     conf.set(BLOOM_TYPE_FAMILIES_CONF_KEY, serializeColumnFamilyAttribute(bloomTypeDetails,
             tableDescriptors));
+    conf.set(BLOOM_PARAM_FAMILIES_CONF_KEY, serializeColumnFamilyAttribute(bloomParamDetails,
+        tableDescriptors));
     conf.set(DATABLOCK_ENCODING_FAMILIES_CONF_KEY,
             serializeColumnFamilyAttribute(dataBlockEncodingDetails, tableDescriptors));
 
@@ -675,6 +713,8 @@ public class HFileOutputFormat2
         serializeColumnFamilyAttribute(blockSizeDetails, singleTableDescriptor));
     conf.set(BLOOM_TYPE_FAMILIES_CONF_KEY,
         serializeColumnFamilyAttribute(bloomTypeDetails, singleTableDescriptor));
+    conf.set(BLOOM_PARAM_FAMILIES_CONF_KEY,
+        serializeColumnFamilyAttribute(bloomParamDetails, singleTableDescriptor));
     conf.set(DATABLOCK_ENCODING_FAMILIES_CONF_KEY,
         serializeColumnFamilyAttribute(dataBlockEncodingDetails, singleTableDescriptor));
 
@@ -721,6 +761,19 @@ public class HFileOutputFormat2
     }
     return bloomTypeMap;
   }
+
+  /**
+   * Runs inside the task to deserialize column family to bloom filter param
+   * map from the configuration.
+   *
+   * @param conf to read the serialized values from
+   * @return a map from column family to the the configured bloom filter param
+   */
+  @VisibleForTesting
+  static Map<byte[], String> createFamilyBloomParamMap(Configuration conf) {
+    return createFamilyConfValueMap(conf, BLOOM_PARAM_FAMILIES_CONF_KEY);
+  }
+
 
   /**
    * Runs inside the task to deserialize column family to block size
@@ -801,7 +854,7 @@ public class HFileOutputFormat2
     FileSystem fs = FileSystem.get(conf);
     String hbaseTmpFsDir =
         conf.get(HConstants.TEMPORARY_FS_DIRECTORY_KEY,
-          HConstants.DEFAULT_TEMPORARY_HDFS_DIRECTORY);
+            fs.getHomeDirectory() + "/hbase-staging");
     Path partitionsPath = new Path(hbaseTmpFsDir, "partitions_" + UUID.randomUUID());
     fs.makeQualified(partitionsPath);
     writePartitions(conf, partitionsPath, splitPoints, writeMultipleTables);
@@ -887,6 +940,28 @@ public class HFileOutputFormat2
       bloomType = ColumnFamilyDescriptorBuilder.DEFAULT_BLOOMFILTER.name();
     }
     return bloomType;
+  };
+
+  /**
+   * Serialize column family to bloom param map to configuration. Invoked while
+   * configuring the MR job for incremental load.
+   *
+   * @param tableDescriptor
+   *          to read the properties from
+   * @param conf
+   *          to persist serialized values into
+   *
+   * @throws IOException
+   *           on failure to read column family descriptors
+   */
+  @VisibleForTesting
+  static Function<ColumnFamilyDescriptor, String> bloomParamDetails = familyDescriptor -> {
+    BloomType bloomType = familyDescriptor.getBloomFilterType();
+    String bloomParam = "";
+    if (bloomType == BloomType.ROWPREFIX_FIXED_LENGTH) {
+      bloomParam = familyDescriptor.getConfigurationValue(BloomFilterUtil.PREFIX_LENGTH_KEY);
+    }
+    return bloomParam;
   };
 
   /**

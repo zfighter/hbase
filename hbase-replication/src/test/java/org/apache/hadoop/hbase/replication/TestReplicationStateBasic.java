@@ -17,15 +17,19 @@
  */
 package org.apache.hadoop.hbase.replication;
 
+import static org.hamcrest.CoreMatchers.hasItems;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.replication.ReplicationPeer.PeerState;
 import org.apache.hadoop.hbase.util.Pair;
@@ -34,6 +38,8 @@ import org.apache.zookeeper.KeeperException;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableMap;
 
 /**
  * White box testing for replication state interfaces. Implementations should extend this class, and
@@ -122,7 +128,7 @@ public abstract class TestReplicationStateBasic {
     assertEquals(0, rqs.getWALsInQueue(server2, "qId1").size());
     assertEquals(5, rqs.getWALsInQueue(server3, "qId5").size());
     assertEquals(0, rqs.getWALPosition(server3, "qId1", "filename0"));
-    rqs.setWALPosition(server3, "qId5", "filename4", 354L);
+    rqs.setWALPosition(server3, "qId5", "filename4", 354L, Collections.emptyMap());
     assertEquals(354L, rqs.getWALPosition(server3, "qId5", "filename4"));
 
     assertEquals(5, rqs.getWALsInQueue(server3, "qId5").size());
@@ -160,7 +166,8 @@ public abstract class TestReplicationStateBasic {
     assertTrue(rqs.getReplicableHFiles(ID_ONE).isEmpty());
     assertEquals(0, rqs.getAllPeersFromHFileRefsQueue().size());
     rp.getPeerStorage().addPeer(ID_ONE,
-            ReplicationPeerConfig.newBuilder().setClusterKey(KEY_ONE).build(), true);
+      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_ONE).build(), true,
+      SyncReplicationState.NONE);
     rqs.addPeerToHFileRefs(ID_ONE);
     rqs.addHFileRefs(ID_ONE, files1);
     assertEquals(1, rqs.getAllPeersFromHFileRefsQueue().size());
@@ -183,10 +190,12 @@ public abstract class TestReplicationStateBasic {
   public void testRemovePeerForHFileRefs() throws ReplicationException, KeeperException {
     rp.init();
     rp.getPeerStorage().addPeer(ID_ONE,
-      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_ONE).build(), true);
+      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_ONE).build(), true,
+      SyncReplicationState.NONE);
     rqs.addPeerToHFileRefs(ID_ONE);
     rp.getPeerStorage().addPeer(ID_TWO,
-      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_TWO).build(), true);
+      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_TWO).build(), true,
+      SyncReplicationState.NONE);
     rqs.addPeerToHFileRefs(ID_TWO);
 
     List<Pair<Path, Path>> files1 = new ArrayList<>(3);
@@ -235,9 +244,13 @@ public abstract class TestReplicationStateBasic {
     assertNumberOfPeers(0);
 
     // Add some peers
-    rp.getPeerStorage().addPeer(ID_ONE, new ReplicationPeerConfig().setClusterKey(KEY_ONE), true);
+    rp.getPeerStorage().addPeer(ID_ONE,
+      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_ONE).build(), true,
+      SyncReplicationState.NONE);
     assertNumberOfPeers(1);
-    rp.getPeerStorage().addPeer(ID_TWO, new ReplicationPeerConfig().setClusterKey(KEY_TWO), true);
+    rp.getPeerStorage().addPeer(ID_TWO,
+      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_TWO).build(), true,
+      SyncReplicationState.NONE);
     assertNumberOfPeers(2);
 
     assertEquals(KEY_ONE, ZKConfig.getZooKeeperClusterKey(ReplicationUtils
@@ -247,7 +260,9 @@ public abstract class TestReplicationStateBasic {
     assertNumberOfPeers(1);
 
     // Add one peer
-    rp.getPeerStorage().addPeer(ID_ONE, new ReplicationPeerConfig().setClusterKey(KEY_ONE), true);
+    rp.getPeerStorage().addPeer(ID_ONE,
+      ReplicationPeerConfig.newBuilder().setClusterKey(KEY_ONE).build(), true,
+      SyncReplicationState.NONE);
     rp.addPeer(ID_ONE);
     assertNumberOfPeers(2);
     assertTrue(rp.getPeer(ID_ONE).isPeerEnabled());
@@ -268,6 +283,54 @@ public abstract class TestReplicationStateBasic {
     // Disconnect peer
     rp.removePeer(ID_ONE);
     assertNumberOfPeers(2);
+  }
+
+  private String getFileName(String base, int i) {
+    return String.format(base + "-%04d", i);
+  }
+
+  @Test
+  public void testPersistLogPositionAndSeqIdAtomically() throws Exception {
+    ServerName serverName1 = ServerName.valueOf("127.0.0.1", 8000, 10000);
+    assertTrue(rqs.getAllQueues(serverName1).isEmpty());
+    String queue1 = "1";
+    String region0 = "6b2c8f8555335cc9af74455b94516cbe",
+        region1 = "6ecd2e9e010499f8ddef97ee8f70834f";
+    for (int i = 0; i < 10; i++) {
+      rqs.addWAL(serverName1, queue1, getFileName("file1", i));
+    }
+    List<String> queueIds = rqs.getAllQueues(serverName1);
+    assertEquals(1, queueIds.size());
+    assertThat(queueIds, hasItems("1"));
+
+    List<String> wals1 = rqs.getWALsInQueue(serverName1, queue1);
+    assertEquals(10, wals1.size());
+    for (int i = 0; i < 10; i++) {
+      assertThat(wals1, hasItems(getFileName("file1", i)));
+    }
+
+    for (int i = 0; i < 10; i++) {
+      assertEquals(0, rqs.getWALPosition(serverName1, queue1, getFileName("file1", i)));
+    }
+    assertEquals(HConstants.NO_SEQNUM, rqs.getLastSequenceId(region0, queue1));
+    assertEquals(HConstants.NO_SEQNUM, rqs.getLastSequenceId(region1, queue1));
+
+    for (int i = 0; i < 10; i++) {
+      rqs.setWALPosition(serverName1, queue1, getFileName("file1", i), (i + 1) * 100,
+        ImmutableMap.of(region0, i * 100L, region1, (i + 1) * 100L));
+    }
+
+    for (int i = 0; i < 10; i++) {
+      assertEquals((i + 1) * 100, rqs.getWALPosition(serverName1, queue1, getFileName("file1", i)));
+    }
+    assertEquals(900L, rqs.getLastSequenceId(region0, queue1));
+    assertEquals(1000L, rqs.getLastSequenceId(region1, queue1));
+
+    // Try to decrease the last pushed id by setWALPosition method.
+    rqs.setWALPosition(serverName1, queue1, getFileName("file1", 0), 11 * 100,
+      ImmutableMap.of(region0, 899L, region1, 1001L));
+    assertEquals(900L, rqs.getLastSequenceId(region0, queue1));
+    assertEquals(1001L, rqs.getLastSequenceId(region1, queue1));
   }
 
   protected void assertConnectedPeerStatus(boolean status, String peerId) throws Exception {
@@ -311,7 +374,7 @@ public abstract class TestReplicationStateBasic {
       // Add peers for the corresponding queues so they are not orphans
       rp.getPeerStorage().addPeer("qId" + i,
         ReplicationPeerConfig.newBuilder().setClusterKey("localhost:2818:/bogus" + i).build(),
-        true);
+        true, SyncReplicationState.NONE);
     }
   }
 }

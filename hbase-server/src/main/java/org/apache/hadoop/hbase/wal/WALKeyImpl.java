@@ -1,5 +1,4 @@
-/*
- *
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,35 +17,31 @@
  */
 package org.apache.hadoop.hbase.wal;
 
-import org.apache.hadoop.hbase.HBaseInterfaceAudience;
-import org.apache.hadoop.hbase.regionserver.SequenceId;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 import java.io.IOException;
-import java.io.InterruptedIOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 import java.util.UUID;
-
+import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
-// imports for things that haven't moved from regionserver.wal yet.
+import org.apache.hadoop.hbase.regionserver.SequenceId;
 import org.apache.hadoop.hbase.regionserver.wal.CompressionContext;
 import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
+import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
-import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.FamilyScope;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos.ScopeType;
-import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 
 /**
  * Default implementation of Key for an Entry in the WAL.
@@ -78,8 +73,7 @@ public class WALKeyImpl implements WALKey {
    * @return A WriteEntry gotten from local WAL subsystem.
    * @see #setWriteEntry(MultiVersionConcurrencyControl.WriteEntry)
    */
-  public MultiVersionConcurrencyControl.WriteEntry getWriteEntry() throws InterruptedIOException {
-    assert this.writeEntry != null;
+  public MultiVersionConcurrencyControl.WriteEntry getWriteEntry() {
     return this.writeEntry;
   }
 
@@ -122,8 +116,6 @@ public class WALKeyImpl implements WALKey {
    */
   private MultiVersionConcurrencyControl.WriteEntry writeEntry;
 
-  private CompressionContext compressionContext;
-
   public WALKeyImpl() {
     init(null, null, 0L, HConstants.LATEST_TIMESTAMP,
         new ArrayList<>(), HConstants.NO_NONCE, HConstants.NO_NONCE, null, null);
@@ -135,13 +127,21 @@ public class WALKeyImpl implements WALKey {
   }
 
   @VisibleForTesting
-  public WALKeyImpl(final byte[] encodedRegionName, final TableName tablename,
-                long logSeqNum,
+  public WALKeyImpl(final byte[] encodedRegionName, final TableName tablename, long logSeqNum,
       final long now, UUID clusterId) {
     List<UUID> clusterIds = new ArrayList<>(1);
     clusterIds.add(clusterId);
-    init(encodedRegionName, tablename, logSeqNum, now, clusterIds,
-        HConstants.NO_NONCE, HConstants.NO_NONCE, null, null);
+    init(encodedRegionName, tablename, logSeqNum, now, clusterIds, HConstants.NO_NONCE,
+      HConstants.NO_NONCE, null, null);
+  }
+
+  @VisibleForTesting
+  public WALKeyImpl(final byte[] encodedRegionName, final TableName tablename, long logSeqNum,
+      final long now, UUID clusterId, MultiVersionConcurrencyControl mvcc) {
+    List<UUID> clusterIds = new ArrayList<>(1);
+    clusterIds.add(clusterId);
+    init(encodedRegionName, tablename, logSeqNum, now, clusterIds, HConstants.NO_NONCE,
+      HConstants.NO_NONCE, mvcc, null);
   }
 
   // TODO: Fix being able to pass in sequenceid.
@@ -337,13 +337,6 @@ public class WALKeyImpl implements WALKey {
     this.sequenceId = sequenceId;
   }
 
-  /**
-   * @param compressionContext Compression context to use
-   */
-  public void setCompressionContext(CompressionContext compressionContext) {
-    this.compressionContext = compressionContext;
-  }
-
   /** @return encoded region name */
   @Override
   public byte [] getEncodedRegionName() {
@@ -352,7 +345,7 @@ public class WALKeyImpl implements WALKey {
 
   /** @return table name */
   @Override
-  public TableName getTablename() {
+  public TableName getTableName() {
     return tablename;
   }
 
@@ -420,10 +413,8 @@ public class WALKeyImpl implements WALKey {
     this.replicationScope = replicationScope;
   }
 
-  public void serializeReplicationScope(boolean serialize) {
-    if (!serialize) {
-      setReplicationScope(null);
-    }
+  public void clearReplicationScope() {
+    setReplicationScope(null);
   }
 
   /**
@@ -524,18 +515,13 @@ public class WALKeyImpl implements WALKey {
     this.encodedRegionName = encodedRegionName;
   }
 
-  public WALProtos.WALKey.Builder getBuilder(
-      WALCellCodec.ByteStringCompressor compressor) throws IOException {
+  public WALProtos.WALKey.Builder getBuilder(WALCellCodec.ByteStringCompressor compressor)
+      throws IOException {
     WALProtos.WALKey.Builder builder = WALProtos.WALKey.newBuilder();
-    if (compressionContext == null) {
-      builder.setEncodedRegionName(UnsafeByteOperations.unsafeWrap(this.encodedRegionName));
-      builder.setTableName(UnsafeByteOperations.unsafeWrap(this.tablename.getName()));
-    } else {
-      builder.setEncodedRegionName(compressor.compress(this.encodedRegionName,
-          compressionContext.regionDict));
-      builder.setTableName(compressor.compress(this.tablename.getName(),
-          compressionContext.tableDict));
-    }
+    builder.setEncodedRegionName(
+      compressor.compress(this.encodedRegionName, CompressionContext.DictionaryIndex.REGION));
+    builder.setTableName(
+      compressor.compress(this.tablename.getName(), CompressionContext.DictionaryIndex.TABLE));
     builder.setLogSequenceNumber(getSequenceId());
     builder.setWriteTime(writeTime);
     if (this.origLogSeqNum > 0) {
@@ -555,29 +541,22 @@ public class WALKeyImpl implements WALKey {
     }
     if (replicationScope != null) {
       for (Map.Entry<byte[], Integer> e : replicationScope.entrySet()) {
-        ByteString family = (compressionContext == null)
-            ? UnsafeByteOperations.unsafeWrap(e.getKey())
-            : compressor.compress(e.getKey(), compressionContext.familyDict);
-        builder.addScopes(FamilyScope.newBuilder()
-            .setFamily(family).setScopeType(ScopeType.forNumber(e.getValue())));
+        ByteString family =
+            compressor.compress(e.getKey(), CompressionContext.DictionaryIndex.FAMILY);
+        builder.addScopes(FamilyScope.newBuilder().setFamily(family)
+            .setScopeType(ScopeType.forNumber(e.getValue())));
       }
     }
     return builder;
   }
 
   public void readFieldsFromPb(WALProtos.WALKey walKey,
-                               WALCellCodec.ByteStringUncompressor uncompressor)
-      throws IOException {
-    if (this.compressionContext != null) {
-      this.encodedRegionName = uncompressor.uncompress(
-          walKey.getEncodedRegionName(), compressionContext.regionDict);
-      byte[] tablenameBytes = uncompressor.uncompress(
-          walKey.getTableName(), compressionContext.tableDict);
-      this.tablename = TableName.valueOf(tablenameBytes);
-    } else {
-      this.encodedRegionName = walKey.getEncodedRegionName().toByteArray();
-      this.tablename = TableName.valueOf(walKey.getTableName().toByteArray());
-    }
+      WALCellCodec.ByteStringUncompressor uncompressor) throws IOException {
+    this.encodedRegionName = uncompressor.uncompress(walKey.getEncodedRegionName(),
+      CompressionContext.DictionaryIndex.REGION);
+    byte[] tablenameBytes =
+        uncompressor.uncompress(walKey.getTableName(), CompressionContext.DictionaryIndex.TABLE);
+    this.tablename = TableName.valueOf(tablenameBytes);
     clusterIds.clear();
     for (HBaseProtos.UUID clusterId : walKey.getClusterIdsList()) {
       clusterIds.add(new UUID(clusterId.getMostSigBits(), clusterId.getLeastSigBits()));
@@ -592,14 +571,14 @@ public class WALKeyImpl implements WALKey {
     if (walKey.getScopesCount() > 0) {
       this.replicationScope = new TreeMap<>(Bytes.BYTES_COMPARATOR);
       for (FamilyScope scope : walKey.getScopesList()) {
-        byte[] family = (compressionContext == null) ? scope.getFamily().toByteArray() :
-          uncompressor.uncompress(scope.getFamily(), compressionContext.familyDict);
+        byte[] family =
+            uncompressor.uncompress(scope.getFamily(), CompressionContext.DictionaryIndex.FAMILY);
         this.replicationScope.put(family, scope.getScopeType().getNumber());
       }
     }
     setSequenceId(walKey.getLogSequenceNumber());
     this.writeTime = walKey.getWriteTime();
-    if(walKey.hasOrigSequenceNumber()) {
+    if (walKey.hasOrigSequenceNumber()) {
       this.origLogSeqNum = walKey.getOrigSequenceNumber();
     }
   }

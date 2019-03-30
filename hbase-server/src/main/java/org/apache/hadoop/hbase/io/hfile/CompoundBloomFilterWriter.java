@@ -20,7 +20,7 @@ package org.apache.hadoop.hbase.io.hfile;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
-import java.util.LinkedList;
+import java.util.ArrayDeque;
 import java.util.Queue;
 
 import org.apache.hadoop.hbase.Cell;
@@ -71,7 +71,7 @@ public class CompoundBloomFilterWriter extends CompoundBloomFilterBase
     BloomFilterChunk chunk;
   }
 
-  private Queue<ReadyChunk> readyChunks = new LinkedList<>();
+  private Queue<ReadyChunk> readyChunks = new ArrayDeque<>();
 
   /** The first key in the current Bloom filter chunk. */
   private byte[] firstKeyInChunk = null;
@@ -174,12 +174,12 @@ public class CompoundBloomFilterWriter extends CompoundBloomFilterBase
             + Bytes.toStringBinary(firstKeyInChunk));
       }
       // This will be done only once per chunk
-      if (bloomType == BloomType.ROW) {
-        firstKeyInChunk = CellUtil.copyRow(cell);
-      } else {
+      if (bloomType == BloomType.ROWCOL) {
         firstKeyInChunk =
             PrivateCellUtil
                 .getCellKeySerializedAsKeyValueKey(PrivateCellUtil.createFirstOnRowCol(cell));
+      } else {
+        firstKeyInChunk = CellUtil.copyRow(cell);
       }
       allocateNewChunk();
     }

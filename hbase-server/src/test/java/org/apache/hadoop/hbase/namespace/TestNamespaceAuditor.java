@@ -42,15 +42,16 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.CompactionState;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.client.DoNotRetryRegionException;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
@@ -71,6 +72,7 @@ import org.apache.hadoop.hbase.master.TableNamespaceManager;
 import org.apache.hadoop.hbase.quotas.MasterQuotaManager;
 import org.apache.hadoop.hbase.quotas.QuotaExceededException;
 import org.apache.hadoop.hbase.quotas.QuotaUtil;
+import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.StoreFile;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionLifeCycleTracker;
@@ -79,7 +81,6 @@ import org.apache.hadoop.hbase.snapshot.RestoreSnapshotException;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
-import org.apache.hadoop.hbase.util.Threads;
 import org.apache.zookeeper.KeeperException;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -113,7 +114,7 @@ public class TestNamespaceAuditor {
     conf.setBoolean(QuotaUtil.QUOTA_CONF_KEY, true);
     conf.setClass("hbase.coprocessor.regionserver.classes", CPRegionServerObserver.class,
       RegionServerObserver.class);
-    UTIL.startMiniCluster(1, 1);
+    UTIL.startMiniCluster();
     waitForQuotaInitialize(UTIL);
     ADMIN = UTIL.getAdmin();
   }
@@ -125,7 +126,7 @@ public class TestNamespaceAuditor {
 
   @After
   public void cleanup() throws Exception, KeeperException {
-    for (HTableDescriptor table : ADMIN.listTables()) {
+    for (TableDescriptor table : ADMIN.listTableDescriptors()) {
       ADMIN.disableTable(table.getTableName());
       deleteTable(table.getTableName());
     }
@@ -347,24 +348,47 @@ public class TestNamespaceAuditor {
       UTIL.loadNumericRows(table, Bytes.toBytes("info"), 1000, 1999);
     }
     ADMIN.flush(tableTwo);
-    List<HRegionInfo> hris = ADMIN.getTableRegions(tableTwo);
+    List<RegionInfo> hris = ADMIN.getRegions(tableTwo);
     assertEquals(initialRegions, hris.size());
-    Collections.sort(hris);
+    Collections.sort(hris, RegionInfo.COMPARATOR);
     Future<?> f = ADMIN.mergeRegionsAsync(
       hris.get(0).getEncodedNameAsBytes(),
       hris.get(1).getEncodedNameAsBytes(),
       false);
     f.get(10, TimeUnit.SECONDS);
 
-    hris = ADMIN.getTableRegions(tableTwo);
+    hris = ADMIN.getRegions(tableTwo);
     assertEquals(initialRegions - 1, hris.size());
-    Collections.sort(hris);
-    ADMIN.split(tableTwo, Bytes.toBytes("3"));
-    // Not much we can do here until we have split return a Future.
-    Threads.sleep(5000);
-    hris = ADMIN.getTableRegions(tableTwo);
+    Collections.sort(hris, RegionInfo.COMPARATOR);
+    byte[] splitKey = Bytes.toBytes("3");
+    HRegion regionToSplit = UTIL.getMiniHBaseCluster().getRegions(tableTwo).stream()
+      .filter(r -> r.getRegionInfo().containsRow(splitKey)).findFirst().get();
+    regionToSplit.compact(true);
+    // Waiting for compaction to finish
+    UTIL.waitFor(30000, new Waiter.Predicate<Exception>() {
+      @Override
+      public boolean evaluate() throws Exception {
+        return (CompactionState.NONE == ADMIN
+            .getCompactionStateForRegion(regionToSplit.getRegionInfo().getRegionName()));
+      }
+    });
+
+    // Cleaning compacted references for split to proceed
+    regionToSplit.getStores().stream().forEach(s -> {
+      try {
+        s.closeAndArchiveCompactedFiles();
+      } catch (IOException e1) {
+        LOG.error("Error whiling cleaning compacted file");
+      }
+    });
+    // the above compact may quit immediately if there is a compaction ongoing, so here we need to
+    // wait a while to let the ongoing compaction finish.
+    UTIL.waitFor(10000, regionToSplit::isSplittable);
+    ADMIN.splitRegionAsync(regionToSplit.getRegionInfo().getRegionName(), splitKey).get(10,
+      TimeUnit.SECONDS);
+    hris = ADMIN.getRegions(tableTwo);
     assertEquals(initialRegions, hris.size());
-    Collections.sort(hris);
+    Collections.sort(hris, RegionInfo.COMPARATOR);
 
     // Fail region merge through Coprocessor hook
     MiniHBaseCluster cluster = UTIL.getHBaseCluster();
@@ -383,14 +407,18 @@ public class TestNamespaceAuditor {
     } catch (ExecutionException ee) {
       // Expected.
     }
-    hris = ADMIN.getTableRegions(tableTwo);
+    hris = ADMIN.getRegions(tableTwo);
     assertEquals(initialRegions, hris.size());
-    Collections.sort(hris);
+    Collections.sort(hris, RegionInfo.COMPARATOR);
     // verify that we cannot split
-    HRegionInfo hriToSplit2 = hris.get(1);
-    ADMIN.split(tableTwo, Bytes.toBytes("6"));
+    try {
+      ADMIN.split(tableTwo, Bytes.toBytes("6"));
+      fail();
+    } catch (DoNotRetryRegionException e) {
+      // Expected
+    }
     Thread.sleep(2000);
-    assertEquals(initialRegions, ADMIN.getTableRegions(tableTwo).size());
+    assertEquals(initialRegions, ADMIN.getRegions(tableTwo).size());
   }
 
   /*
@@ -682,8 +710,8 @@ public class TestNamespaceAuditor {
     String snapshot = "snapshot_testRestoreSnapshot";
     ADMIN.snapshot(snapshot, tableName1);
 
-    List<HRegionInfo> regions = ADMIN.getTableRegions(tableName1);
-    Collections.sort(regions);
+    List<RegionInfo> regions = ADMIN.getRegions(tableName1);
+    Collections.sort(regions, RegionInfo.COMPARATOR);
 
     ADMIN.split(tableName1, Bytes.toBytes("JJJ"));
     Thread.sleep(2000);

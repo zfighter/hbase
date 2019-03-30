@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,14 +27,15 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.apache.hadoop.hbase.ClusterMetrics.Option;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.Threads;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -61,12 +62,16 @@ public class TestRegionLoad {
   private static final TableName TABLE_2 = TableName.valueOf("table_2");
   private static final TableName TABLE_3 = TableName.valueOf("table_3");
   private static final TableName[] tables = new TableName[]{TABLE_1, TABLE_2, TABLE_3};
+  private static final int MSG_INTERVAL = 500; // ms
 
   @BeforeClass
   public static void beforeClass() throws Exception {
+    // Make servers report eagerly. This test is about looking at the cluster status reported.
+    // Make it so we don't have to wait around too long to see change.
+    UTIL.getConfiguration().setInt("hbase.regionserver.msginterval", MSG_INTERVAL);
     UTIL.startMiniCluster(4);
     admin = UTIL.getAdmin();
-    admin.setBalancerRunning(false, true);
+    admin.balancerSwitch(false, true);
     createTables();
   }
 
@@ -91,7 +96,7 @@ public class TestRegionLoad {
     // Check if regions match with the regionLoad from the server
     for (ServerName serverName : admin
         .getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS)).getLiveServerMetrics().keySet()) {
-      List<HRegionInfo> regions = admin.getOnlineRegions(serverName);
+      List<RegionInfo> regions = admin.getRegions(serverName);
       LOG.info("serverName=" + serverName + ", regions=" +
           regions.stream().map(r -> r.getRegionNameAsString()).collect(Collectors.toList()));
       Collection<RegionLoad> regionLoads = admin.getRegionMetrics(serverName)
@@ -104,7 +109,7 @@ public class TestRegionLoad {
 
     // Check if regionLoad matches the table's regions and nothing is missed
     for (TableName table : new TableName[]{TABLE_1, TABLE_2, TABLE_3}) {
-      List<HRegionInfo> tableRegions = admin.getTableRegions(table);
+      List<RegionInfo> tableRegions = admin.getRegions(table);
 
       List<RegionLoad> regionLoads = Lists.newArrayList();
       for (ServerName serverName : admin
@@ -116,8 +121,11 @@ public class TestRegionLoad {
     }
 
     // Just wait here. If this fixes the test, come back and do a better job.
-    // Thought is that cluster status is stale.
-    Threads.sleep(10000);
+    // Would have to redo the below so can wait on cluster status changing.
+    // Admin#getClusterMetrics retrieves data from HMaster. Admin#getRegionMetrics, by contrast,
+    // get the data from RS. Hence, it will fail if we do the assert check before RS has done
+    // the report.
+    TimeUnit.MILLISECONDS.sleep(3 * MSG_INTERVAL);
 
     // Check RegionLoad matches the regionLoad from ClusterStatus
     ClusterStatus clusterStatus
@@ -129,10 +137,10 @@ public class TestRegionLoad {
           (v1, v2) -> {
             throw new RuntimeException("impossible!!");
           }, () -> new TreeMap<>(Bytes.BYTES_COMPARATOR)));
-      LOG.info("serverName=" + serverName + ", getRegionLoads=" +
+      LOG.debug("serverName=" + serverName + ", getRegionLoads=" +
           serverLoad.getRegionsLoad().keySet().stream().map(r -> Bytes.toString(r)).
               collect(Collectors.toList()));
-      LOG.info("serverName=" + serverName + ", regionLoads=" +
+      LOG.debug("serverName=" + serverName + ", regionLoads=" +
           regionLoads.keySet().stream().map(r -> Bytes.toString(r)).
               collect(Collectors.toList()));
       compareRegionLoads(serverLoad.getRegionsLoad(), regionLoads);
@@ -152,23 +160,21 @@ public class TestRegionLoad {
     assertEquals("regionLoads from SN should be empty", 0, regionLoads.size());
   }
 
-  private void checkRegionsAndRegionLoads(Collection<HRegionInfo> regions,
+  private void checkRegionsAndRegionLoads(Collection<RegionInfo> regions,
       Collection<RegionLoad> regionLoads) {
-
     for (RegionLoad load : regionLoads) {
       assertNotNull(load.regionLoadPB);
     }
 
-    assertEquals("No of regions and regionloads doesn't match",
-        regions.size(), regionLoads.size());
+    assertEquals("No of regions and regionloads doesn't match", regions.size(), regionLoads.size());
 
     Map<byte[], RegionLoad> regionLoadMap = Maps.newTreeMap(Bytes.BYTES_COMPARATOR);
     for (RegionLoad regionLoad : regionLoads) {
       regionLoadMap.put(regionLoad.getName(), regionLoad);
     }
-    for (HRegionInfo info : regions) {
+    for (RegionInfo info : regions) {
       assertTrue("Region not in regionLoadMap region:" + info.getRegionNameAsString() +
-          " regionMap: " + regionLoadMap, regionLoadMap.containsKey(info.getRegionName()));
+        " regionMap: " + regionLoadMap, regionLoadMap.containsKey(info.getRegionName()));
     }
   }
 }

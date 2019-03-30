@@ -18,6 +18,7 @@
  */
 package org.apache.hadoop.hbase.master;
 
+import static org.apache.hadoop.hbase.HConstants.HBASE_SPLIT_WAL_MAX_SPLITTER;
 import static org.apache.hadoop.hbase.SplitLogCounters.tot_mgr_wait_for_zk_delete;
 import static org.apache.hadoop.hbase.SplitLogCounters.tot_wkr_final_transition_failed;
 import static org.apache.hadoop.hbase.SplitLogCounters.tot_wkr_preempt_task;
@@ -42,7 +43,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.LongAdder;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -56,6 +56,7 @@ import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.SplitLogCounters;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
 import org.apache.hadoop.hbase.client.Put;
@@ -67,7 +68,6 @@ import org.apache.hadoop.hbase.coordination.ZKSplitLogManagerCoordination;
 import org.apache.hadoop.hbase.ipc.ServerNotRunningYetException;
 import org.apache.hadoop.hbase.master.SplitLogManager.TaskBatch;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
-import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
 import org.apache.hadoop.hbase.regionserver.Region;
@@ -75,6 +75,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.JVMClusterUtil.MasterThread;
 import org.apache.hadoop.hbase.util.JVMClusterUtil.RegionServerThread;
+import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.wal.WALEdit;
@@ -92,6 +93,7 @@ import org.junit.Test;
 import org.junit.rules.TestName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 
 /**
@@ -142,10 +144,12 @@ public abstract class AbstractTestDLS {
     conf.setInt("zookeeper.recovery.retry", 0);
     conf.setInt(HConstants.REGIONSERVER_INFO_PORT, -1);
     conf.setFloat(HConstants.LOAD_BALANCER_SLOP_KEY, (float) 100.0); // no load balancing
-    conf.setInt("hbase.regionserver.wal.max.splitters", 3);
+    conf.setInt(HBASE_SPLIT_WAL_MAX_SPLITTER, 3);
     conf.setInt(HConstants.REGION_SERVER_HIGH_PRIORITY_HANDLER_COUNT, 10);
     conf.set("hbase.wal.provider", getWalProvider());
-    TEST_UTIL.startMiniHBaseCluster(NUM_MASTERS, numRS);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numMasters(NUM_MASTERS).numRegionServers(numRS).build();
+    TEST_UTIL.startMiniHBaseCluster(option);
     cluster = TEST_UTIL.getHBaseCluster();
     LOG.info("Waiting for active/ready master");
     cluster.waitForActiveAndReadyMaster();
@@ -171,7 +175,7 @@ public abstract class AbstractTestDLS {
     ZKUtil.deleteNodeRecursively(TEST_UTIL.getZooKeeperWatcher(), "/hbase");
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testRecoveredEdits() throws Exception {
     conf.setLong("hbase.regionserver.hlog.blocksize", 30 * 1024); // create more than one wal
     startCluster(NUM_RS);
@@ -220,10 +224,11 @@ public abstract class AbstractTestDLS {
 
       int count = 0;
       for (RegionInfo hri : regions) {
-        Path tdir = FSUtils.getTableDir(rootdir, table);
+        Path tdir = FSUtils.getWALTableDir(conf, table);
         @SuppressWarnings("deprecation")
         Path editsdir = WALSplitter
-            .getRegionDirRecoveredEditsDir(HRegion.getRegionDir(tdir, hri.getEncodedName()));
+            .getRegionDirRecoveredEditsDir(FSUtils.getWALRegionDir(conf,
+                tableName, hri.getEncodedName()));
         LOG.debug("checking edits dir " + editsdir);
         FileStatus[] files = fs.listStatus(editsdir, new PathFilter() {
           @Override
@@ -250,7 +255,7 @@ public abstract class AbstractTestDLS {
     }
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testMasterStartsUpWithLogSplittingWork() throws Exception {
     conf.setInt(ServerManager.WAIT_ON_REGIONSERVERS_MINTOSTART, NUM_RS - 1);
     startCluster(NUM_RS);
@@ -310,7 +315,7 @@ public abstract class AbstractTestDLS {
    * @throws Exception
    */
   // Was marked flaky before Distributed Log Replay cleanup.
-  @Test(timeout = 300000)
+  @Test
   public void testWorkerAbort() throws Exception {
     LOG.info("testWorkerAbort");
     startCluster(3);
@@ -367,7 +372,7 @@ public abstract class AbstractTestDLS {
     }
   }
 
-  @Test(timeout = 300000)
+  @Test
   public void testThreeRSAbort() throws Exception {
     LOG.info("testThreeRSAbort");
     int numRegionsToCreate = 40;
@@ -398,18 +403,25 @@ public abstract class AbstractTestDLS {
         }
       });
       TEST_UTIL.waitUntilAllRegionsAssigned(tableName);
-      assertEquals(numRegionsToCreate * numRowsPerRegion, TEST_UTIL.countRows(table));
+      int rows;
+      try {
+        rows = TEST_UTIL.countRows(table);
+      } catch (Exception e) {
+        Threads.printThreadInfo(System.out, "Thread dump before fail");
+        throw e;
+      }
+      assertEquals(numRegionsToCreate * numRowsPerRegion, rows);
     }
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testDelayedDeleteOnFailure() throws Exception {
     LOG.info("testDelayedDeleteOnFailure");
     startCluster(1);
     final SplitLogManager slm = master.getMasterWalManager().getSplitLogManager();
     final FileSystem fs = master.getMasterFileSystem().getFileSystem();
-    final Path logDir = new Path(new Path(FSUtils.getRootDir(conf), HConstants.HREGION_LOGDIR_NAME),
-        ServerName.valueOf("x", 1, 1).toString());
+    final Path rootLogDir = new Path(FSUtils.getWALRootDir(conf), HConstants.HREGION_LOGDIR_NAME);
+    final Path logDir = new Path(rootLogDir, ServerName.valueOf("x", 1, 1).toString());
     fs.mkdirs(logDir);
     ExecutorService executor = null;
     try {
@@ -470,42 +482,6 @@ public abstract class AbstractTestDLS {
     }
   }
 
-  @Test(timeout = 300000)
-  public void testReadWriteSeqIdFiles() throws Exception {
-    LOG.info("testReadWriteSeqIdFiles");
-    startCluster(2);
-    final ZKWatcher zkw = new ZKWatcher(conf, "table-creation", null);
-    Table ht = installTable(zkw, 10);
-    try {
-      FileSystem fs = master.getMasterFileSystem().getFileSystem();
-      Path tableDir =
-          FSUtils.getTableDir(FSUtils.getRootDir(conf), TableName.valueOf(name.getMethodName()));
-      List<Path> regionDirs = FSUtils.getRegionDirs(fs, tableDir);
-      long newSeqId = WALSplitter.writeRegionSequenceIdFile(fs, regionDirs.get(0), 1L, 1000L);
-      WALSplitter.writeRegionSequenceIdFile(fs, regionDirs.get(0), 1L, 1000L);
-      assertEquals(newSeqId + 2000,
-        WALSplitter.writeRegionSequenceIdFile(fs, regionDirs.get(0), 3L, 1000L));
-
-      Path editsdir = WALSplitter.getRegionDirRecoveredEditsDir(regionDirs.get(0));
-      FileStatus[] files = FSUtils.listStatus(fs, editsdir, new PathFilter() {
-        @Override
-        public boolean accept(Path p) {
-          return WALSplitter.isSequenceIdFile(p);
-        }
-      });
-      // only one seqid file should exist
-      assertEquals(1, files.length);
-
-      // verify all seqId files aren't treated as recovered.edits files
-      NavigableSet<Path> recoveredEdits =
-          WALSplitter.getSplitEditFilesSorted(fs, regionDirs.get(0));
-      assertEquals(0, recoveredEdits.size());
-    } finally {
-      if (ht != null) ht.close();
-      if (zkw != null) zkw.close();
-    }
-  }
-
   private Table installTable(ZKWatcher zkw, int nrs) throws Exception {
     return installTable(zkw, nrs, 0);
   }
@@ -524,24 +500,25 @@ public abstract class AbstractTestDLS {
     blockUntilNoRIT(zkw, master);
     // disable-enable cycle to get rid of table's dead regions left behind
     // by createMultiRegions
+    assertTrue(TEST_UTIL.getAdmin().isTableEnabled(tableName));
     LOG.debug("Disabling table\n");
     TEST_UTIL.getAdmin().disableTable(tableName);
     LOG.debug("Waiting for no more RIT\n");
     blockUntilNoRIT(zkw, master);
     NavigableSet<String> regions = HBaseTestingUtility.getAllOnlineRegions(cluster);
-    LOG.debug("Verifying only catalog and namespace regions are assigned\n");
-    if (regions.size() != 2) {
+    LOG.debug("Verifying only catalog region is assigned\n");
+    if (regions.size() != 1) {
       for (String oregion : regions)
         LOG.debug("Region still online: " + oregion);
     }
-    assertEquals(2 + existingRegions, regions.size());
+    assertEquals(1 + existingRegions, regions.size());
     LOG.debug("Enabling table\n");
     TEST_UTIL.getAdmin().enableTable(tableName);
     LOG.debug("Waiting for no more RIT\n");
     blockUntilNoRIT(zkw, master);
     LOG.debug("Verifying there are " + numRegions + " assigned on cluster\n");
     regions = HBaseTestingUtility.getAllOnlineRegions(cluster);
-    assertEquals(numRegions + 2 + existingRegions, regions.size());
+    assertEquals(numRegions + 1 + existingRegions, regions.size());
     return table;
   }
 

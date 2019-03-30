@@ -58,7 +58,7 @@ public class TestMultiSlaveReplication {
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestMultiSlaveReplication.class);
 
-  private static final Logger LOG = LoggerFactory.getLogger(TestReplicationBase.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestMultiSlaveReplication.class);
 
   private static Configuration conf1;
   private static Configuration conf2;
@@ -124,7 +124,7 @@ public class TestMultiSlaveReplication {
     table.addFamily(fam);
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testMultiSlaveReplication() throws Exception {
     LOG.info("testCyclicReplication");
     MiniHBaseCluster master = utility1.startMiniCluster();

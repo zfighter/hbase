@@ -140,6 +140,12 @@ public enum EventType {
    * Master asking RS to open a  priority region.
    */
   M_RS_OPEN_PRIORITY_REGION          (26, ExecutorType.RS_OPEN_PRIORITY_REGION),
+  /**
+   * Messages originating from Master to RS.<br>
+   * M_RS_SWITCH_RPC_THROTTLE<br>
+   * Master asking RS to switch rpc throttle state.
+   */
+  M_RS_SWITCH_RPC_THROTTLE(27, ExecutorType.RS_SWITCH_RPC_THROTTLE),
 
   /**
    * Messages originating from Client to Master.<br>
@@ -281,7 +287,14 @@ public enum EventType {
    *
    * RS_REFRESH_PEER
    */
-  RS_REFRESH_PEER (84, ExecutorType.RS_REFRESH_PEER);
+  RS_REFRESH_PEER(84, ExecutorType.RS_REFRESH_PEER),
+
+  /**
+   * RS replay sync replication wal.<br>
+   *
+   * RS_REPLAY_SYNC_REPLICATION_WAL
+   */
+  RS_REPLAY_SYNC_REPLICATION_WAL(85, ExecutorType.RS_REPLAY_SYNC_REPLICATION_WAL);
 
   private final int code;
   private final ExecutorType executor;

@@ -39,9 +39,11 @@
       <shaded.prefix>org.apache.hadoop.hbase.shaded</shaded.prefix>
     </properties>
     <modules>
+        <module>hbase-shaded-client-byo-hadoop</module>
         <module>hbase-shaded-client</module>
         <module>hbase-shaded-mapreduce</module>
         <module>hbase-shaded-check-invariants</module>
+        <module>hbase-shaded-with-hadoop-check-invariants</module>
     </modules>
     <dependencies>
       <dependency>
@@ -64,13 +66,6 @@
     </dependencies>
     <build>
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-site-plugin</artifactId>
-                <configuration>
-                    <skip>true</skip>
-                </configuration>
-            </plugin>
             <plugin>
                 <!--Make it so assembly:single does nothing in here-->
                 <artifactId>maven-assembly-plugin</artifactId>
@@ -125,6 +120,7 @@
                     <artifactId>maven-shade-plugin</artifactId>
                     <executions>
                         <execution>
+                            <id>aggregate-into-a-jar-with-relocated-third-parties</id>
                             <phase>package</phase>
                             <goals>
                                 <goal>shade</goal>
@@ -136,6 +132,13 @@
                                 <shadeTestJar>false</shadeTestJar>
                                 <artifactSet>
                                     <excludes>
+                                        <!-- exclude J2EE modules that come in for JDK11+ -->
+                                        <exclude>javax.annotation:javax.annotation-api</exclude>
+                                        <!-- default to excluding Hadoop, have module that want
+                                             to include it redefine the exclude list -->
+                                        <exclude>org.apache.hadoop:*</exclude>
+                                        <!-- the rest of this needs to be kept in sync with any
+                                             hadoop-including module -->
                                         <exclude>org.apache.hbase:hbase-resource-bundle</exclude>
                                         <exclude>org.slf4j:*</exclude>
                                         <exclude>com.google.code.findbugs:*</exclude>
@@ -338,6 +341,10 @@
 
                                     <!-- org.apache.commons not including logging -->
                                     <relocation>
+                                        <pattern>org.apache.commons.validator</pattern>
+                                        <shadedPattern>${shaded.prefix}.org.apache.commons.validator</shadedPattern>
+                                    </relocation>
+                                    <relocation>
                                         <pattern>org.apache.commons.beanutils</pattern>
                                         <shadedPattern>${shaded.prefix}.org.apache.commons.beanutils</shadedPattern>
                                     </relocation>
@@ -425,8 +432,6 @@
                                         <pattern>org.junit</pattern>
                                         <shadedPattern>${shaded.prefix}.org.junit</shadedPattern>
                                     </relocation>
-
-
                                 </relocations>
                                 <transformers>
                                   <!-- Need to filter out some extraneous license files.
@@ -457,11 +462,22 @@
                                     </excludes>
                                   </filter>
                                   <filter>
+                                    <!-- Duplication of classes that ship in commons-collections 2.x and 3.x
+                                         If we stop bundling a relevant commons-collections artifact we'll
+                                         need to revisit. See: https://s.apache.org/e09o
+                                    -->
+                                    <artifact>commons-beanutils:commons-beanutils-core</artifact>
+                                    <excludes>
+                                      <exclude>org/apache/commons/collections/*.class</exclude>
+                                    </excludes>
+                                  </filter>
+                                  <filter>
                                     <!-- server side webapps that we don't need -->
                                     <artifact>org.apache.hbase:hbase-server</artifact>
                                     <excludes>
                                       <exclude>hbase-webapps/*</exclude>
                                       <exclude>hbase-webapps/**/*</exclude>
+                                      <exclude>**/*_jsp.class</exclude>
                                     </excludes>
                                   </filter>
                                   <filter>

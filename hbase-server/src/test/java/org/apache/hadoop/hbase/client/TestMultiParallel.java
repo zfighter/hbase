@@ -47,7 +47,6 @@ import org.apache.hadoop.hbase.coprocessor.MasterCoprocessor;
 import org.apache.hadoop.hbase.coprocessor.MasterCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.MasterObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
-import org.apache.hadoop.hbase.master.LoadBalancer;
 import org.apache.hadoop.hbase.master.RegionPlan;
 import org.apache.hadoop.hbase.testclassification.FlakeyTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
@@ -85,7 +84,8 @@ public class TestMultiParallel {
   private static final int slaves = 5; // also used for testing HTable pool size
   private static Connection CONNECTION;
 
-  @BeforeClass public static void beforeClass() throws Exception {
+  @BeforeClass
+  public static void beforeClass() throws Exception {
     // Uncomment the following lines if more verbosity is needed for
     // debugging (see HBASE-12285 for details).
     //((Log4JLogger)RpcServer.LOG).getLogger().setLevel(Level.ALL);
@@ -93,7 +93,8 @@ public class TestMultiParallel {
     //((Log4JLogger)ScannerCallable.LOG).getLogger().setLevel(Level.ALL);
     UTIL.getConfiguration().set(HConstants.RPC_CODEC_CONF_KEY,
         KeyValueCodec.class.getCanonicalName());
-    UTIL.getConfiguration().setBoolean(LoadBalancer.TABLES_ON_MASTER, true);
+    // Disable table on master for now as the feature is broken
+    //UTIL.getConfiguration().setBoolean(LoadBalancer.TABLES_ON_MASTER, true);
     // We used to ask for system tables on Master exclusively but not needed by test and doesn't
     // work anyways -- so commented out.
     // UTIL.getConfiguration().setBoolean(LoadBalancer.SYSTEM_TABLES_ON_MASTER, true);
@@ -107,12 +108,14 @@ public class TestMultiParallel {
     assertTrue(MyMasterObserver.start.get());
   }
 
-  @AfterClass public static void afterClass() throws Exception {
+  @AfterClass
+  public static void afterClass() throws Exception {
     CONNECTION.close();
     UTIL.shutdownMiniCluster();
   }
 
-  @Before public void before() throws Exception {
+  @Before
+  public void before() throws Exception {
     final int balanceCount = MyMasterObserver.postBalanceCount.get();
     LOG.info("before");
     if (UTIL.ensureSomeRegionServersAvailable(slaves)) {
@@ -172,13 +175,10 @@ public class TestMultiParallel {
    * This is for testing the active number of threads that were used while
    * doing a batch operation. It inserts one row per region via the batch
    * operation, and then checks the number of active threads.
+   * <p/>
    * For HBASE-3553
-   * @throws IOException
-   * @throws InterruptedException
-   * @throws NoSuchFieldException
-   * @throws SecurityException
    */
-  @Test(timeout=300000)
+  @Test
   public void testActiveThreadsCount() throws Exception {
     UTIL.getConfiguration().setLong("hbase.htable.threads.coresize", slaves + 1);
     try (Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration())) {
@@ -202,7 +202,7 @@ public class TestMultiParallel {
     }
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testBatchWithGet() throws Exception {
     LOG.info("test=testBatchWithGet");
     Table table = UTIL.getConnection().getTable(TEST_TABLE);
@@ -271,7 +271,7 @@ public class TestMultiParallel {
     table.close();
   }
 
-  @Test (timeout=300000)
+  @Test
   public void testFlushCommitsNoAbort() throws Exception {
     LOG.info("test=testFlushCommitsNoAbort");
     doTestFlushCommits(false);
@@ -280,10 +280,8 @@ public class TestMultiParallel {
   /**
    * Only run one Multi test with a forced RegionServer abort. Otherwise, the
    * unit tests will take an unnecessarily long time to run.
-   *
-   * @throws Exception
    */
-  @Test (timeout=360000)
+  @Test
   public void testFlushCommitsWithAbort() throws Exception {
     LOG.info("test=testFlushCommitsWithAbort");
     doTestFlushCommits(true);
@@ -292,7 +290,6 @@ public class TestMultiParallel {
   /**
    * Set table auto flush to false and test flushing commits
    * @param doAbort true if abort one regionserver in the testing
-   * @throws Exception
    */
   private void doTestFlushCommits(boolean doAbort) throws Exception {
     // Load the data
@@ -342,9 +339,9 @@ public class TestMultiParallel {
       UTIL.waitFor(15 * 1000, new Waiter.Predicate<Exception>() {
         @Override
         public boolean evaluate() throws Exception {
-          // Master is also a regionserver, so the count is liveRScount
+          // We disable regions on master so the count should be liveRScount - 1
           return UTIL.getMiniHBaseCluster().getMaster()
-              .getClusterMetrics().getLiveServerMetrics().size() == liveRScount;
+              .getClusterMetrics().getLiveServerMetrics().size() == liveRScount - 1;
         }
       });
       UTIL.waitFor(15 * 1000, UTIL.predicateNoRegionsInTransition());
@@ -354,7 +351,7 @@ public class TestMultiParallel {
     LOG.info("done");
   }
 
-  @Test (timeout=300000)
+  @Test
   public void testBatchWithPut() throws Exception {
     LOG.info("test=testBatchWithPut");
     Table table = CONNECTION.getTable(TEST_TABLE);
@@ -387,7 +384,7 @@ public class TestMultiParallel {
     table.close();
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testBatchWithDelete() throws Exception {
     LOG.info("test=testBatchWithDelete");
     Table table = UTIL.getConnection().getTable(TEST_TABLE);
@@ -418,7 +415,7 @@ public class TestMultiParallel {
     table.close();
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testHTableDeleteWithList() throws Exception {
     LOG.info("test=testHTableDeleteWithList");
     Table table = UTIL.getConnection().getTable(TEST_TABLE);
@@ -448,7 +445,7 @@ public class TestMultiParallel {
     table.close();
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testBatchWithManyColsInOneRowGetAndPut() throws Exception {
     LOG.info("test=testBatchWithManyColsInOneRowGetAndPut");
     Table table = UTIL.getConnection().getTable(TEST_TABLE);
@@ -487,7 +484,7 @@ public class TestMultiParallel {
     table.close();
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testBatchWithIncrementAndAppend() throws Exception {
     LOG.info("test=testBatchWithIncrementAndAppend");
     final byte[] QUAL1 = Bytes.toBytes("qual1");
@@ -522,7 +519,7 @@ public class TestMultiParallel {
     table.close();
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testNonceCollision() throws Exception {
     LOG.info("test=testNonceCollision");
     final Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
@@ -622,7 +619,7 @@ public class TestMultiParallel {
     }
   }
 
-  @Test(timeout=300000)
+  @Test
   public void testBatchWithMixedActions() throws Exception {
     LOG.info("test=testBatchWithMixedActions");
     Table table = UTIL.getConnection().getTable(TEST_TABLE);
@@ -678,12 +675,12 @@ public class TestMultiParallel {
     RowMutations rm = new RowMutations(KEYS[50]);
     put = new Put(KEYS[50]);
     put.addColumn(BYTES_FAMILY, qual2, val2);
-    rm.add(put);
+    rm.add((Mutation) put);
     byte[] qual3 = Bytes.toBytes("qual3");
     byte[] val3 = Bytes.toBytes("putvalue3");
     put = new Put(KEYS[50]);
     put.addColumn(BYTES_FAMILY, qual3, val3);
-    rm.add(put);
+    rm.add((Mutation) put);
     actions.add(rm);
 
     // 7 Add another Get to the mixed sequence after RowMutations

@@ -22,9 +22,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
@@ -43,7 +43,6 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -155,14 +154,14 @@ public abstract class AbstractTestWALReplay {
     this.hbaseRootDir = FSUtils.getRootDir(this.conf);
     this.oldLogDir = new Path(this.hbaseRootDir, HConstants.HREGION_OLDLOGDIR_NAME);
     String serverName =
-        ServerName.valueOf(currentTest.getMethodName() + "-manual", 16010,
-            System.currentTimeMillis()).toString();
+      ServerName.valueOf(currentTest.getMethodName() + "-manual", 16010, System.currentTimeMillis())
+          .toString();
     this.logName = AbstractFSWALProvider.getWALDirectoryName(serverName);
     this.logDir = new Path(this.hbaseRootDir, logName);
     if (TEST_UTIL.getDFSCluster().getFileSystem().exists(this.hbaseRootDir)) {
       TEST_UTIL.getDFSCluster().getFileSystem().delete(this.hbaseRootDir, true);
     }
-    this.wals = new WALFactory(conf, null, currentTest.getMethodName());
+    this.wals = new WALFactory(conf, currentTest.getMethodName());
   }
 
   @After
@@ -682,6 +681,7 @@ public abstract class AbstractTestWALReplay {
     RegionServerServices rsServices = Mockito.mock(RegionServerServices.class);
     Mockito.doReturn(false).when(rsServices).isAborted();
     when(rsServices.getServerName()).thenReturn(ServerName.valueOf("foo", 10, 10));
+    when(rsServices.getConfiguration()).thenReturn(conf);
     Configuration customConf = new Configuration(this.conf);
     customConf.set(DefaultStoreEngine.DEFAULT_STORE_FLUSHER_CLASS_KEY,
         CustomStoreFlusher.class.getName());
@@ -870,7 +870,7 @@ public abstract class AbstractTestWALReplay {
     final TableName tableName = TableName.valueOf(currentTest.getMethodName());
     final HRegionInfo hri = createBasic3FamilyHRegionInfo(tableName);
     final Path basedir =
-        FSUtils.getTableDir(this.hbaseRootDir, tableName);
+        FSUtils.getWALTableDir(conf, tableName);
     deleteDir(basedir);
     final byte[] rowName = tableName.getName();
     final int countPerFamily = 10;
@@ -903,7 +903,7 @@ public abstract class AbstractTestWALReplay {
     WALSplitter.splitLogFile(hbaseRootDir, listStatus[0],
         this.fs, this.conf, null, null, null, wals);
     FileStatus[] listStatus1 = this.fs.listStatus(
-      new Path(FSUtils.getTableDir(hbaseRootDir, tableName), new Path(hri.getEncodedName(),
+      new Path(FSUtils.getWALTableDir(conf, tableName), new Path(hri.getEncodedName(),
           "recovered.edits")), new PathFilter() {
         @Override
         public boolean accept(Path p) {
@@ -930,13 +930,13 @@ public abstract class AbstractTestWALReplay {
   public void testDatalossWhenInputError() throws Exception {
     final TableName tableName = TableName.valueOf("testDatalossWhenInputError");
     final HRegionInfo hri = createBasic3FamilyHRegionInfo(tableName);
-    final Path basedir = FSUtils.getTableDir(this.hbaseRootDir, tableName);
+    final Path basedir = FSUtils.getWALTableDir(conf, tableName);
     deleteDir(basedir);
     final byte[] rowName = tableName.getName();
     final int countPerFamily = 10;
     final HTableDescriptor htd = createBasic1FamilyHTD(tableName);
     HRegion region1 = HBaseTestingUtility.createRegionAndWAL(hri, hbaseRootDir, this.conf, htd);
-    Path regionDir = region1.getRegionFileSystem().getRegionDir();
+    Path regionDir = region1.getWALRegionDir();
     HBaseTestingUtility.closeRegionAndWAL(region1);
 
     WAL wal = createWAL(this.conf, hbaseRootDir, logName);
@@ -1098,6 +1098,7 @@ public abstract class AbstractTestWALReplay {
 
   private MockWAL createMockWAL() throws IOException {
     MockWAL wal = new MockWAL(fs, hbaseRootDir, logName, conf);
+    wal.init();
     // Set down maximum recovery so we dfsclient doesn't linger retrying something
     // long gone.
     HBaseTestingUtility.setMaxRecoveryErrorCount(wal.getOutputStream(), 1);
@@ -1110,16 +1111,18 @@ public abstract class AbstractTestWALReplay {
     private HRegion r;
 
     @Override
-    public void requestFlush(HRegion region, boolean force, FlushLifeCycleTracker tracker) {
+    public boolean requestFlush(HRegion region, boolean force, FlushLifeCycleTracker tracker) {
       try {
         r.flush(force);
+        return true;
       } catch (IOException e) {
         throw new RuntimeException("Exception flushing", e);
       }
     }
 
     @Override
-    public void requestDelayedFlush(HRegion region, long when, boolean forceFlushAllStores) {
+    public boolean requestDelayedFlush(HRegion region, long when, boolean forceFlushAllStores) {
+      return true;
     }
 
     @Override
@@ -1227,11 +1230,11 @@ public abstract class AbstractTestWALReplay {
       StreamLacksCapabilityException {
     fs.mkdirs(file.getParent());
     ProtobufLogWriter writer = new ProtobufLogWriter();
-    writer.init(fs, file, conf, true);
+    writer.init(fs, file, conf, true, WALUtil.getWALBlockSize(conf, fs, file));
     for (FSWALEntry entry : entries) {
       writer.append(entry);
     }
-    writer.sync();
+    writer.sync(false);
     writer.close();
   }
 

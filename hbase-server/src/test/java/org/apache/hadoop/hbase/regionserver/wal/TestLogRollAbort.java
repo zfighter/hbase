@@ -145,7 +145,7 @@ public class TestLogRollAbort {
     // Create the test table and open it
     TableName tableName = TableName.valueOf(this.getClass().getSimpleName());
     TableDescriptor desc = TableDescriptorBuilder.newBuilder(tableName)
-        .addColumnFamily(ColumnFamilyDescriptorBuilder.of(HConstants.CATALOG_FAMILY)).build();
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(HConstants.CATALOG_FAMILY)).build();
 
     admin.createTable(desc);
     Table table = TEST_UTIL.getConnection().getTable(tableName);
@@ -185,13 +185,13 @@ public class TestLogRollAbort {
    * comes back online after the master declared it dead and started to split.
    * Want log rolling after a master split to fail. See HBASE-2312.
    */
-  @Test (timeout=300000)
+  @Test
   public void testLogRollAfterSplitStart() throws IOException {
     LOG.info("Verify wal roll after split starts will fail.");
     String logName = ServerName.valueOf("testLogRollAfterSplitStart",
         16010, System.currentTimeMillis()).toString();
     Path thisTestsDir = new Path(HBASELOGDIR, AbstractFSWALProvider.getWALDirectoryName(logName));
-    final WALFactory wals = new WALFactory(conf, null, logName);
+    final WALFactory wals = new WALFactory(conf, logName);
 
     try {
       // put some entries in an WAL

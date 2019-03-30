@@ -20,6 +20,7 @@ package org.apache.hadoop.hbase.client;
 import static org.apache.hadoop.hbase.util.hbck.HbckTestingUtil.assertErrors;
 import static org.apache.hadoop.hbase.util.hbck.HbckTestingUtil.doFsck;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -46,8 +47,8 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.Waiter;
-import org.apache.hadoop.hbase.master.NoSuchProcedureException;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
+import org.apache.hadoop.hbase.master.assignment.AssignmentTestingUtil;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.regionserver.StorefileRefresherChore;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
@@ -57,6 +58,7 @@ import org.apache.hadoop.hbase.util.HBaseFsck.ErrorReporter.ERROR_CODE;
 import org.apache.hadoop.hbase.util.HBaseFsckRepair;
 import org.apache.hadoop.hbase.util.hbck.HbckTestingUtil;
 import org.apache.hadoop.hbase.zookeeper.LoadBalancerTracker;
+import org.apache.hadoop.hbase.zookeeper.MetaTableLocator;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 import org.apache.hadoop.hbase.zookeeper.ZNodePaths;
@@ -98,25 +100,25 @@ public class TestMetaWithReplicas {
     TEST_UTIL.startMiniCluster(REGIONSERVERS_COUNT);
     AssignmentManager am = TEST_UTIL.getMiniHBaseCluster().getMaster().getAssignmentManager();
     Set<ServerName> sns = new HashSet<ServerName>();
-    for (int replicaId = 0; replicaId < 3; replicaId ++) {
-      RegionInfo h =
-          RegionReplicaUtil.getRegionInfoForReplica(RegionInfoBuilder.FIRST_META_REGIONINFO,
-              replicaId);
-      try {
-        am.waitForAssignment(h);
-        ServerName sn = am.getRegionStates().getRegionServerOfRegion(h);
-        LOG.info(h.getRegionNameAsString() + " on " + sn);
-        sns.add(sn);
-      } catch (NoSuchProcedureException e) {
-        LOG.info("Presume the procedure has been cleaned up so just proceed: " + e.toString());
-      }
+    ServerName hbaseMetaServerName =
+      MetaTableLocator.getMetaRegionLocation(TEST_UTIL.getZooKeeperWatcher());
+    LOG.info("HBASE:META DEPLOY: on " + hbaseMetaServerName);
+    sns.add(hbaseMetaServerName);
+    for (int replicaId = 1; replicaId < 3; replicaId++) {
+      RegionInfo h = RegionReplicaUtil
+        .getRegionInfoForReplica(RegionInfoBuilder.FIRST_META_REGIONINFO, replicaId);
+      AssignmentTestingUtil.waitForAssignment(am, h);
+      ServerName sn = am.getRegionStates().getRegionServerOfRegion(h);
+      assertNotNull(sn);
+      LOG.info("HBASE:META DEPLOY: " + h.getRegionNameAsString() + " on " + sn);
+      sns.add(sn);
     }
     // Fun. All meta region replicas have ended up on the one server. This will cause this test
     // to fail ... sometimes.
     if (sns.size() == 1) {
       int count = TEST_UTIL.getMiniHBaseCluster().getLiveRegionServerThreads().size();
       assertTrue("count=" + count, count == REGIONSERVERS_COUNT);
-      LOG.warn("All hbase:meta replicas are on the one server; moving hbase:meta");
+      LOG.warn("All hbase:meta replicas are on the one server; moving hbase:meta: " + sns);
       int metaServerIndex = TEST_UTIL.getHBaseCluster().getServerWithMeta();
       int newServerIndex = metaServerIndex;
       while (newServerIndex == metaServerIndex) {
@@ -155,7 +157,7 @@ public class TestMetaWithReplicas {
 
   @Test
   public void testMetaHTDReplicaCount() throws Exception {
-    assertTrue(TEST_UTIL.getAdmin().getTableDescriptor(TableName.META_TABLE_NAME)
+    assertTrue(TEST_UTIL.getAdmin().getDescriptor(TableName.META_TABLE_NAME)
         .getRegionReplication() == 3);
   }
 
@@ -174,7 +176,7 @@ public class TestMetaWithReplicas {
     for (int i = 1; i < 3; i++) {
       String secZnode = ZNodePaths.joinZNode(baseZNode,
           conf.get("zookeeper.znode.metaserver", "meta-region-server") + "-" + i);
-      String str = zkw.znodePaths.getZNodeForReplica(i);
+      String str = zkw.getZNodePaths().getZNodeForReplica(i);
       assertTrue(str.equals(secZnode));
       // check that the data in the znode is parseable (this would also mean the znode exists)
       data = ZKUtil.getData(zkw, secZnode);
@@ -256,10 +258,10 @@ public class TestMetaWithReplicas {
       LOG.info("Running GETs");
       Get get = null;
       Result r = null;
-      byte[] row = "test".getBytes();
+      byte[] row = Bytes.toBytes("test");
       try (Table htable = c.getTable(TABLE)) {
         Put put = new Put(row);
-        put.addColumn("foo".getBytes(), row, row);
+        put.addColumn(Bytes.toBytes("foo"), row, row);
         BufferedMutator m = c.getBufferedMutator(TABLE);
         m.mutate(put);
         m.flush();
@@ -294,7 +296,7 @@ public class TestMetaWithReplicas {
       TEST_UTIL.getAdmin().deleteTable(tableName);
     }
     try (Table htable = TEST_UTIL.createTable(tableName, FAMILIES)) {
-      byte[] row = "test".getBytes();
+      byte[] row = Bytes.toBytes("test");
       ConnectionImplementation c = ((ConnectionImplementation) TEST_UTIL.getConnection());
       // check that metalookup pool would get created
       c.relocateRegion(tableName, row);
@@ -375,7 +377,7 @@ public class TestMetaWithReplicas {
         + "(" + metaZnodes.toString() + ")";
   }
 
-  @Test
+  @Ignore @Test
   public void testHBaseFsckWithMetaReplicas() throws Exception {
     HBaseFsck hbck = HbckTestingUtil.doFsck(TEST_UTIL.getConfiguration(), false);
     HbckTestingUtil.assertNoErrors(hbck);
@@ -408,7 +410,7 @@ public class TestMetaWithReplicas {
     HBaseFsckRepair.closeRegionSilentlyAndWait(c,
         rl.getRegionLocation(2).getServerName(), rl.getRegionLocation(2).getRegionInfo());
     ZKWatcher zkw = TEST_UTIL.getZooKeeperWatcher();
-    ZKUtil.deleteNode(zkw, zkw.znodePaths.getZNodeForReplica(2));
+    ZKUtil.deleteNode(zkw, zkw.getZNodePaths().getZNodeForReplica(2));
     // check that problem exists
     HBaseFsck hbck = doFsck(TEST_UTIL.getConfiguration(), false);
     assertErrors(hbck, new ERROR_CODE[]{ERROR_CODE.UNKNOWN,ERROR_CODE.NO_META_REGION});

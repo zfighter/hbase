@@ -35,7 +35,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos;
  * zookeeper.
  */
 @InterfaceAudience.Private
-public class ZKReplicationStorageBase {
+public abstract class ZKReplicationStorageBase {
 
   public static final String REPLICATION_ZNODE = "zookeeper.znode.replication";
   public static final String REPLICATION_ZNODE_DEFAULT = "replication";
@@ -50,7 +50,7 @@ public class ZKReplicationStorageBase {
     this.zookeeper = zookeeper;
     this.conf = conf;
 
-    this.replicationZNode = ZNodePaths.joinZNode(this.zookeeper.znodePaths.baseZNode,
+    this.replicationZNode = ZNodePaths.joinZNode(this.zookeeper.getZNodePaths().baseZNode,
       conf.get(REPLICATION_ZNODE, REPLICATION_ZNODE_DEFAULT));
   }
 

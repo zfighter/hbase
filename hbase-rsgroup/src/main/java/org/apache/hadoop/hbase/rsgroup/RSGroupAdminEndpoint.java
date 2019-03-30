@@ -31,8 +31,11 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
+import org.apache.hadoop.hbase.HBaseIOException;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.MasterNotRunningException;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.PleaseHoldException;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
@@ -79,7 +82,6 @@ import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.access.AccessChecker;
 import org.apache.hadoop.hbase.security.access.Permission.Action;
-import org.apache.hadoop.hbase.security.access.TableAuthManager;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -127,7 +129,7 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
 
   @Override
   public void stop(CoprocessorEnvironment env) {
-    TableAuthManager.release(accessChecker.getAuthManager());
+    accessChecker.stop();
   }
 
   @Override
@@ -159,10 +161,16 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " initiates rsgroup info retrieval, group="
               + groupName);
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preGetRSGroupInfo(groupName);
+        }
         checkPermission("getRSGroupInfo");
         RSGroupInfo rsGroupInfo = groupAdminServer.getRSGroupInfo(groupName);
         if (rsGroupInfo != null) {
           builder.setRSGroupInfo(RSGroupProtobufUtil.toProtoGroupInfo(rsGroupInfo));
+        }
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postGetRSGroupInfo(groupName);
         }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
@@ -178,10 +186,16 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " initiates rsgroup info retrieval, table="
           + tableName);
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preGetRSGroupInfoOfTable(tableName);
+        }
         checkPermission("getRSGroupInfoOfTable");
         RSGroupInfo RSGroupInfo = groupAdminServer.getRSGroupInfoOfTable(tableName);
         if (RSGroupInfo != null) {
           builder.setRSGroupInfo(RSGroupProtobufUtil.toProtoGroupInfo(RSGroupInfo));
+        }
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postGetRSGroupInfoOfTable(tableName);
         }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
@@ -200,8 +214,14 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " move servers " + hostPorts +" to rsgroup "
           + request.getTargetGroup());
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preMoveServers(hostPorts, request.getTargetGroup());
+        }
         checkPermission("moveServers");
         groupAdminServer.moveServers(hostPorts, request.getTargetGroup());
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postMoveServers(hostPorts, request.getTargetGroup());
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
       }
@@ -219,8 +239,14 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " move tables " + tables +" to rsgroup "
           + request.getTargetGroup());
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preMoveTables(tables, request.getTargetGroup());
+        }
         checkPermission("moveTables");
         groupAdminServer.moveTables(tables, request.getTargetGroup());
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postMoveTables(tables, request.getTargetGroup());
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
       }
@@ -233,8 +259,14 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       AddRSGroupResponse.Builder builder = AddRSGroupResponse.newBuilder();
       LOG.info(master.getClientIdAuditPrefix() + " add rsgroup " + request.getRSGroupName());
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preAddRSGroup(request.getRSGroupName());
+        }
         checkPermission("addRSGroup");
         groupAdminServer.addRSGroup(request.getRSGroupName());
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postAddRSGroup(request.getRSGroupName());
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
       }
@@ -248,8 +280,14 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
           RemoveRSGroupResponse.newBuilder();
       LOG.info(master.getClientIdAuditPrefix() + " remove rsgroup " + request.getRSGroupName());
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preRemoveRSGroup(request.getRSGroupName());
+        }
         checkPermission("removeRSGroup");
         groupAdminServer.removeRSGroup(request.getRSGroupName());
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postRemoveRSGroup(request.getRSGroupName());
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
       }
@@ -263,8 +301,16 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " balance rsgroup, group=" +
               request.getRSGroupName());
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preBalanceRSGroup(request.getRSGroupName());
+        }
         checkPermission("balanceRSGroup");
-        builder.setBalanceRan(groupAdminServer.balanceRSGroup(request.getRSGroupName()));
+        boolean balancerRan = groupAdminServer.balanceRSGroup(request.getRSGroupName());
+        builder.setBalanceRan(balancerRan);
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postBalanceRSGroup(request.getRSGroupName(),
+              balancerRan);
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
         builder.setBalanceRan(false);
@@ -278,9 +324,15 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       ListRSGroupInfosResponse.Builder builder = ListRSGroupInfosResponse.newBuilder();
       LOG.info(master.getClientIdAuditPrefix() + " list rsgroup");
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preListRSGroups();
+        }
         checkPermission("listRSGroup");
         for (RSGroupInfo RSGroupInfo : groupAdminServer.listRSGroups()) {
           builder.addRSGroupInfo(RSGroupProtobufUtil.toProtoGroupInfo(RSGroupInfo));
+        }
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postListRSGroups();
         }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
@@ -297,10 +349,16 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " initiates rsgroup info retrieval, server="
           + hp);
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preGetRSGroupInfoOfServer(hp);
+        }
         checkPermission("getRSGroupInfoOfServer");
-        RSGroupInfo RSGroupInfo = groupAdminServer.getRSGroupOfServer(hp);
-        if (RSGroupInfo != null) {
-          builder.setRSGroupInfo(RSGroupProtobufUtil.toProtoGroupInfo(RSGroupInfo));
+        RSGroupInfo info = groupAdminServer.getRSGroupOfServer(hp);
+        if (info != null) {
+          builder.setRSGroupInfo(RSGroupProtobufUtil.toProtoGroupInfo(info));
+        }
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postGetRSGroupInfoOfServer(hp);
         }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
@@ -323,8 +381,16 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix() + " move servers " + hostPorts
           + " and tables " + tables + " to rsgroup" + request.getTargetGroup());
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preMoveServersAndTables(hostPorts, tables,
+              request.getTargetGroup());
+        }
         checkPermission("moveServersAndTables");
         groupAdminServer.moveServersAndTables(hostPorts, tables, request.getTargetGroup());
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postMoveServersAndTables(hostPorts, tables,
+              request.getTargetGroup());
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
       }
@@ -344,13 +410,48 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
       LOG.info(master.getClientIdAuditPrefix()
           + " remove decommissioned servers from rsgroup: " + servers);
       try {
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().preRemoveServers(servers);
+        }
         checkPermission("removeServers");
         groupAdminServer.removeServers(servers);
+        if (master.getMasterCoprocessorHost() != null) {
+          master.getMasterCoprocessorHost().postRemoveServers(servers);
+        }
       } catch (IOException e) {
         CoprocessorRpcUtils.setControllerException(controller, e);
       }
       done.run(builder.build());
     }
+  }
+
+  boolean rsgroupHasServersOnline(TableDescriptor desc) throws IOException {
+    String groupName;
+    try {
+      groupName =
+        master.getClusterSchema().getNamespace(desc.getTableName().getNamespaceAsString())
+        .getConfigurationValue(RSGroupInfo.NAMESPACE_DESC_PROP_GROUP);
+      if (groupName == null) {
+        groupName = RSGroupInfo.DEFAULT_GROUP;
+      }
+    } catch (MasterNotRunningException | PleaseHoldException e) {
+      LOG.info("Master has not initialized yet; temporarily using default RSGroup '" +
+          RSGroupInfo.DEFAULT_GROUP + "' for deploy of system table");
+      groupName = RSGroupInfo.DEFAULT_GROUP;
+    }
+
+    RSGroupInfo rsGroupInfo = groupAdminServer.getRSGroupInfo(groupName);
+    if (rsGroupInfo == null) {
+      throw new ConstraintException(
+          "Default RSGroup (" + groupName + ") for this table's " + "namespace does not exist.");
+    }
+
+    for (ServerName onlineServer : master.getServerManager().createDestinationServersList()) {
+      if (rsGroupInfo.getServers().contains(onlineServer.getAddress())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void assignTableToGroup(TableDescriptor desc) throws IOException {
@@ -374,6 +475,17 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
   /////////////////////////////////////////////////////////////////////////////
   // MasterObserver overrides
   /////////////////////////////////////////////////////////////////////////////
+
+  @Override
+  public void preCreateTableAction(
+      final ObserverContext<MasterCoprocessorEnvironment> ctx,
+      final TableDescriptor desc,
+      final RegionInfo[] regions) throws IOException {
+    if (!desc.getTableName().isSystemTable() && !rsgroupHasServersOnline(desc)) {
+      throw new HBaseIOException("No online servers in the rsgroup, which table " +
+          desc.getTableName().getNameAsString() + " belongs to");
+    }
+  }
 
   // Assign table to default RSGroup.
   @Override
@@ -409,8 +521,8 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
 
   @Override
   public void preModifyNamespace(ObserverContext<MasterCoprocessorEnvironment> ctx,
-      NamespaceDescriptor ns) throws IOException {
-    preCreateNamespace(ctx, ns);
+      NamespaceDescriptor currentNsDesc, NamespaceDescriptor newNsDesc) throws IOException {
+    preCreateNamespace(ctx, newNsDesc);
   }
 
   @Override
@@ -427,11 +539,13 @@ public class RSGroupAdminEndpoint implements MasterCoprocessor, MasterObserver {
         filter(server -> !notClearedServers.contains(server)).
         map(ServerName::getAddress).
         collect(Collectors.toSet());
-    groupAdminServer.removeServers(clearedServer);
+    if(!clearedServer.isEmpty()) {
+      groupAdminServer.removeServers(clearedServer);
+    }
   }
 
   public void checkPermission(String request) throws IOException {
-    accessChecker.requirePermission(getActiveUser(), request, Action.ADMIN);
+    accessChecker.requirePermission(getActiveUser(), request, null, Action.ADMIN);
   }
 
   /**

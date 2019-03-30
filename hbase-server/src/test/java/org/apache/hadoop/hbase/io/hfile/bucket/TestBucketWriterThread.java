@@ -27,7 +27,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.atomic.LongAdder;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.io.hfile.BlockCacheKey;
@@ -111,7 +110,7 @@ public class TestBucketWriterThread {
    * @throws IOException
    * @throws InterruptedException
    */
-  @Test (timeout=30000)
+  @Test
   public void testNonErrorCase() throws IOException, InterruptedException {
     bc.cacheBlock(this.plainKey, this.plainCacheable);
     doDrainOfOneEntry(this.bc, this.wt, this.q);
@@ -137,14 +136,13 @@ public class TestBucketWriterThread {
    * @throws InterruptedException
    */
   @SuppressWarnings("unchecked")
-  @Test (timeout=30000)
+  @Test
   public void testIOE() throws IOException, InterruptedException {
     this.bc.cacheBlock(this.plainKey, plainCacheable);
     RAMQueueEntry rqe = q.remove();
     RAMQueueEntry spiedRqe = Mockito.spy(rqe);
     Mockito.doThrow(new IOException("Mocked!")).when(spiedRqe).
-      writeToCache((IOEngine)Mockito.any(), (BucketAllocator)Mockito.any(),
-        (UniqueIndexMap<Integer>)Mockito.any(), (LongAdder) Mockito.any());
+      writeToCache(Mockito.any(), Mockito.any(), Mockito.any());
     this.q.add(spiedRqe);
     doDrainOfOneEntry(bc, wt, q);
     // Cache disabled when ioes w/o ever healing.
@@ -156,7 +154,7 @@ public class TestBucketWriterThread {
    * @throws IOException
    * @throws InterruptedException
    */
-  @Test (timeout=30000)
+  @Test
   public void testCacheFullException()
       throws IOException, InterruptedException {
     this.bc.cacheBlock(this.plainKey, plainCacheable);
@@ -166,8 +164,7 @@ public class TestBucketWriterThread {
     BucketEntry mockedBucketEntry = Mockito.mock(BucketEntry.class);
     Mockito.doThrow(cfe).
       doReturn(mockedBucketEntry).
-      when(spiedRqe).writeToCache((IOEngine)Mockito.any(), (BucketAllocator)Mockito.any(),
-        (UniqueIndexMap<Integer>)Mockito.any(), (LongAdder) Mockito.any());
+      when(spiedRqe).writeToCache(Mockito.any(), Mockito.any(), Mockito.any());
     this.q.add(spiedRqe);
     doDrainOfOneEntry(bc, wt, q);
   }

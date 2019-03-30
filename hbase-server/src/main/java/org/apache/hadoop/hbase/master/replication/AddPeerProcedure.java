@@ -21,6 +21,7 @@ import java.io.IOException;
 import org.apache.hadoop.hbase.client.replication.ReplicationPeerConfigUtil;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.master.procedure.ProcedurePrepareLatch;
 import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
@@ -29,6 +30,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.AddPeerStateData;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.PeerModificationState;
 
 /**
  * The procedure for adding a new replication peer.
@@ -57,22 +59,57 @@ public class AddPeerProcedure extends ModifyPeerProcedure {
   }
 
   @Override
-  protected void prePeerModification(MasterProcedureEnv env)
+  protected PeerModificationState nextStateAfterRefresh() {
+    return peerConfig.isSerial() ? PeerModificationState.SERIAL_PEER_REOPEN_REGIONS
+      : super.nextStateAfterRefresh();
+  }
+
+  @Override
+  protected void updateLastPushedSequenceIdForSerialPeer(MasterProcedureEnv env)
       throws IOException, ReplicationException {
+    setLastPushedSequenceId(env, peerConfig);
+  }
+
+  @Override
+  protected boolean enablePeerBeforeFinish() {
+    return enabled;
+  }
+
+  @Override
+  protected ReplicationPeerConfig getNewPeerConfig() {
+    return peerConfig;
+  }
+
+  @Override
+  protected void releaseLatch(MasterProcedureEnv env) {
+    if (peerConfig.isSyncReplication()) {
+      env.getReplicationPeerManager().releaseSyncReplicationPeerLock();
+    }
+    ProcedurePrepareLatch.releaseLatch(latch, this);
+  }
+
+  @Override
+  protected void prePeerModification(MasterProcedureEnv env)
+      throws IOException, ReplicationException, InterruptedException {
     MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
     if (cpHost != null) {
       cpHost.preAddReplicationPeer(peerId, peerConfig);
+    }
+    if (peerConfig.isSyncReplication()) {
+      env.getReplicationPeerManager().acquireSyncReplicationPeerLock();
     }
     env.getReplicationPeerManager().preAddPeer(peerId, peerConfig);
   }
 
   @Override
   protected void updatePeerStorage(MasterProcedureEnv env) throws ReplicationException {
-    env.getReplicationPeerManager().addPeer(peerId, peerConfig, enabled);
+    env.getReplicationPeerManager().addPeer(peerId, peerConfig,
+      peerConfig.isSerial() ? false : enabled);
   }
 
   @Override
-  protected void postPeerModification(MasterProcedureEnv env) throws IOException {
+  protected void postPeerModification(MasterProcedureEnv env)
+      throws IOException, ReplicationException {
     LOG.info("Successfully added {} peer {}, config {}", enabled ? "ENABLED" : "DISABLED", peerId,
       peerConfig);
     MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
@@ -85,7 +122,7 @@ public class AddPeerProcedure extends ModifyPeerProcedure {
   protected void serializeStateData(ProcedureStateSerializer serializer) throws IOException {
     super.serializeStateData(serializer);
     serializer.serialize(AddPeerStateData.newBuilder()
-        .setPeerConfig(ReplicationPeerConfigUtil.convert(peerConfig)).setEnabled(enabled).build());
+      .setPeerConfig(ReplicationPeerConfigUtil.convert(peerConfig)).setEnabled(enabled).build());
   }
 
   @Override

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,6 +16,8 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hbase.regionserver.wal;
+
+import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.Sequence;
@@ -57,6 +59,7 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hbase.thirdparty.io.netty.channel.Channel;
 import org.apache.hbase.thirdparty.io.netty.channel.EventLoop;
@@ -247,7 +250,6 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     batchSize = conf.getLong(WAL_BATCH_SIZE, DEFAULT_WAL_BATCH_SIZE);
     waitOnShutdownInSeconds = conf.getInt(ASYNC_WAL_WAIT_ON_SHUTDOWN_IN_SECONDS,
       DEFAULT_ASYNC_WAL_WAIT_ON_SHUTDOWN_IN_SECONDS);
-    rollWriter();
   }
 
   private static boolean waitingRoll(int epochAndState) {
@@ -328,13 +330,14 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
         break;
       }
     }
-    postSync(System.nanoTime() - startTimeNs, finishSync(true));
+
+    boolean doRequestRoll = postSync(System.nanoTime() - startTimeNs, finishSync(true));
     if (trySetReadyForRolling()) {
       // we have just finished a roll, then do not need to check for log rolling, the writer will be
       // closed soon.
       return;
     }
-    if (writer.getLength() < logrollsize || rollRequested) {
+    if ((!doRequestRoll && writer.getLength() < logrollsize) || rollRequested) {
       return;
     }
     rollRequested = true;
@@ -347,7 +350,7 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     highestProcessedAppendTxidAtLastSync = currentHighestProcessedAppendTxid;
     final long startTimeNs = System.nanoTime();
     final long epoch = (long) epochAndState >>> 2L;
-    writer.sync().whenCompleteAsync((result, error) -> {
+    addListener(writer.sync(), (result, error) -> {
       if (error != null) {
         syncFailed(epoch, error);
       } else {
@@ -470,6 +473,44 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     // whether to issue a sync in the caller method.
   }
 
+  private void drainNonMarkerEditsAndFailSyncs() {
+    if (toWriteAppends.isEmpty()) {
+      return;
+    }
+    boolean hasNonMarkerEdits = false;
+    Iterator<FSWALEntry> iter = toWriteAppends.descendingIterator();
+    while (iter.hasNext()) {
+      FSWALEntry entry = iter.next();
+      if (!entry.getEdit().isMetaEdit()) {
+        hasNonMarkerEdits = true;
+        break;
+      }
+    }
+    if (hasNonMarkerEdits) {
+      for (;;) {
+        iter.remove();
+        if (!iter.hasNext()) {
+          break;
+        }
+        iter.next();
+      }
+      unackedAppends.clear();
+      // fail the sync futures which are under the txid of the first remaining edit, if none, fail
+      // all the sync futures.
+      long txid = toWriteAppends.isEmpty() ? Long.MAX_VALUE : toWriteAppends.peek().getTxid();
+      IOException error = new IOException("WAL is closing, only marker edit is allowed");
+      for (Iterator<SyncFuture> syncIter = syncFutures.iterator(); syncIter.hasNext();) {
+        SyncFuture future = syncIter.next();
+        if (future.getTxid() < txid) {
+          future.done(future.getTxid(), error);
+          syncIter.remove();
+        } else {
+          break;
+        }
+      }
+    }
+  }
+
   private void consume() {
     consumeLock.lock();
     try {
@@ -512,6 +553,9 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
       }
       waitingConsumePayloadsGatingSequence.set(nextCursor);
     }
+    if (markerEditOnly()) {
+      drainNonMarkerEditsAndFailSyncs();
+    }
     appendAndSync();
     if (hasConsumerTask.get()) {
       return;
@@ -553,9 +597,18 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     return consumerScheduled.compareAndSet(false, true);
   }
 
+  // This is used by sync replication, where we are going to close the wal soon after we reopen all
+  // the regions. Will be overridden by sub classes.
+  protected boolean markerEditOnly() {
+    return false;
+  }
+
   @Override
   public long append(RegionInfo hri, WALKeyImpl key, WALEdit edits, boolean inMemstore)
       throws IOException {
+    if (markerEditOnly() && !edits.isMetaEdit()) {
+      throw new IOException("WAL is closing, only marker edit is allowed");
+    }
     long txid =
       stampSequenceIdAndPublishToRingBuffer(hri, key, edits, inMemstore, waitingConsumePayloads);
     if (shouldScheduleConsumer()) {
@@ -606,21 +659,14 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     }
   }
 
+  protected final AsyncWriter createAsyncWriter(FileSystem fs, Path path) throws IOException {
+    return AsyncFSWALProvider.createAsyncWriter(conf, fs, path, false, this.blocksize,
+      eventLoopGroup, channelClass);
+  }
+
   @Override
   protected AsyncWriter createWriterInstance(Path path) throws IOException {
-    try {
-      return AsyncFSWALProvider.createAsyncWriter(conf, fs, path, false, eventLoopGroup,
-        channelClass);
-    } catch (IOException e) {
-      // this usually means master already think we are dead so let's fail all the pending
-      // syncs. The shutdown process of RS will wait for all regions to be closed before calling
-      // WAL.close so if we do not wake up the thread blocked by sync here it will cause dead
-      // lock.
-      if (e.getMessage().contains("Parent directory doesn't exist:")) {
-        syncFutures.forEach(f -> f.done(f.getTxid(), e));
-      }
-      throw e;
-    }
+    return createAsyncWriter(fs, path);
   }
 
   private void waitForSafePoint() {
@@ -642,13 +688,31 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     }
   }
 
+  protected final long closeWriter(AsyncWriter writer) {
+    if (writer != null) {
+      long fileLength = writer.getLength();
+      closeExecutor.execute(() -> {
+        try {
+          writer.close();
+        } catch (IOException e) {
+          LOG.warn("close old writer failed", e);
+        }
+      });
+      return fileLength;
+    } else {
+      return 0L;
+    }
+  }
+
   @Override
-  protected long doReplaceWriter(Path oldPath, Path newPath, AsyncWriter nextWriter)
+  protected void doReplaceWriter(Path oldPath, Path newPath, AsyncWriter nextWriter)
       throws IOException {
+    Preconditions.checkNotNull(nextWriter);
     waitForSafePoint();
-    final AsyncWriter oldWriter = this.writer;
+    long oldFileLen = closeWriter(this.writer);
+    logRollAndSetupWalProps(oldPath, newPath, oldFileLen);
     this.writer = nextWriter;
-    if (nextWriter != null && nextWriter instanceof AsyncProtobufLogWriter) {
+    if (nextWriter instanceof AsyncProtobufLogWriter) {
       this.fsOut = ((AsyncProtobufLogWriter) nextWriter).getOutput();
     }
     this.fileLengthAtLastSync = nextWriter.getLength();
@@ -665,48 +729,48 @@ public class AsyncFSWAL extends AbstractFSWAL<AsyncWriter> {
     } finally {
       consumeLock.unlock();
     }
-    return executeClose(closeExecutor, oldWriter);
   }
 
   @Override
   protected void doShutdown() throws IOException {
     waitForSafePoint();
-    executeClose(closeExecutor, writer);
+    closeWriter(this.writer);
+    this.writer = null;
     closeExecutor.shutdown();
     try {
       if (!closeExecutor.awaitTermination(waitOnShutdownInSeconds, TimeUnit.SECONDS)) {
-        LOG.error("We have waited " + waitOnShutdownInSeconds + " seconds but"
-          + " the close of async writer doesn't complete."
-          + "Please check the status of underlying filesystem"
-          + " or increase the wait time by the config \""
-          + ASYNC_WAL_WAIT_ON_SHUTDOWN_IN_SECONDS + "\"");
+        LOG.error("We have waited " + waitOnShutdownInSeconds + " seconds but" +
+          " the close of async writer doesn't complete." +
+          "Please check the status of underlying filesystem" +
+          " or increase the wait time by the config \"" + ASYNC_WAL_WAIT_ON_SHUTDOWN_IN_SECONDS +
+          "\"");
       }
     } catch (InterruptedException e) {
       LOG.error("The wait for close of async writer is interrupted");
       Thread.currentThread().interrupt();
     }
     IOException error = new IOException("WAL has been closed");
+    long nextCursor = waitingConsumePayloadsGatingSequence.get() + 1;
+    // drain all the pending sync requests
+    for (long cursorBound = waitingConsumePayloads.getCursor(); nextCursor <= cursorBound;
+      nextCursor++) {
+      if (!waitingConsumePayloads.isPublished(nextCursor)) {
+        break;
+      }
+      RingBufferTruck truck = waitingConsumePayloads.get(nextCursor);
+      switch (truck.type()) {
+        case SYNC:
+          syncFutures.add(truck.unloadSync());
+          break;
+        default:
+          break;
+      }
+    }
+    // and fail them
     syncFutures.forEach(f -> f.done(f.getTxid(), error));
     if (!(consumeExecutor instanceof EventLoop)) {
       consumeExecutor.shutdown();
     }
-  }
-
-  private static long executeClose(ExecutorService closeExecutor, AsyncWriter writer) {
-    long fileLength;
-    if (writer != null) {
-      fileLength = writer.getLength();
-      closeExecutor.execute(() -> {
-        try {
-          writer.close();
-        } catch (IOException e) {
-          LOG.warn("close old writer failed", e);
-        }
-      });
-    } else {
-      fileLength = 0L;
-    }
-    return fileLength;
   }
 
   @Override

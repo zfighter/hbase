@@ -66,7 +66,9 @@ public class TestClientClusterMetrics {
     Configuration conf = HBaseConfiguration.create();
     conf.set(CoprocessorHost.MASTER_COPROCESSOR_CONF_KEY, MyObserver.class.getName());
     UTIL = new HBaseTestingUtility(conf);
-    UTIL.startMiniCluster(MASTERS, SLAVES);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numMasters(MASTERS).numRegionServers(SLAVES).numDataNodes(SLAVES).build();
+    UTIL.startMiniCluster(option);
     CLUSTER = UTIL.getHBaseCluster();
     CLUSTER.waitForActiveAndReadyMaster();
     ADMIN = UTIL.getAdmin();
@@ -94,6 +96,7 @@ public class TestClientClusterMetrics {
     Assert.assertEquals(origin.getLiveServerMetrics().size(),
         defaults.getLiveServerMetrics().size());
     Assert.assertEquals(origin.getMasterInfoPort(), defaults.getMasterInfoPort());
+    Assert.assertEquals(origin.getServersName().size(), defaults.getServersName().size());
   }
 
   @Test
@@ -119,6 +122,7 @@ public class TestClientClusterMetrics {
       Assert.assertEquals(origin.getLiveServerMetrics().size(),
         defaults.getLiveServerMetrics().size());
       Assert.assertEquals(origin.getMasterInfoPort(), defaults.getMasterInfoPort());
+      Assert.assertEquals(origin.getServersName().size(), defaults.getServersName().size());
     }
   }
 
@@ -144,7 +148,8 @@ public class TestClientClusterMetrics {
       }
     });
     // Retrieve live servers and dead servers info.
-    EnumSet<Option> options = EnumSet.of(Option.LIVE_SERVERS, Option.DEAD_SERVERS);
+    EnumSet<Option> options =
+        EnumSet.of(Option.LIVE_SERVERS, Option.DEAD_SERVERS, Option.SERVERS_NAME);
     ClusterMetrics metrics = ADMIN.getClusterMetrics(options);
     Assert.assertNotNull(metrics);
     // exclude a dead region server
@@ -158,6 +163,8 @@ public class TestClientClusterMetrics {
     Assert.assertEquals(1, metrics.getDeadServerNames().size());
     ServerName deadServerName = metrics.getDeadServerNames().iterator().next();
     Assert.assertEquals(DEAD.getServerName(), deadServerName);
+    Assert.assertNotNull(metrics.getServersName());
+    Assert.assertEquals(numRs, metrics.getServersName().size());
   }
 
   @Test

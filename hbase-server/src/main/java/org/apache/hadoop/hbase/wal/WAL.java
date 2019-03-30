@@ -1,5 +1,4 @@
-/*
- *
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,17 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.wal;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
-
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.RegionInfo;
-import org.apache.hadoop.hbase.regionserver.wal.CompressionContext;
 import org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
 import org.apache.hadoop.hbase.regionserver.wal.WALCoprocessorHost;
@@ -35,8 +31,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
-// imports we use from yet-to-be-moved regionsever.wal
 
 /**
  * A Write Ahead Log (WAL) provides service for reading, writing waledits. This interface provides
@@ -143,6 +137,23 @@ public interface WAL extends Closeable, WALFileLengthProvider {
    * @throws IOException
    */
   void sync(long txid) throws IOException;
+
+  /**
+   * @param forceSync Flag to force sync rather than flushing to the buffer. Example - Hadoop hflush
+   *          vs hsync.
+   */
+  default void sync(boolean forceSync) throws IOException {
+    sync();
+  }
+
+  /**
+   * @param txid Transaction id to sync to.
+   * @param forceSync Flag to force sync rather than flushing to the buffer. Example - Hadoop hflush
+   *          vs hsync.
+   */
+  default void sync(long txid, boolean forceSync) throws IOException {
+    sync(txid);
+  }
 
   /**
    * WAL keeps track of the sequence numbers that are as yet not flushed im memstores
@@ -264,28 +275,6 @@ public interface WAL extends Closeable, WALFileLengthProvider {
      */
     public WALKeyImpl getKey() {
       return key;
-    }
-
-    /**
-     * Set compression context for this entry.
-     *
-     * @param compressionContext
-     *          Compression context
-     */
-    public void setCompressionContext(CompressionContext compressionContext) {
-      key.setCompressionContext(compressionContext);
-    }
-
-    public boolean hasSerialReplicationScope () {
-      if (getKey().getReplicationScopes() == null || getKey().getReplicationScopes().isEmpty()) {
-        return false;
-      }
-      for (Map.Entry<byte[], Integer> e:getKey().getReplicationScopes().entrySet()) {
-        if (e.getValue() == HConstants.REPLICATION_SCOPE_SERIAL){
-          return true;
-        }
-      }
-      return false;
     }
 
     @Override

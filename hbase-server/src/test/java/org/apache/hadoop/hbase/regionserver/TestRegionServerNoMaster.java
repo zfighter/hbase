@@ -111,8 +111,7 @@ public class TestRegionServerNoMaster {
     HRegionServer hrs = HTU.getHBaseCluster()
       .getLiveRegionServerThreads().get(0).getRegionServer();
     ZKWatcher zkw = hrs.getZooKeeper();
-    MetaTableLocator mtl = new MetaTableLocator();
-    ServerName sn = mtl.getMetaRegionLocation(zkw);
+    ServerName sn = MetaTableLocator.getMetaRegionLocation(zkw);
     if (sn != null && !masterAddr.equals(sn)) {
       return;
     }
@@ -120,7 +119,7 @@ public class TestRegionServerNoMaster {
     ProtobufUtil.openRegion(null, hrs.getRSRpcServices(),
       hrs.getServerName(), HRegionInfo.FIRST_META_REGIONINFO);
     while (true) {
-      sn = mtl.getMetaRegionLocation(zkw);
+      sn = MetaTableLocator.getMetaRegionLocation(zkw);
       if (sn != null && sn.equals(hrs.getServerName())
           && hrs.onlineRegions.containsKey(
               HRegionInfo.FIRST_META_REGIONINFO.getEncodedName())) {
@@ -214,13 +213,13 @@ public class TestRegionServerNoMaster {
   }
 
 
-  @Test(timeout = 60000)
+  @Test
   public void testCloseByRegionServer() throws Exception {
     closeRegionNoZK();
     openRegion(HTU, getRS(), hri);
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testMultipleCloseFromMaster() throws Exception {
     for (int i = 0; i < 10; i++) {
       AdminProtos.CloseRegionRequest crr =
@@ -242,7 +241,7 @@ public class TestRegionServerNoMaster {
   /**
    * Test that if we do a close while opening it stops the opening.
    */
-  @Test(timeout = 60000)
+  @Test
   public void testCancelOpeningWithoutZK() throws Exception {
     // We close
     closeRegionNoZK();

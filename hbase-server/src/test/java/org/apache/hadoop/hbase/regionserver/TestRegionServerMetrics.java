@@ -112,9 +112,10 @@ public class TestRegionServerMetrics {
     // testMobMetrics creates few hfiles and manages compaction manually.
     conf.setInt("hbase.hstore.compactionThreshold", 100);
     conf.setInt("hbase.hstore.compaction.max", 100);
+    conf.setInt("hbase.regionserver.periodicmemstoreflusher.rangeofdelayseconds", 4*60);
     conf.setInt(HConstants.REGIONSERVER_INFO_PORT, -1);
 
-    TEST_UTIL.startMiniCluster(1, 1);
+    TEST_UTIL.startMiniCluster();
     cluster = TEST_UTIL.getHBaseCluster();
     cluster.waitForActiveAndReadyMaster();
     admin = TEST_UTIL.getAdmin();
@@ -151,20 +152,6 @@ public class TestRegionServerMetrics {
   public void afterTestMethod() throws Exception {
     admin.disableTable(tableName);
     admin.deleteTable(tableName);
-  }
-
-  public void waitTableDeleted(TableName name, long timeoutInMillis) throws Exception {
-    long start = System.currentTimeMillis();
-    while (true) {
-      HTableDescriptor[] tables = admin.listTables();
-      for (HTableDescriptor htd : tables) {
-        if (htd.getNameAsString() == name.getNameAsString())
-          return;
-      }
-      if (System.currentTimeMillis() - start > timeoutInMillis)
-        return;
-      Thread.sleep(1000);
-    }
   }
 
   public void assertCounter(String metric, long expectedValue) {
@@ -238,7 +225,7 @@ public class TestRegionServerMetrics {
 
   @Test
   public void testRegionCount() throws Exception {
-    metricsHelper.assertGauge("regionCount", TABLES_ON_MASTER? 1: 3, serverSource);
+    metricsHelper.assertGauge("regionCount", TABLES_ON_MASTER ? 1 : 2, serverSource);
   }
 
   @Test
@@ -343,12 +330,12 @@ public class TestRegionServerMetrics {
 
   @Test
   public void testStoreCount() throws Exception {
-    //Force a hfile.
+    // Force a hfile.
     doNPuts(1, false);
     TEST_UTIL.getAdmin().flush(tableName);
 
     metricsRegionServer.getRegionServerWrapper().forceRecompute();
-    assertGauge("storeCount", TABLES_ON_MASTER? 1: 7);
+    assertGauge("storeCount", TABLES_ON_MASTER ? 1 : 5);
     assertGauge("storeFileCount", 1);
   }
 
@@ -553,7 +540,7 @@ public class TestRegionServerMetrics {
     TableDescriptor td = TableDescriptorBuilder
             .newBuilder(region.getTableDescriptor())
             .removeColumnFamily(cfName)
-            .addColumnFamily(cfd)
+            .setColumnFamily(cfd)
             .build();
     ((HRegion)region).setTableDescriptor(td);
     return region;

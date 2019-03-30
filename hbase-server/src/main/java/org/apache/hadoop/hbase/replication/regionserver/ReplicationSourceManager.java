@@ -17,15 +17,16 @@
  */
 package org.apache.hadoop.hbase.replication.regionserver;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -43,28 +44,33 @@ import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.CompatibilitySingletonFactory;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationListener;
 import org.apache.hadoop.hbase.replication.ReplicationPeer;
+import org.apache.hadoop.hbase.replication.ReplicationPeer.PeerState;
+import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
+import org.apache.hadoop.hbase.replication.ReplicationPeerImpl;
 import org.apache.hadoop.hbase.replication.ReplicationPeers;
 import org.apache.hadoop.hbase.replication.ReplicationQueueInfo;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
 import org.apache.hadoop.hbase.replication.ReplicationTracker;
-import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.replication.ReplicationUtils;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
+import org.apache.hadoop.hbase.wal.SyncReplicationWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
@@ -86,25 +92,28 @@ import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFacto
  * operations.</li>
  * <li>Need synchronized on {@link #walsById}. There are four methods which modify it,
  * {@link #addPeer(String)}, {@link #removePeer(String)},
- * {@link #cleanOldLogs(SortedSet, String, String)} and {@link #preLogRoll(Path)}. {@link #walsById}
- * is a ConcurrentHashMap and there is a Lock for peer id in {@link PeerProcedureHandlerImpl}. So
- * there is no race between {@link #addPeer(String)} and {@link #removePeer(String)}.
- * {@link #cleanOldLogs(SortedSet, String, String)} is called by {@link ReplicationSourceInterface}.
- * So no race with {@link #addPeer(String)}. {@link #removePeer(String)} will terminate the
- * {@link ReplicationSourceInterface} firstly, then remove the wals from {@link #walsById}. So no
- * race with {@link #removePeer(String)}. The only case need synchronized is
- * {@link #cleanOldLogs(SortedSet, String, String)} and {@link #preLogRoll(Path)}.</li>
- * <li>No need synchronized on {@link #walsByIdRecoveredQueues}. There are three methods which
- * modify it, {@link #removePeer(String)} , {@link #cleanOldLogs(SortedSet, String, String)} and
- * {@link ReplicationSourceManager.NodeFailoverWorker#run()}.
- * {@link #cleanOldLogs(SortedSet, String, String)} is called by {@link ReplicationSourceInterface}.
+ * {@link #cleanOldLogs(String, boolean, ReplicationSourceInterface)} and {@link #preLogRoll(Path)}.
+ * {@link #walsById} is a ConcurrentHashMap and there is a Lock for peer id in
+ * {@link PeerProcedureHandlerImpl}. So there is no race between {@link #addPeer(String)} and
+ * {@link #removePeer(String)}. {@link #cleanOldLogs(String, boolean, ReplicationSourceInterface)}
+ * is called by {@link ReplicationSourceInterface}. So no race with {@link #addPeer(String)}.
  * {@link #removePeer(String)} will terminate the {@link ReplicationSourceInterface} firstly, then
- * remove the wals from {@link #walsByIdRecoveredQueues}. And
- * {@link ReplicationSourceManager.NodeFailoverWorker#run()} will add the wals to
- * {@link #walsByIdRecoveredQueues} firstly, then start up a {@link ReplicationSourceInterface}. So
- * there is no race here. For {@link ReplicationSourceManager.NodeFailoverWorker#run()} and
- * {@link #removePeer(String)}, there is already synchronized on {@link #oldsources}. So no need
- * synchronized on {@link #walsByIdRecoveredQueues}.</li>
+ * remove the wals from {@link #walsById}. So no race with {@link #removePeer(String)}. The only
+ * case need synchronized is {@link #cleanOldLogs(String, boolean, ReplicationSourceInterface)} and
+ * {@link #preLogRoll(Path)}.</li>
+ * <li>No need synchronized on {@link #walsByIdRecoveredQueues}. There are three methods which
+ * modify it, {@link #removePeer(String)} ,
+ * {@link #cleanOldLogs(String, boolean, ReplicationSourceInterface)} and
+ * {@link ReplicationSourceManager.NodeFailoverWorker#run()}.
+ * {@link #cleanOldLogs(String, boolean, ReplicationSourceInterface)} is called by
+ * {@link ReplicationSourceInterface}. {@link #removePeer(String)} will terminate the
+ * {@link ReplicationSourceInterface} firstly, then remove the wals from
+ * {@link #walsByIdRecoveredQueues}. And {@link ReplicationSourceManager.NodeFailoverWorker#run()}
+ * will add the wals to {@link #walsByIdRecoveredQueues} firstly, then start up a
+ * {@link ReplicationSourceInterface}. So there is no race here. For
+ * {@link ReplicationSourceManager.NodeFailoverWorker#run()} and {@link #removePeer(String)}, there
+ * is already synchronized on {@link #oldsources}. So no need synchronized on
+ * {@link #walsByIdRecoveredQueues}.</li>
  * <li>Need synchronized on {@link #latestPaths} to avoid the new open source miss new log.</li>
  * <li>Need synchronized on {@link #oldsources} to avoid adding recovered source for the
  * to-be-removed peer.</li>
@@ -128,16 +137,18 @@ public class ReplicationSourceManager implements ReplicationListener {
   // All logs we are currently tracking
   // Index structure of the map is: queue_id->logPrefix/logGroup->logs
   // For normal replication source, the peer id is same with the queue id
-  private final ConcurrentMap<String, Map<String, SortedSet<String>>> walsById;
+  private final ConcurrentMap<String, Map<String, NavigableSet<String>>> walsById;
   // Logs for recovered sources we are currently tracking
   // the map is: queue_id->logPrefix/logGroup->logs
   // For recovered source, the queue id's format is peer_id-servername-*
-  private final ConcurrentMap<String, Map<String, SortedSet<String>>> walsByIdRecoveredQueues;
+  private final ConcurrentMap<String, Map<String, NavigableSet<String>>> walsByIdRecoveredQueues;
+
+  private final SyncReplicationPeerMappingManager syncReplicationPeerMappingManager;
 
   private final Configuration conf;
   private final FileSystem fs;
   // The paths to the latest log of each wal group, for new coming peers
-  private final Set<Path> latestPaths;
+  private final Map<String, Path> latestPaths;
   // Path to the wals directories
   private final Path logDir;
   // Path to the wal archive
@@ -150,10 +161,14 @@ public class ReplicationSourceManager implements ReplicationListener {
 
   private final boolean replicationForBulkLoadDataEnabled;
 
-  private Connection connection;
-  private long replicationWaitTime;
-
   private AtomicLong totalBufferUsed = new AtomicLong();
+
+  // How long should we sleep for each retry when deleting remote wal files for sync replication
+  // peer.
+  private final long sleepForRetries;
+  // Maximum number of retries before taking bold actions when deleting remote wal files for sync
+  // replication peer.
+  private final int maxRetriesMultiplier;
 
   /**
    * Creates a replication manager and sets the watch on all the other registered region servers
@@ -170,9 +185,8 @@ public class ReplicationSourceManager implements ReplicationListener {
   public ReplicationSourceManager(ReplicationQueueStorage queueStorage,
       ReplicationPeers replicationPeers, ReplicationTracker replicationTracker, Configuration conf,
       Server server, FileSystem fs, Path logDir, Path oldLogDir, UUID clusterId,
-      WALFileLengthProvider walFileLengthProvider) throws IOException {
-    // CopyOnWriteArrayList is thread-safe.
-    // Generally, reading is more than modifying.
+      WALFileLengthProvider walFileLengthProvider,
+      SyncReplicationPeerMappingManager syncReplicationPeerMappingManager) throws IOException {
     this.sources = new ConcurrentHashMap<>();
     this.queueStorage = queueStorage;
     this.replicationPeers = replicationPeers;
@@ -185,10 +199,11 @@ public class ReplicationSourceManager implements ReplicationListener {
     this.fs = fs;
     this.logDir = logDir;
     this.oldLogDir = oldLogDir;
-    this.sleepBeforeFailover = conf.getLong("replication.sleep.before.failover", 30000); // 30
-                                                                                         // seconds
+    // 30 seconds
+    this.sleepBeforeFailover = conf.getLong("replication.sleep.before.failover", 30000);
     this.clusterId = clusterId;
     this.walFileLengthProvider = walFileLengthProvider;
+    this.syncReplicationPeerMappingManager = syncReplicationPeerMappingManager;
     this.replicationTracker.registerListener(this);
     // It's preferable to failover 1 RS at a time, but with good zk servers
     // more could be processed at the same time.
@@ -201,12 +216,12 @@ public class ReplicationSourceManager implements ReplicationListener {
     tfb.setNameFormat("ReplicationExecutor-%d");
     tfb.setDaemon(true);
     this.executor.setThreadFactory(tfb.build());
-    this.latestPaths = new HashSet<Path>();
-    replicationForBulkLoadDataEnabled = conf.getBoolean(HConstants.REPLICATION_BULKLOAD_ENABLE_KEY,
-      HConstants.REPLICATION_BULKLOAD_ENABLE_DEFAULT);
-    this.replicationWaitTime = conf.getLong(HConstants.REPLICATION_SERIALLY_WAITING_KEY,
-      HConstants.REPLICATION_SERIALLY_WAITING_DEFAULT);
-    connection = ConnectionFactory.createConnection(conf);
+    this.latestPaths = new HashMap<>();
+    this.replicationForBulkLoadDataEnabled = conf.getBoolean(
+      HConstants.REPLICATION_BULKLOAD_ENABLE_KEY, HConstants.REPLICATION_BULKLOAD_ENABLE_DEFAULT);
+    this.sleepForRetries = this.conf.getLong("replication.source.sync.sleepforretries", 1000);
+    this.maxRetriesMultiplier =
+      this.conf.getInt("replication.source.sync.maxretriesmultiplier", 60);
   }
 
   /**
@@ -252,8 +267,11 @@ public class ReplicationSourceManager implements ReplicationListener {
   }
 
   /**
-   * 1. Add peer to replicationPeers 2. Add the normal source and related replication queue 3. Add
-   * HFile Refs
+   * <ol>
+   * <li>Add peer to replicationPeers</li>
+   * <li>Add the normal source and related replication queue</li>
+   * <li>Add HFile Refs</li>
+   * </ol>
    * @param peerId the id of replication peer
    */
   public void addPeer(String peerId) throws IOException {
@@ -272,13 +290,16 @@ public class ReplicationSourceManager implements ReplicationListener {
   }
 
   /**
-   * 1. Remove peer for replicationPeers 2. Remove all the recovered sources for the specified id
-   * and related replication queues 3. Remove the normal source and related replication queue 4.
-   * Remove HFile Refs
+   * <ol>
+   * <li>Remove peer for replicationPeers</li>
+   * <li>Remove all the recovered sources for the specified id and related replication queues</li>
+   * <li>Remove the normal source and related replication queue</li>
+   * <li>Remove HFile Refs</li>
+   * </ol>
    * @param peerId the id of the replication peer
    */
   public void removePeer(String peerId) {
-    replicationPeers.removePeer(peerId);
+    ReplicationPeer peer = replicationPeers.removePeer(peerId);
     String terminateMessage = "Replication stream was removed by a user";
     List<ReplicationSourceInterface> oldSourcesToDelete = new ArrayList<>();
     // synchronized on oldsources to avoid adding recovered source for the to-be-removed peer
@@ -309,7 +330,10 @@ public class ReplicationSourceManager implements ReplicationListener {
       deleteQueue(peerId);
       this.walsById.remove(peerId);
     }
-
+    ReplicationPeerConfig peerConfig = peer.getPeerConfig();
+    if (peerConfig.isSyncReplication()) {
+      syncReplicationPeerMappingManager.remove(peerId, peerConfig);
+    }
     // Remove HFile Refs
     abortWhenFail(() -> this.queueStorage.removePeerFromHFileRefs(peerId));
   }
@@ -344,25 +368,102 @@ public class ReplicationSourceManager implements ReplicationListener {
     // synchronized on latestPaths to avoid missing the new log
     synchronized (this.latestPaths) {
       this.sources.put(peerId, src);
-      Map<String, SortedSet<String>> walsByGroup = new HashMap<>();
+      Map<String, NavigableSet<String>> walsByGroup = new HashMap<>();
       this.walsById.put(peerId, walsByGroup);
       // Add the latest wal to that source's queue
-      if (this.latestPaths.size() > 0) {
-        for (Path logPath : latestPaths) {
-          String name = logPath.getName();
-          String walPrefix = AbstractFSWALProvider.getWALPrefixFromWALName(name);
-          SortedSet<String> logs = new TreeSet<>();
-          logs.add(name);
-          walsByGroup.put(walPrefix, logs);
+      if (!latestPaths.isEmpty()) {
+        for (Map.Entry<String, Path> walPrefixAndPath : latestPaths.entrySet()) {
+          Path walPath = walPrefixAndPath.getValue();
+          NavigableSet<String> wals = new TreeSet<>();
+          wals.add(walPath.getName());
+          walsByGroup.put(walPrefixAndPath.getKey(), wals);
           // Abort RS and throw exception to make add peer failed
           abortAndThrowIOExceptionWhenFail(
-            () -> this.queueStorage.addWAL(server.getServerName(), peerId, name));
-          src.enqueueLog(logPath);
+            () -> this.queueStorage.addWAL(server.getServerName(), peerId, walPath.getName()));
+          src.enqueueLog(walPath);
+          LOG.trace("Enqueued {} to source {} during source creation.", walPath, src.getQueueId());
         }
       }
     }
+    ReplicationPeerConfig peerConfig = peer.getPeerConfig();
+    if (peerConfig.isSyncReplication()) {
+      syncReplicationPeerMappingManager.add(peer.getId(), peerConfig);
+    }
     src.startup();
     return src;
+  }
+
+  /**
+   * <p>
+   * This is used when we transit a sync replication peer to {@link SyncReplicationState#STANDBY}.
+   * </p>
+   * <p>
+   * When transiting to {@link SyncReplicationState#STANDBY}, we can remove all the pending wal
+   * files for a replication peer as we do not need to replicate them any more. And this is
+   * necessary, otherwise when we transit back to {@link SyncReplicationState#DOWNGRADE_ACTIVE}
+   * later, the stale data will be replicated again and cause inconsistency.
+   * </p>
+   * <p>
+   * See HBASE-20426 for more details.
+   * </p>
+   * @param peerId the id of the sync replication peer
+   */
+  public void drainSources(String peerId) throws IOException, ReplicationException {
+    String terminateMessage = "Sync replication peer " + peerId +
+      " is transiting to STANDBY. Will close the previous replication source and open a new one";
+    ReplicationPeer peer = replicationPeers.getPeer(peerId);
+    assert peer.getPeerConfig().isSyncReplication();
+    ReplicationSourceInterface src = createSource(peerId, peer);
+    // synchronized here to avoid race with preLogRoll where we add new log to source and also
+    // walsById.
+    ReplicationSourceInterface toRemove;
+    Map<String, NavigableSet<String>> wals = new HashMap<>();
+    synchronized (latestPaths) {
+      toRemove = sources.put(peerId, src);
+      if (toRemove != null) {
+        LOG.info("Terminate replication source for " + toRemove.getPeerId());
+        toRemove.terminate(terminateMessage);
+        toRemove.getSourceMetrics().clear();
+      }
+      // Here we make a copy of all the remaining wal files and then delete them from the
+      // replication queue storage after releasing the lock. It is not safe to just remove the old
+      // map from walsById since later we may fail to delete them from the replication queue
+      // storage, and when we retry next time, we can not know the wal files that need to be deleted
+      // from the replication queue storage.
+      walsById.get(peerId).forEach((k, v) -> wals.put(k, new TreeSet<>(v)));
+    }
+    LOG.info("Startup replication source for " + src.getPeerId());
+    src.startup();
+    for (NavigableSet<String> walsByGroup : wals.values()) {
+      for (String wal : walsByGroup) {
+        queueStorage.removeWAL(server.getServerName(), peerId, wal);
+      }
+    }
+    synchronized (walsById) {
+      Map<String, NavigableSet<String>> oldWals = walsById.get(peerId);
+      wals.forEach((k, v) -> {
+        NavigableSet<String> walsByGroup = oldWals.get(k);
+        if (walsByGroup != null) {
+          walsByGroup.removeAll(v);
+        }
+      });
+    }
+    // synchronized on oldsources to avoid race with NodeFailoverWorker. Since NodeFailoverWorker is
+    // a background task, we will delete the file from replication queue storage under the lock to
+    // simplify the logic.
+    synchronized (this.oldsources) {
+      for (Iterator<ReplicationSourceInterface> iter = oldsources.iterator(); iter.hasNext();) {
+        ReplicationSourceInterface oldSource = iter.next();
+        if (oldSource.getPeerId().equals(peerId)) {
+          String queueId = oldSource.getQueueId();
+          oldSource.terminate(terminateMessage);
+          oldSource.getSourceMetrics().clear();
+          queueStorage.removeQueue(server.getServerName(), queueId);
+          walsByIdRecoveredQueues.remove(queueId);
+          iter.remove();
+        }
+      }
+    }
   }
 
   /**
@@ -370,7 +471,6 @@ public class ReplicationSourceManager implements ReplicationListener {
    * replication state changes or new replication config changes. Here we don't need to change
    * replication queue storage and only to enqueue all logs to the new replication source
    * @param peerId the id of the replication peer
-   * @throws IOException
    */
   public void refreshSources(String peerId) throws IOException {
     String terminateMessage = "Peer " + peerId +
@@ -384,7 +484,7 @@ public class ReplicationSourceManager implements ReplicationListener {
         LOG.info("Terminate replication source for " + toRemove.getPeerId());
         toRemove.terminate(terminateMessage);
       }
-      for (SortedSet<String> walsByGroup : walsById.get(peerId).values()) {
+      for (NavigableSet<String> walsByGroup : walsById.get(peerId).values()) {
         walsByGroup.forEach(wal -> src.enqueueLog(new Path(this.logDir, wal)));
       }
     }
@@ -411,7 +511,7 @@ public class ReplicationSourceManager implements ReplicationListener {
         toStartup.add(replicationSource);
       }
     }
-    for (ReplicationSourceInterface replicationSource : oldsources) {
+    for (ReplicationSourceInterface replicationSource : toStartup) {
       replicationSource.startup();
     }
   }
@@ -420,13 +520,25 @@ public class ReplicationSourceManager implements ReplicationListener {
    * Clear the metrics and related replication queue of the specified old source
    * @param src source to clear
    */
-  void removeRecoveredSource(ReplicationSourceInterface src) {
-    LOG.info("Done with the recovered queue " + src.getQueueId());
-    src.getSourceMetrics().clear();
-    this.oldsources.remove(src);
+  private boolean removeRecoveredSource(ReplicationSourceInterface src) {
+    if (!this.oldsources.remove(src)) {
+      return false;
+    }
+    LOG.info("Done with the recovered queue {}", src.getQueueId());
     // Delete queue from storage and memory
     deleteQueue(src.getQueueId());
     this.walsByIdRecoveredQueues.remove(src.getQueueId());
+    return true;
+  }
+
+  void finishRecoveredSource(ReplicationSourceInterface src) {
+    synchronized (oldsources) {
+      if (!removeRecoveredSource(src)) {
+        return;
+      }
+    }
+    LOG.info("Finished recovering queue {} with the following stats: {}", src.getQueueId(),
+      src.getStats());
   }
 
   /**
@@ -435,11 +547,11 @@ public class ReplicationSourceManager implements ReplicationListener {
    */
   void removeSource(ReplicationSourceInterface src) {
     LOG.info("Done with the queue " + src.getQueueId());
-    src.getSourceMetrics().clear();
     this.sources.remove(src.getPeerId());
     // Delete queue from storage and memory
     deleteQueue(src.getQueueId());
     this.walsById.remove(src.getQueueId());
+
   }
 
   /**
@@ -453,6 +565,24 @@ public class ReplicationSourceManager implements ReplicationListener {
   @FunctionalInterface
   private interface ReplicationQueueOperation {
     void exec() throws ReplicationException;
+  }
+
+  /**
+   * Refresh replication source will terminate the old source first, then the source thread will be
+   * interrupted. Need to handle it instead of abort the region server.
+   */
+  private void interruptOrAbortWhenFail(ReplicationQueueOperation op) {
+    try {
+      op.exec();
+    } catch (ReplicationException e) {
+      if (e.getCause() != null && e.getCause() instanceof KeeperException.SystemErrorException
+          && e.getCause().getCause() != null && e.getCause()
+          .getCause() instanceof InterruptedException) {
+        throw new RuntimeException(
+            "Thread is interrupted, the replication source may be terminated");
+      }
+      server.abort("Failed to operate on replication queue", e);
+    }
   }
 
   private void abortWhenFail(ReplicationQueueOperation op) {
@@ -483,57 +613,130 @@ public class ReplicationSourceManager implements ReplicationListener {
   /**
    * This method will log the current position to storage. And also clean old logs from the
    * replication queue.
-   * @param log Path to the log currently being replicated
-   * @param queueId id of the replication queue
-   * @param position current location in the log
-   * @param queueRecovered indicates if this queue comes from another region server
+   * @param source the replication source
+   * @param entryBatch the wal entry batch we just shipped
    */
-  public void logPositionAndCleanOldLogs(Path log, String queueId, long position,
-      boolean queueRecovered) {
-    String fileName = log.getName();
-    abortWhenFail(
-      () -> this.queueStorage.setWALPosition(server.getServerName(), queueId, fileName, position));
-    cleanOldLogs(fileName, queueId, queueRecovered);
+  public void logPositionAndCleanOldLogs(ReplicationSourceInterface source,
+      WALEntryBatch entryBatch) {
+    String fileName = entryBatch.getLastWalPath().getName();
+    interruptOrAbortWhenFail(() -> this.queueStorage.setWALPosition(server.getServerName(),
+      source.getQueueId(), fileName, entryBatch.getLastWalPosition(), entryBatch.getLastSeqIds()));
+    cleanOldLogs(fileName, entryBatch.isEndOfFile(), source);
   }
 
   /**
    * Cleans a log file and all older logs from replication queue. Called when we are sure that a log
    * file is closed and has no more entries.
    * @param log Path to the log
-   * @param queueId id of the replication queue
-   * @param queueRecovered Whether this is a recovered queue
+   * @param inclusive whether we should also remove the given log file
+   * @param source the replication source
    */
   @VisibleForTesting
-  void cleanOldLogs(String log, String queueId, boolean queueRecovered) {
+  void cleanOldLogs(String log, boolean inclusive, ReplicationSourceInterface source) {
     String logPrefix = AbstractFSWALProvider.getWALPrefixFromWALName(log);
-    if (queueRecovered) {
-      SortedSet<String> wals = walsByIdRecoveredQueues.get(queueId).get(logPrefix);
-      if (wals != null && !wals.first().equals(log)) {
-        cleanOldLogs(wals, log, queueId);
+    if (source.isRecovered()) {
+      NavigableSet<String> wals = walsByIdRecoveredQueues.get(source.getQueueId()).get(logPrefix);
+      if (wals != null) {
+        NavigableSet<String> walsToRemove = wals.headSet(log, inclusive);
+        if (walsToRemove.isEmpty()) {
+          return;
+        }
+        cleanOldLogs(walsToRemove, source);
+        walsToRemove.clear();
       }
     } else {
+      NavigableSet<String> wals;
+      NavigableSet<String> walsToRemove;
       // synchronized on walsById to avoid race with preLogRoll
       synchronized (this.walsById) {
-        SortedSet<String> wals = walsById.get(queueId).get(logPrefix);
-        if (wals != null && !wals.first().equals(log)) {
-          cleanOldLogs(wals, log, queueId);
+        wals = walsById.get(source.getQueueId()).get(logPrefix);
+        if (wals == null) {
+          return;
+        }
+        walsToRemove = wals.headSet(log, inclusive);
+        if (walsToRemove.isEmpty()) {
+          return;
+        }
+        walsToRemove = new TreeSet<>(walsToRemove);
+      }
+      // cleanOldLogs may spend some time, especially for sync replication where we may want to
+      // remove remote wals as the remote cluster may have already been down, so we do it outside
+      // the lock to avoid block preLogRoll
+      cleanOldLogs(walsToRemove, source);
+      // now let's remove the files in the set
+      synchronized (this.walsById) {
+        wals.removeAll(walsToRemove);
+      }
+    }
+  }
+
+  private void removeRemoteWALs(String peerId, String remoteWALDir, Collection<String> wals)
+      throws IOException {
+    Path remoteWALDirForPeer = ReplicationUtils.getPeerRemoteWALDir(remoteWALDir, peerId);
+    FileSystem fs = ReplicationUtils.getRemoteWALFileSystem(conf, remoteWALDir);
+    for (String wal : wals) {
+      Path walFile = new Path(remoteWALDirForPeer, wal);
+      try {
+        if (!fs.delete(walFile, false) && fs.exists(walFile)) {
+          throw new IOException("Can not delete " + walFile);
+        }
+      } catch (FileNotFoundException e) {
+        // Just ignore since this means the file has already been deleted.
+        // The javadoc of the FileSystem.delete methods does not specify the behavior of deleting an
+        // inexistent file, so here we deal with both, i.e, check the return value of the
+        // FileSystem.delete, and also catch FNFE.
+        LOG.debug("The remote wal {} has already been deleted?", walFile, e);
+      }
+    }
+  }
+
+  private void cleanOldLogs(NavigableSet<String> wals, ReplicationSourceInterface source) {
+    LOG.debug("Removing {} logs in the list: {}", wals.size(), wals);
+    // The intention here is that, we want to delete the remote wal files ASAP as it may effect the
+    // failover time if you want to transit the remote cluster from S to A. And the infinite retry
+    // is not a problem, as if we can not contact with the remote HDFS cluster, then usually we can
+    // not contact with the HBase cluster either, so the replication will be blocked either.
+    if (source.isSyncReplication()) {
+      String peerId = source.getPeerId();
+      String remoteWALDir = source.getPeer().getPeerConfig().getRemoteWALDir();
+      // Filter out the wals need to be removed from the remote directory. Its name should be the
+      // special format, and also, the peer id in its name should match the peer id for the
+      // replication source.
+      List<String> remoteWals = wals.stream().filter(w -> SyncReplicationWALProvider
+        .getSyncReplicationPeerIdFromWALName(w).map(peerId::equals).orElse(false))
+        .collect(Collectors.toList());
+      LOG.debug("Removing {} logs from remote dir {} in the list: {}", remoteWals.size(),
+        remoteWALDir, remoteWals);
+      if (!remoteWals.isEmpty()) {
+        for (int sleepMultiplier = 0;;) {
+          try {
+            removeRemoteWALs(peerId, remoteWALDir, remoteWals);
+            break;
+          } catch (IOException e) {
+            LOG.warn("Failed to delete remote wals from remote dir {} for peer {}", remoteWALDir,
+              peerId);
+          }
+          if (!source.isSourceActive()) {
+            // skip the following operations
+            return;
+          }
+          if (ReplicationUtils.sleepForRetries("Failed to delete remote wals", sleepForRetries,
+            sleepMultiplier, maxRetriesMultiplier)) {
+            sleepMultiplier++;
+          }
         }
       }
     }
+    String queueId = source.getQueueId();
+    for (String wal : wals) {
+      interruptOrAbortWhenFail(
+        () -> this.queueStorage.removeWAL(server.getServerName(), queueId, wal));
+    }
   }
 
-  private void cleanOldLogs(SortedSet<String> wals, String key, String id) {
-    SortedSet<String> walSet = wals.headSet(key);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Removing " + walSet.size() + " logs in the list: " + walSet);
-    }
-    for (String wal : walSet) {
-      abortWhenFail(() -> this.queueStorage.removeWAL(server.getServerName(), id, wal));
-    }
-    walSet.clear();
-  }
-
-  void preLogRoll(Path newLog) throws IOException {
+  // public because of we call it in TestReplicationEmptyWALRecovery
+  @VisibleForTesting
+  public void preLogRoll(Path newLog) throws IOException {
     String logName = newLog.getName();
     String logPrefix = AbstractFSWALProvider.getWALPrefixFromWALName(logName);
     // synchronized on latestPaths to avoid the new open source miss the new log
@@ -549,11 +752,12 @@ public class ReplicationSourceManager implements ReplicationListener {
       // synchronized on walsById to avoid race with cleanOldLogs
       synchronized (this.walsById) {
         // Update walsById map
-        for (Map.Entry<String, Map<String, SortedSet<String>>> entry : this.walsById.entrySet()) {
+        for (Map.Entry<String, Map<String, NavigableSet<String>>> entry : this.walsById
+          .entrySet()) {
           String peerId = entry.getKey();
-          Map<String, SortedSet<String>> walsByPrefix = entry.getValue();
+          Map<String, NavigableSet<String>> walsByPrefix = entry.getValue();
           boolean existingPrefix = false;
-          for (Map.Entry<String, SortedSet<String>> walsEntry : walsByPrefix.entrySet()) {
+          for (Map.Entry<String, NavigableSet<String>> walsEntry : walsByPrefix.entrySet()) {
             SortedSet<String> wals = walsEntry.getValue();
             if (this.sources.isEmpty()) {
               // If there's no slaves, don't need to keep the old wals since
@@ -567,8 +771,8 @@ public class ReplicationSourceManager implements ReplicationListener {
           }
           if (!existingPrefix) {
             // The new log belongs to a new group, add it into this peer
-            LOG.debug("Start tracking logs for wal group " + logPrefix + " for peer " + peerId);
-            SortedSet<String> wals = new TreeSet<>();
+            LOG.debug("Start tracking logs for wal group {} for peer {}", logPrefix, peerId);
+            NavigableSet<String> wals = new TreeSet<>();
             wals.add(logName);
             walsByPrefix.put(logPrefix, wals);
           }
@@ -576,22 +780,18 @@ public class ReplicationSourceManager implements ReplicationListener {
       }
 
       // Add to latestPaths
-      Iterator<Path> iterator = latestPaths.iterator();
-      while (iterator.hasNext()) {
-        Path path = iterator.next();
-        if (path.getName().contains(logPrefix)) {
-          iterator.remove();
-          break;
-        }
-      }
-      this.latestPaths.add(newLog);
+      latestPaths.put(logPrefix, newLog);
     }
   }
 
-  void postLogRoll(Path newLog) throws IOException {
+  // public because of we call it in TestReplicationEmptyWALRecovery
+  @VisibleForTesting
+  public void postLogRoll(Path newLog) throws IOException {
     // This only updates the sources we own, not the recovered ones
     for (ReplicationSourceInterface source : this.sources.values()) {
       source.enqueueLog(newLog);
+      LOG.trace("Enqueued {} to source {} while performing postLogRoll operation.",
+          newLog, source.getQueueId());
     }
   }
 
@@ -615,6 +815,8 @@ public class ReplicationSourceManager implements ReplicationListener {
     try {
       this.executor.execute(transfer);
     } catch (RejectedExecutionException ex) {
+      CompatibilitySingletonFactory.getInstance(MetricsReplicationSourceFactory.class)
+          .getGlobalSource().incrFailedRecoveryQueue();
       LOG.info("Cancelling the transfer of " + deadRS + " because of " + ex.getMessage());
     }
   }
@@ -626,11 +828,25 @@ public class ReplicationSourceManager implements ReplicationListener {
   class NodeFailoverWorker extends Thread {
 
     private final ServerName deadRS;
+    // After claim the queues from dead region server, the NodeFailoverWorker will skip to start
+    // the RecoveredReplicationSource if the peer has been removed. but there's possible that
+    // remove a peer with peerId = 2 and add a peer with peerId = 2 again during the
+    // NodeFailoverWorker. So we need a deep copied <peerId, peer> map to decide whether we
+    // should start the RecoveredReplicationSource. If the latest peer is not the old peer when
+    // NodeFailoverWorker begin, we should skip to start the RecoveredReplicationSource, Otherwise
+    // the rs will abort (See HBASE-20475).
+    private final Map<String, ReplicationPeerImpl> peersSnapshot;
 
     @VisibleForTesting
     public NodeFailoverWorker(ServerName deadRS) {
       super("Failover-for-" + deadRS);
       this.deadRS = deadRS;
+      peersSnapshot = new HashMap<>(replicationPeers.getPeerCache());
+    }
+
+    private boolean isOldPeer(String peerId, ReplicationPeerImpl newPeerRef) {
+      ReplicationPeerImpl oldPeerRef = peersSnapshot.get(peerId);
+      return oldPeerRef != null && oldPeerRef == newPeerRef;
     }
 
     @Override
@@ -672,7 +888,12 @@ public class ReplicationSourceManager implements ReplicationListener {
           queueStorage.removeReplicatorIfQueueIsEmpty(deadRS);
         }
       } catch (ReplicationException e) {
-        server.abort("Failed to claim queue from dead regionserver", e);
+        LOG.error(String.format("ReplicationException: cannot claim dead region (%s)'s " +
+            "replication queue. Znode : (%s)" +
+            " Possible solution: check if znode size exceeds jute.maxBuffer value. " +
+            " If so, increase it for both client and server side." + e),  deadRS,
+            queueStorage.getRsNode(deadRS));
+        server.abort("Failed to claim queue from dead regionserver.", e);
         return;
       }
       // Copying over the failed queue is completed.
@@ -690,36 +911,61 @@ public class ReplicationSourceManager implements ReplicationListener {
           ReplicationQueueInfo replicationQueueInfo = new ReplicationQueueInfo(queueId);
           String actualPeerId = replicationQueueInfo.getPeerId();
 
-          ReplicationPeer peer = replicationPeers.getPeer(actualPeerId);
-          if (peer == null) {
-            LOG.warn("Skipping failover for peer:" + actualPeerId + " of node " + deadRS +
-              ", peer is null");
+          ReplicationPeerImpl peer = replicationPeers.getPeer(actualPeerId);
+          if (peer == null || !isOldPeer(actualPeerId, peer)) {
+            LOG.warn("Skipping failover for peer {} of node {}, peer is null", actualPeerId,
+              deadRS);
             abortWhenFail(() -> queueStorage.removeQueue(server.getServerName(), queueId));
             continue;
           }
-          // track sources in walsByIdRecoveredQueues
-          Map<String, SortedSet<String>> walsByGroup = new HashMap<>();
-          walsByIdRecoveredQueues.put(queueId, walsByGroup);
-          for (String wal : walsSet) {
-            String walPrefix = AbstractFSWALProvider.getWALPrefixFromWALName(wal);
-            SortedSet<String> wals = walsByGroup.get(walPrefix);
-            if (wals == null) {
-              wals = new TreeSet<>();
-              walsByGroup.put(walPrefix, wals);
-            }
-            wals.add(wal);
+          if (server instanceof ReplicationSyncUp.DummyServer
+              && peer.getPeerState().equals(PeerState.DISABLED)) {
+            LOG.warn("Peer {} is disabled. ReplicationSyncUp tool will skip "
+                + "replicating data to this peer.",
+              actualPeerId);
+            continue;
           }
 
           ReplicationSourceInterface src = createSource(queueId, peer);
           // synchronized on oldsources to avoid adding recovered source for the to-be-removed peer
           synchronized (oldsources) {
-            if (!replicationPeers.getAllPeerIds().contains(src.getPeerId())) {
+            peer = replicationPeers.getPeer(src.getPeerId());
+            if (peer == null || !isOldPeer(src.getPeerId(), peer)) {
               src.terminate("Recovered queue doesn't belong to any current peer");
-              removeRecoveredSource(src);
+              deleteQueue(queueId);
               continue;
             }
-            oldsources.add(src);
+            // Do not setup recovered queue if a sync replication peer is in STANDBY state, or is
+            // transiting to STANDBY state. The only exception is we are in STANDBY state and
+            // transiting to DA, under this state we will replay the remote WAL and they need to be
+            // replicated back.
+            if (peer.getPeerConfig().isSyncReplication()) {
+              Pair<SyncReplicationState, SyncReplicationState> stateAndNewState =
+                peer.getSyncReplicationStateAndNewState();
+              if ((stateAndNewState.getFirst().equals(SyncReplicationState.STANDBY) &&
+                stateAndNewState.getSecond().equals(SyncReplicationState.NONE)) ||
+                stateAndNewState.getSecond().equals(SyncReplicationState.STANDBY)) {
+                src.terminate("Sync replication peer is in STANDBY state");
+                deleteQueue(queueId);
+                continue;
+              }
+            }
+            // track sources in walsByIdRecoveredQueues
+            Map<String, NavigableSet<String>> walsByGroup = new HashMap<>();
+            walsByIdRecoveredQueues.put(queueId, walsByGroup);
             for (String wal : walsSet) {
+              String walPrefix = AbstractFSWALProvider.getWALPrefixFromWALName(wal);
+              NavigableSet<String> wals = walsByGroup.get(walPrefix);
+              if (wals == null) {
+                wals = new TreeSet<>();
+                walsByGroup.put(walPrefix, wals);
+              }
+              wals.add(wal);
+            }
+            oldsources.add(src);
+            LOG.trace("Added source for recovered queue: " + src.getQueueId());
+            for (String wal : walsSet) {
+              LOG.trace("Enqueueing log from recovered queue for source: " + src.getQueueId());
               src.enqueueLog(new Path(oldLogDir, wal));
             }
             src.startup();
@@ -747,7 +993,7 @@ public class ReplicationSourceManager implements ReplicationListener {
    * @return a sorted set of wal names
    */
   @VisibleForTesting
-  Map<String, Map<String, SortedSet<String>>> getWALs() {
+  public Map<String, Map<String, NavigableSet<String>>> getWALs() {
     return Collections.unmodifiableMap(walsById);
   }
 
@@ -756,7 +1002,7 @@ public class ReplicationSourceManager implements ReplicationListener {
    * @return a sorted set of wal names
    */
   @VisibleForTesting
-  Map<String, Map<String, SortedSet<String>>> getWalsByIdRecoveredQueues() {
+  Map<String, Map<String, NavigableSet<String>>> getWalsByIdRecoveredQueues() {
     return Collections.unmodifiableMap(walsByIdRecoveredQueues);
   }
 
@@ -804,6 +1050,13 @@ public class ReplicationSourceManager implements ReplicationListener {
   }
 
   @VisibleForTesting
+  Set<Path> getLastestPath() {
+    synchronized (latestPaths) {
+      return Sets.newHashSet(latestPaths.values());
+    }
+  }
+
+  @VisibleForTesting
   public AtomicLong getTotalBufferUsed() {
     return totalBufferUsed;
   }
@@ -830,10 +1083,6 @@ public class ReplicationSourceManager implements ReplicationListener {
    */
   public FileSystem getFs() {
     return this.fs;
-  }
-
-  public Connection getConnection() {
-    return this.connection;
   }
 
   /**
@@ -868,111 +1117,10 @@ public class ReplicationSourceManager implements ReplicationListener {
   }
 
   public void cleanUpHFileRefs(String peerId, List<String> files) {
-    abortWhenFail(() -> this.queueStorage.removeHFileRefs(peerId, files));
+    interruptOrAbortWhenFail(() -> this.queueStorage.removeHFileRefs(peerId, files));
   }
 
   int activeFailoverTaskCount() {
     return executor.getActiveCount();
   }
-
-  /**
-   * Whether an entry can be pushed to the peer or not right now. If we enable serial replication,
-   * we can not push the entry until all entries in its region whose sequence numbers are smaller
-   * than this entry have been pushed. For each ReplicationSource, we need only check the first
-   * entry in each region, as long as it can be pushed, we can push all in this ReplicationSource.
-   * This method will be blocked until we can push.
-   * @return the first barrier of entry's region, or -1 if there is no barrier. It is used to
-   *         prevent saving positions in the region of no barrier.
-   */
-  void waitUntilCanBePushed(byte[] encodedName, long seq, String peerId)
-      throws IOException, InterruptedException {
-
-    /**
-     * There are barriers for this region and position for this peer. N barriers form N intervals,
-     * (b1,b2) (b2,b3) ... (bn,max). Generally, there is no logs whose seq id is not greater than
-     * the first barrier and the last interval is start from the last barrier. There are several
-     * conditions that we can push now, otherwise we should block: 1) "Serial replication" is not
-     * enabled, we can push all logs just like before. This case should not call this method. 2)
-     * There is no barriers for this region, or the seq id is smaller than the first barrier. It is
-     * mainly because we alter REPLICATION_SCOPE = 2. We can not guarantee the order of logs that is
-     * written before altering. 3) This entry is in the first interval of barriers. We can push them
-     * because it is the start of a region. But if the region is created by region split, we should
-     * check if the parent regions are fully pushed. 4) If the entry's seq id and the position are
-     * in same section, or the pos is the last number of previous section. Because when open a
-     * region we put a barrier the number is the last log's id + 1. 5) Log's seq is smaller than pos
-     * in meta, we are retrying. It may happen when a RS crashes after save replication meta and
-     * before save zk offset.
-     */
-    List<Long> barriers = MetaTableAccessor.getReplicationBarriers(connection, encodedName);
-    if (barriers.isEmpty() || seq <= barriers.get(0)) {
-      // Case 2
-      return;
-    }
-    int interval = Collections.binarySearch(barriers, seq);
-    if (interval < 0) {
-      interval = -interval - 1;// get the insert position if negative
-    }
-    if (interval == 1) {
-      // Case 3
-      // Check if there are parent regions
-      String parentValue =
-          MetaTableAccessor.getSerialReplicationParentRegion(connection, encodedName);
-      if (parentValue == null) {
-        // This region has no parent or the parent's log entries are fully pushed.
-        return;
-      }
-      while (true) {
-        boolean allParentDone = true;
-        String[] parentRegions = parentValue.split(",");
-        for (String parent : parentRegions) {
-          byte[] region = Bytes.toBytes(parent);
-          long pos = MetaTableAccessor.getReplicationPositionForOnePeer(connection, region, peerId);
-          List<Long> parentBarriers = MetaTableAccessor.getReplicationBarriers(connection, region);
-          if (parentBarriers.size() > 0 &&
-            parentBarriers.get(parentBarriers.size() - 1) - 1 > pos) {
-            allParentDone = false;
-            // For a closed region, we will write a close event marker to WAL whose sequence id is
-            // larger than final barrier but still smaller than next region's openSeqNum.
-            // So if the pos is larger than last barrier, we can say we have read the event marker
-            // which means the parent region has been fully pushed.
-            LOG.info(
-              Bytes.toString(encodedName) + " can not start pushing because parent region's" +
-                " log has not been fully pushed: parent=" + Bytes.toString(region) + " pos=" + pos +
-                " barriers=" + Arrays.toString(barriers.toArray()));
-            break;
-          }
-        }
-        if (allParentDone) {
-          return;
-        } else {
-          Thread.sleep(replicationWaitTime);
-        }
-      }
-
-    }
-
-    while (true) {
-      long pos =
-          MetaTableAccessor.getReplicationPositionForOnePeer(connection, encodedName, peerId);
-      if (seq <= pos) {
-        // Case 5
-      }
-      if (pos >= 0) {
-        // Case 4
-        int posInterval = Collections.binarySearch(barriers, pos);
-        if (posInterval < 0) {
-          posInterval = -posInterval - 1;// get the insert position if negative
-        }
-        if (posInterval == interval || pos == barriers.get(interval - 1) - 1) {
-          return;
-        }
-      }
-
-      LOG.info(Bytes.toString(encodedName) + " can not start pushing to peer " + peerId +
-        " because previous log has not been pushed: sequence=" + seq + " pos=" + pos +
-        " barriers=" + Arrays.toString(barriers.toArray()));
-      Thread.sleep(replicationWaitTime);
-    }
-  }
-
 }

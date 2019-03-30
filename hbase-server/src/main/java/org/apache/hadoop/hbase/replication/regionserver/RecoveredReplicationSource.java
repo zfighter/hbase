@@ -21,7 +21,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.PriorityBlockingQueue;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -31,7 +30,6 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.replication.ReplicationPeer;
 import org.apache.hadoop.hbase.replication.ReplicationQueueStorage;
 import org.apache.hadoop.hbase.util.FSUtils;
-import org.apache.hadoop.hbase.util.Threads;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
@@ -59,31 +57,9 @@ public class RecoveredReplicationSource extends ReplicationSource {
   }
 
   @Override
-  protected void tryStartNewShipper(String walGroupId, PriorityBlockingQueue<Path> queue) {
-    final RecoveredReplicationSourceShipper worker =
-        new RecoveredReplicationSourceShipper(conf, walGroupId, queue, this,
-            this.queueStorage);
-    ReplicationSourceShipper extant = workerThreads.putIfAbsent(walGroupId, worker);
-    if (extant != null) {
-      LOG.debug("Someone has beat us to start a worker thread for wal group " + walGroupId);
-    } else {
-      LOG.debug("Starting up worker for wal group " + walGroupId);
-      worker.startup(this::uncaughtException);
-      worker.setWALReader(
-        startNewWALReader(worker.getName(), walGroupId, queue, worker.getStartPosition()));
-      workerThreads.put(walGroupId, worker);
-    }
-  }
-
-  @Override
-  protected ReplicationSourceWALReader startNewWALReader(String threadName, String walGroupId,
-      PriorityBlockingQueue<Path> queue, long startPosition) {
-    ReplicationSourceWALReader walReader =
-      new RecoveredReplicationSourceWALReader(fs, conf, queue, startPosition, walEntryFilter, this);
-    Threads.setDaemonThreadRunning(walReader,
-      threadName + ".replicationSource.replicationWALReaderThread." + walGroupId + "," + queueId,
-      this::uncaughtException);
-    return walReader;
+  protected RecoveredReplicationSourceShipper createNewShipper(String walGroupId,
+      PriorityBlockingQueue<Path> queue) {
+    return new RecoveredReplicationSourceShipper(conf, walGroupId, queue, this, queueStorage);
   }
 
   public void locateRecoveredPaths(PriorityBlockingQueue<Path> queue) throws IOException {
@@ -166,22 +142,10 @@ public class RecoveredReplicationSource extends ReplicationSource {
     return path;
   }
 
-  public void tryFinish() {
-    // use synchronize to make sure one last thread will clean the queue
-    synchronized (workerThreads) {
-      Threads.sleep(100);// wait a short while for other worker thread to fully exit
-      boolean allTasksDone = true;
-      for (ReplicationSourceShipper worker : workerThreads.values()) {
-        if (!worker.isFinished()) {
-          allTasksDone = false;
-          break;
-        }
-      }
-      if (allTasksDone) {
-        manager.removeRecoveredSource(this);
-        LOG.info("Finished recovering queue " + queueId + " with the following stats: "
-            + getStats());
-      }
+  void tryFinish() {
+    if (workerThreads.isEmpty()) {
+      this.getSourceMetrics().clear();
+      manager.finishRecoveredSource(this);
     }
   }
 
@@ -193,5 +157,10 @@ public class RecoveredReplicationSource extends ReplicationSource {
   @Override
   public ServerName getServerWALsBelongTo() {
     return this.replicationQueueInfo.getDeadRegionServers().get(0);
+  }
+
+  @Override
+  public boolean isRecovered() {
+    return true;
   }
 }

@@ -54,7 +54,6 @@ import org.apache.hadoop.hbase.io.hfile.HFileScanner;
 import org.apache.hadoop.hbase.regionserver.BloomType;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
-import org.apache.hadoop.hbase.tool.LoadIncrementalHFiles.LoadQueueItem;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.HFileTestUtil;
@@ -116,7 +115,7 @@ public class TestLoadIncrementalHFiles {
     util.shutdownMiniCluster();
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testSimpleLoadWithMap() throws Exception {
     runTest("testSimpleLoadWithMap", BloomType.NONE,
       new byte[][][] { new byte[][] { Bytes.toBytes("aaaa"), Bytes.toBytes("cccc") },
@@ -127,14 +126,14 @@ public class TestLoadIncrementalHFiles {
   /**
    * Test case that creates some regions and loads HFiles that fit snugly inside those regions
    */
-  @Test(timeout = 120000)
+  @Test
   public void testSimpleLoad() throws Exception {
     runTest("testSimpleLoad", BloomType.NONE,
       new byte[][][] { new byte[][] { Bytes.toBytes("aaaa"), Bytes.toBytes("cccc") },
           new byte[][] { Bytes.toBytes("ddd"), Bytes.toBytes("ooo") }, });
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testSimpleLoadWithFileCopy() throws Exception {
     String testName = tn.getMethodName();
     final byte[] TABLE_NAME = Bytes.toBytes("mytable_" + testName);
@@ -147,7 +146,7 @@ public class TestLoadIncrementalHFiles {
   /**
    * Test case that creates some regions and loads HFiles that cross the boundaries of those regions
    */
-  @Test(timeout = 120000)
+  @Test
   public void testRegionCrossingLoad() throws Exception {
     runTest("testRegionCrossingLoad", BloomType.NONE,
       new byte[][][] { new byte[][] { Bytes.toBytes("aaaa"), Bytes.toBytes("eee") },
@@ -157,7 +156,7 @@ public class TestLoadIncrementalHFiles {
   /**
    * Test loading into a column family that has a ROW bloom filter.
    */
-  @Test(timeout = 60000)
+  @Test
   public void testRegionCrossingRowBloom() throws Exception {
     runTest("testRegionCrossingLoadRowBloom", BloomType.ROW,
       new byte[][][] { new byte[][] { Bytes.toBytes("aaaa"), Bytes.toBytes("eee") },
@@ -167,7 +166,7 @@ public class TestLoadIncrementalHFiles {
   /**
    * Test loading into a column family that has a ROWCOL bloom filter.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testRegionCrossingRowColBloom() throws Exception {
     runTest("testRegionCrossingLoadRowColBloom", BloomType.ROWCOL,
       new byte[][][] { new byte[][] { Bytes.toBytes("aaaa"), Bytes.toBytes("eee") },
@@ -178,7 +177,7 @@ public class TestLoadIncrementalHFiles {
    * Test case that creates some regions and loads HFiles that have different region boundaries than
    * the table pre-split.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testSimpleHFileSplit() throws Exception {
     runTest("testHFileSplit", BloomType.NONE,
       new byte[][] { Bytes.toBytes("aaa"), Bytes.toBytes("fff"), Bytes.toBytes("jjj"),
@@ -191,7 +190,7 @@ public class TestLoadIncrementalHFiles {
    * Test case that creates some regions and loads HFiles that cross the boundaries and have
    * different region boundaries than the table pre-split.
    */
-  @Test(timeout = 60000)
+  @Test
   public void testRegionCrossingHFileSplit() throws Exception {
     testRegionCrossingHFileSplit(BloomType.NONE);
   }
@@ -200,7 +199,7 @@ public class TestLoadIncrementalHFiles {
    * Test case that creates some regions and loads HFiles that cross the boundaries have a ROW bloom
    * filter and a different region boundaries than the table pre-split.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testRegionCrossingHFileSplitRowBloom() throws Exception {
     testRegionCrossingHFileSplit(BloomType.ROW);
   }
@@ -209,7 +208,7 @@ public class TestLoadIncrementalHFiles {
    * Test case that creates some regions and loads HFiles that cross the boundaries have a ROWCOL
    * bloom filter and a different region boundaries than the table pre-split.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testRegionCrossingHFileSplitRowColBloom() throws Exception {
     testRegionCrossingHFileSplit(BloomType.ROWCOL);
   }
@@ -236,7 +235,7 @@ public class TestLoadIncrementalHFiles {
 
   private TableDescriptor buildHTD(TableName tableName, BloomType bloomType) {
     return TableDescriptorBuilder.newBuilder(tableName)
-        .addColumnFamily(
+        .setColumnFamily(
           ColumnFamilyDescriptorBuilder.newBuilder(FAMILY).setBloomFilterType(bloomType).build())
         .build();
   }
@@ -346,7 +345,7 @@ public class TestLoadIncrementalHFiles {
     if (copyFiles) {
       conf.setBoolean(LoadIncrementalHFiles.ALWAYS_COPY_FILES, true);
     }
-    LoadIncrementalHFiles loader = new LoadIncrementalHFiles(conf);
+    BulkLoadHFilesTool loader = new BulkLoadHFilesTool(conf);
     List<String> args = Lists.newArrayList(baseDirectory.toString(), tableName.toString());
     if (depth == 3) {
       args.add("-loadTable");
@@ -356,17 +355,17 @@ public class TestLoadIncrementalHFiles {
       if (deleteFile) {
         fs.delete(last, true);
       }
-      Map<LoadQueueItem, ByteBuffer> loaded = loader.run(map, tableName);
+      Map<BulkLoadHFiles.LoadQueueItem, ByteBuffer> loaded = loader.bulkLoad(tableName, map);
       if (deleteFile) {
         expectedRows -= 1000;
-        for (LoadQueueItem item : loaded.keySet()) {
+        for (BulkLoadHFiles.LoadQueueItem item : loaded.keySet()) {
           if (item.getFilePath().getName().equals(last.getName())) {
             fail(last + " should be missing");
           }
         }
       }
     } else {
-      loader.run(args.toArray(new String[]{}));
+      loader.run(args.toArray(new String[] {}));
     }
 
     if (copyFiles) {
@@ -412,7 +411,7 @@ public class TestLoadIncrementalHFiles {
    * "hbase.client.rpc.codec" = KeyValueCodecWithTags so that the client can get tags in the
    * responses.
    */
-  @Test(timeout = 60000)
+  @Test
   public void testTagsSurviveBulkLoadSplit() throws Exception {
     Path dir = util.getDataTestDirOnTestFS(tn.getMethodName());
     FileSystem fs = util.getTestFileSystem();
@@ -451,7 +450,7 @@ public class TestLoadIncrementalHFiles {
   /**
    * Test loading into a column family that does not exist.
    */
-  @Test(timeout = 60000)
+  @Test
   public void testNonexistentColumnFamilyLoad() throws Exception {
     String testName = tn.getMethodName();
     byte[][][] hFileRanges =
@@ -462,7 +461,7 @@ public class TestLoadIncrementalHFiles {
     // set real family name to upper case in purpose to simulate the case that
     // family name in HFiles is invalid
     TableDescriptor htd = TableDescriptorBuilder.newBuilder(TableName.valueOf(TABLE))
-        .addColumnFamily(ColumnFamilyDescriptorBuilder
+        .setColumnFamily(ColumnFamilyDescriptorBuilder
             .of(Bytes.toBytes(new String(FAMILY).toUpperCase(Locale.ROOT))))
         .build();
 
@@ -480,12 +479,12 @@ public class TestLoadIncrementalHFiles {
     }
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testNonHfileFolderWithUnmatchedFamilyName() throws Exception {
     testNonHfileFolder("testNonHfileFolderWithUnmatchedFamilyName", true);
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testNonHfileFolder() throws Exception {
     testNonHfileFolder("testNonHfileFolder", false);
   }
@@ -549,7 +548,7 @@ public class TestLoadIncrementalHFiles {
     }
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testSplitStoreFile() throws IOException {
     Path dir = util.getDataTestDirOnTestFS("testSplitHFile");
     FileSystem fs = util.getTestFileSystem();
@@ -634,7 +633,7 @@ public class TestLoadIncrementalHFiles {
     map.put(last, value - 1);
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testInferBoundaries() {
     TreeMap<byte[], Integer> map = new TreeMap<>(Bytes.BYTES_COMPARATOR);
 
@@ -649,45 +648,45 @@ public class TestLoadIncrementalHFiles {
 
     first = "a";
     last = "e";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "r";
     last = "s";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "o";
     last = "p";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "g";
     last = "k";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "v";
     last = "x";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "c";
     last = "i";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "m";
     last = "q";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "s";
     last = "t";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     first = "u";
     last = "w";
-    addStartEndKeysForTest(map, first.getBytes(), last.getBytes());
+    addStartEndKeysForTest(map, Bytes.toBytes(first), Bytes.toBytes(last));
 
     byte[][] keysArray = LoadIncrementalHFiles.inferBoundaries(map);
     byte[][] compare = new byte[3][];
-    compare[0] = "m".getBytes();
-    compare[1] = "r".getBytes();
-    compare[2] = "u".getBytes();
+    compare[0] = Bytes.toBytes("m");
+    compare[1] = Bytes.toBytes("r");
+    compare[2] = Bytes.toBytes("u");
 
     assertEquals(3, keysArray.length);
 
@@ -696,7 +695,7 @@ public class TestLoadIncrementalHFiles {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
   public void testLoadTooMayHFiles() throws Exception {
     Path dir = util.getDataTestDirOnTestFS("testLoadTooMayHFiles");
     FileSystem fs = util.getTestFileSystem();
@@ -730,7 +729,7 @@ public class TestLoadIncrementalHFiles {
     loader.run(args);
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testTableWithCFNameStartWithUnderScore() throws Exception {
     Path dir = util.getDataTestDirOnTestFS("cfNameStartWithUnderScore");
     FileSystem fs = util.getTestFileSystem();

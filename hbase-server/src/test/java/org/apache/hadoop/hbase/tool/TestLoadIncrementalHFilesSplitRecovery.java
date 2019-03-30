@@ -144,7 +144,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
   private TableDescriptor createTableDesc(TableName name, int cfs) {
     TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(name);
     IntStream.range(0, cfs).mapToObj(i -> ColumnFamilyDescriptorBuilder.of(family(i)))
-        .forEachOrdered(builder::addColumnFamily);
+        .forEachOrdered(builder::setColumnFamily);
     return builder.build();
   }
 
@@ -277,7 +277,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
    * Test that shows that exception thrown from the RS side will result in an exception on the
    * LIHFile client.
    */
-  @Test(expected = IOException.class, timeout = 120000)
+  @Test(expected = IOException.class)
   public void testBulkLoadPhaseFailure() throws Exception {
     final TableName table = TableName.valueOf(name.getMethodName());
     final AtomicInteger attmptedCalls = new AtomicInteger();
@@ -331,7 +331,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
   @Test
   public void testRetryOnIOException() throws Exception {
     final TableName table = TableName.valueOf(name.getMethodName());
-    final AtomicInteger calls = new AtomicInteger(1);
+    final AtomicInteger calls = new AtomicInteger(0);
     final Connection conn = ConnectionFactory.createConnection(util.getConfiguration());
     util.getConfiguration().setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 2);
     util.getConfiguration().setBoolean(LoadIncrementalHFiles.RETRY_ON_IO_EXCEPTION, true);
@@ -340,9 +340,8 @@ public class TestLoadIncrementalHFilesSplitRecovery {
       protected List<LoadQueueItem> tryAtomicRegionLoad(
           ClientServiceCallable<byte[]> serverCallable, TableName tableName, final byte[] first,
           Collection<LoadQueueItem> lqis) throws IOException {
-        if (calls.getAndIncrement() < util.getConfiguration().getInt(
-          HConstants.HBASE_CLIENT_RETRIES_NUMBER, HConstants.DEFAULT_HBASE_CLIENT_RETRIES_NUMBER) -
-            1) {
+        if (calls.get() < util.getConfiguration().getInt(
+          HConstants.HBASE_CLIENT_RETRIES_NUMBER, HConstants.DEFAULT_HBASE_CLIENT_RETRIES_NUMBER)) {
           ClientServiceCallable<byte[]> newServerCallable = new ClientServiceCallable<byte[]>(conn,
               tableName, first, new RpcControllerFactory(util.getConfiguration()).newController(),
               HConstants.PRIORITY_UNSET) {
@@ -351,6 +350,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
               throw new IOException("Error calling something on RegionServer");
             }
           };
+          calls.getAndIncrement();
           return super.tryAtomicRegionLoad(newServerCallable, tableName, first, lqis);
         } else {
           return super.tryAtomicRegionLoad(serverCallable, tableName, first, lqis);
@@ -360,8 +360,8 @@ public class TestLoadIncrementalHFilesSplitRecovery {
     setupTable(conn, table, 10);
     Path dir = buildBulkFiles(table, 1);
     lih.doBulkLoad(dir, conn.getAdmin(), conn.getTable(table), conn.getRegionLocator(table));
+    assertEquals(calls.get(), 2);
     util.getConfiguration().setBoolean(LoadIncrementalHFiles.RETRY_ON_IO_EXCEPTION, false);
-
   }
 
   private ClusterConnection getMockedConnection(final Configuration conf)
@@ -391,7 +391,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
    * atomic bulk load call. We cannot use presplitting to test this path, so we actually inject a
    * split just before the atomic region load.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testSplitWhileBulkLoadPhase() throws Exception {
     final TableName table = TableName.valueOf(name.getMethodName());
     try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
@@ -437,7 +437,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
    * This test splits a table and attempts to bulk load. The bulk import files should be split
    * before atomically importing.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testGroupOrSplitPresplit() throws Exception {
     final TableName table = TableName.valueOf(name.getMethodName());
     try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
@@ -477,7 +477,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
    * This test creates a table with many small regions. The bulk load files would be splitted
    * multiple times before all of them can be loaded successfully.
    */
-  @Test(timeout = 120000)
+  @Test
   public void testSplitTmpFileCleanUp() throws Exception {
     final TableName table = TableName.valueOf(name.getMethodName());
     byte[][] SPLIT_KEYS = new byte[][] { Bytes.toBytes("row_00000010"),
@@ -512,7 +512,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
   /**
    * This simulates an remote exception which should cause LIHF to exit with an exception.
    */
-  @Test(expected = IOException.class, timeout = 120000)
+  @Test(expected = IOException.class)
   public void testGroupOrSplitFailure() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     try (Connection connection = ConnectionFactory.createConnection(util.getConfiguration())) {
@@ -546,7 +546,7 @@ public class TestLoadIncrementalHFilesSplitRecovery {
     fail("doBulkLoad should have thrown an exception");
   }
 
-  @Test(timeout = 120000)
+  @Test
   public void testGroupOrSplitWhenRegionHoleExistsInMeta() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     byte[][] SPLIT_KEYS = new byte[][] { Bytes.toBytes("row_00000100") };

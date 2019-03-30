@@ -38,6 +38,7 @@ import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfigBuilder;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
@@ -303,6 +304,10 @@ public final class ReplicationPeerConfigUtil {
       builder.setReplicateAllUserTables(peer.getReplicateAll());
     }
 
+    if (peer.hasSerial()) {
+      builder.setSerial(peer.getSerial());
+    }
+
     Map<TableName, List<String>> excludeTableCFsMap = convert2Map(peer.getExcludeTableCfsList()
         .toArray(new ReplicationProtos.TableCF[peer.getExcludeTableCfsCount()]));
     if (excludeTableCFsMap != null) {
@@ -315,15 +320,18 @@ public final class ReplicationPeerConfigUtil {
         excludeNamespacesList.stream().map(ByteString::toStringUtf8).collect(Collectors.toSet()));
     }
 
+    if (peer.hasRemoteWALDir()) {
+      builder.setRemoteWALDir(peer.getRemoteWALDir());
+    }
     return builder.build();
   }
 
   public static ReplicationProtos.ReplicationPeer convert(ReplicationPeerConfig peerConfig) {
     ReplicationProtos.ReplicationPeer.Builder builder =
         ReplicationProtos.ReplicationPeer.newBuilder();
-    if (peerConfig.getClusterKey() != null) {
-      builder.setClusterkey(peerConfig.getClusterKey());
-    }
+    // we used to set cluster key as required so here we must always set it, until we can make sure
+    // that no one uses the old proto file.
+    builder.setClusterkey(peerConfig.getClusterKey() != null ? peerConfig.getClusterKey() : "");
     if (peerConfig.getReplicationEndpointImpl() != null) {
       builder.setReplicationEndpointImpl(peerConfig.getReplicationEndpointImpl());
     }
@@ -357,6 +365,7 @@ public final class ReplicationPeerConfigUtil {
 
     builder.setBandwidth(peerConfig.getBandwidth());
     builder.setReplicateAll(peerConfig.replicateAllUserTables());
+    builder.setSerial(peerConfig.isSerial());
 
     ReplicationProtos.TableCF[] excludeTableCFs = convert(peerConfig.getExcludeTableCFsMap());
     if (excludeTableCFs != null) {
@@ -371,6 +380,9 @@ public final class ReplicationPeerConfigUtil {
       }
     }
 
+    if (peerConfig.getRemoteWALDir() != null) {
+      builder.setRemoteWALDir(peerConfig.getRemoteWALDir());
+    }
     return builder.build();
   }
 
@@ -385,26 +397,45 @@ public final class ReplicationPeerConfigUtil {
     return ProtobufUtil.prependPBMagic(bytes);
   }
 
-  public static ReplicationPeerDescription toReplicationPeerDescription(
-      ReplicationProtos.ReplicationPeerDescription desc) {
-    boolean enabled = ReplicationProtos.ReplicationState.State.ENABLED == desc.getState()
-        .getState();
+  public static ReplicationPeerDescription
+      toReplicationPeerDescription(ReplicationProtos.ReplicationPeerDescription desc) {
+    boolean enabled =
+        ReplicationProtos.ReplicationState.State.ENABLED == desc.getState().getState();
     ReplicationPeerConfig config = convert(desc.getConfig());
-    return new ReplicationPeerDescription(desc.getId(), enabled, config);
+    return new ReplicationPeerDescription(desc.getId(), enabled, config,
+      toSyncReplicationState(desc.getSyncReplicationState()));
   }
 
-  public static ReplicationProtos.ReplicationPeerDescription toProtoReplicationPeerDescription(
-      ReplicationPeerDescription desc) {
+  public static ReplicationProtos.ReplicationPeerDescription
+      toProtoReplicationPeerDescription(ReplicationPeerDescription desc) {
     ReplicationProtos.ReplicationPeerDescription.Builder builder =
         ReplicationProtos.ReplicationPeerDescription.newBuilder();
     builder.setId(desc.getPeerId());
-    ReplicationProtos.ReplicationState.Builder stateBuilder = ReplicationProtos.ReplicationState
-        .newBuilder();
-    stateBuilder.setState(desc.isEnabled() ? ReplicationProtos.ReplicationState.State.ENABLED
-        : ReplicationProtos.ReplicationState.State.DISABLED);
+
+    ReplicationProtos.ReplicationState.Builder stateBuilder =
+        ReplicationProtos.ReplicationState.newBuilder();
+    stateBuilder.setState(desc.isEnabled() ? ReplicationProtos.ReplicationState.State.ENABLED :
+        ReplicationProtos.ReplicationState.State.DISABLED);
     builder.setState(stateBuilder.build());
+
     builder.setConfig(convert(desc.getPeerConfig()));
+    builder.setSyncReplicationState(toSyncReplicationState(desc.getSyncReplicationState()));
+
     return builder.build();
+  }
+
+  public static ReplicationProtos.SyncReplicationState
+      toSyncReplicationState(SyncReplicationState state) {
+    ReplicationProtos.SyncReplicationState.Builder syncReplicationStateBuilder =
+        ReplicationProtos.SyncReplicationState.newBuilder();
+    syncReplicationStateBuilder
+        .setState(ReplicationProtos.SyncReplicationState.State.forNumber(state.ordinal()));
+    return syncReplicationStateBuilder.build();
+  }
+
+  public static SyncReplicationState
+      toSyncReplicationState(ReplicationProtos.SyncReplicationState state) {
+    return SyncReplicationState.valueOf(state.getState().getNumber());
   }
 
   public static ReplicationPeerConfig appendTableCFsToReplicationPeerConfig(
@@ -414,30 +445,51 @@ public final class ReplicationPeerConfigUtil {
     if (preTableCfs == null) {
       builder.setTableCFsMap(tableCfs);
     } else {
-      Map<TableName, List<String>> newTableCfs = copyTableCFsMap(preTableCfs);
-      for (Map.Entry<TableName, ? extends Collection<String>> entry : tableCfs.entrySet()) {
-        TableName table = entry.getKey();
-        Collection<String> appendCfs = entry.getValue();
-        if (newTableCfs.containsKey(table)) {
-          List<String> cfs = newTableCfs.get(table);
-          if (cfs == null || appendCfs == null || appendCfs.isEmpty()) {
-            newTableCfs.put(table, null);
-          } else {
-            Set<String> cfSet = new HashSet<String>(cfs);
-            cfSet.addAll(appendCfs);
-            newTableCfs.put(table, Lists.newArrayList(cfSet));
-          }
-        } else {
-          if (appendCfs == null || appendCfs.isEmpty()) {
-            newTableCfs.put(table, null);
-          } else {
-            newTableCfs.put(table, Lists.newArrayList(appendCfs));
-          }
-        }
-      }
-      builder.setTableCFsMap(newTableCfs);
+      builder.setTableCFsMap(mergeTableCFs(preTableCfs, tableCfs));
     }
     return builder.build();
+  }
+
+  public static ReplicationPeerConfig appendExcludeTableCFsToReplicationPeerConfig(
+      Map<TableName, List<String>> excludeTableCfs, ReplicationPeerConfig peerConfig)
+      throws ReplicationException {
+    if (excludeTableCfs == null) {
+      throw new ReplicationException("exclude tableCfs is null");
+    }
+    ReplicationPeerConfigBuilder builder = ReplicationPeerConfig.newBuilder(peerConfig);
+    Map<TableName, List<String>> preExcludeTableCfs = peerConfig.getExcludeTableCFsMap();
+    if (preExcludeTableCfs == null) {
+      builder.setExcludeTableCFsMap(excludeTableCfs);
+    } else {
+      builder.setExcludeTableCFsMap(mergeTableCFs(preExcludeTableCfs, excludeTableCfs));
+    }
+    return builder.build();
+  }
+
+  private static Map<TableName, List<String>> mergeTableCFs(
+      Map<TableName, List<String>> preTableCfs, Map<TableName, List<String>> tableCfs) {
+    Map<TableName, List<String>> newTableCfs = copyTableCFsMap(preTableCfs);
+    for (Map.Entry<TableName, ? extends Collection<String>> entry : tableCfs.entrySet()) {
+      TableName table = entry.getKey();
+      Collection<String> appendCfs = entry.getValue();
+      if (newTableCfs.containsKey(table)) {
+        List<String> cfs = newTableCfs.get(table);
+        if (cfs == null || appendCfs == null || appendCfs.isEmpty()) {
+          newTableCfs.put(table, null);
+        } else {
+          Set<String> cfSet = new HashSet<String>(cfs);
+          cfSet.addAll(appendCfs);
+          newTableCfs.put(table, Lists.newArrayList(cfSet));
+        }
+      } else {
+        if (appendCfs == null || appendCfs.isEmpty()) {
+          newTableCfs.put(table, null);
+        } else {
+          newTableCfs.put(table, Lists.newArrayList(appendCfs));
+        }
+      }
+    }
+    return newTableCfs;
   }
 
   private static Map<TableName, List<String>>
@@ -485,6 +537,49 @@ public final class ReplicationPeerConfigUtil {
     }
     ReplicationPeerConfigBuilder builder = ReplicationPeerConfig.newBuilder(peerConfig);
     builder.setTableCFsMap(newTableCfs);
+    return builder.build();
+  }
+
+  public static ReplicationPeerConfig removeExcludeTableCFsFromReplicationPeerConfig(
+      Map<TableName, List<String>> excludeTableCfs, ReplicationPeerConfig peerConfig, String id)
+      throws ReplicationException {
+    if (excludeTableCfs == null) {
+      throw new ReplicationException("exclude tableCfs is null");
+    }
+    Map<TableName, List<String>> preExcludeTableCfs = peerConfig.getExcludeTableCFsMap();
+    if (preExcludeTableCfs == null) {
+      throw new ReplicationException("exclude-Table-Cfs for peer: " + id + " is null");
+    }
+    Map<TableName, List<String>> newExcludeTableCfs = copyTableCFsMap(preExcludeTableCfs);
+    for (Map.Entry<TableName, ? extends Collection<String>> entry : excludeTableCfs.entrySet()) {
+      TableName table = entry.getKey();
+      Collection<String> removeCfs = entry.getValue();
+      if (newExcludeTableCfs.containsKey(table)) {
+        List<String> cfs = newExcludeTableCfs.get(table);
+        if (cfs == null && (removeCfs == null || removeCfs.isEmpty())) {
+          newExcludeTableCfs.remove(table);
+        } else if (cfs != null && (removeCfs != null && !removeCfs.isEmpty())) {
+          Set<String> cfSet = new HashSet<String>(cfs);
+          cfSet.removeAll(removeCfs);
+          if (cfSet.isEmpty()) {
+            newExcludeTableCfs.remove(table);
+          } else {
+            newExcludeTableCfs.put(table, Lists.newArrayList(cfSet));
+          }
+        } else if (cfs == null && (removeCfs != null && !removeCfs.isEmpty())) {
+          throw new ReplicationException("Cannot remove cf of table: " + table
+              + " which doesn't specify cfs from exclude-table-cfs config in peer: " + id);
+        } else if (cfs != null && (removeCfs == null || removeCfs.isEmpty())) {
+          throw new ReplicationException("Cannot remove table: " + table
+              + " which has specified cfs from exclude-table-cfs config in peer: " + id);
+        }
+      } else {
+        throw new ReplicationException(
+            "No table: " + table + " in exclude-table-cfs config of peer: " + id);
+      }
+    }
+    ReplicationPeerConfigBuilder builder = ReplicationPeerConfig.newBuilder(peerConfig);
+    builder.setExcludeTableCFsMap(newExcludeTableCfs);
     return builder.build();
   }
 

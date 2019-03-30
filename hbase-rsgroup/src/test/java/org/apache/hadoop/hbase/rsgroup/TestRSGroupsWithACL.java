@@ -35,11 +35,13 @@ import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.access.AccessControlClient;
 import org.apache.hadoop.hbase.security.access.AccessControlLists;
+import org.apache.hadoop.hbase.security.access.AuthManager;
 import org.apache.hadoop.hbase.security.access.Permission;
 import org.apache.hadoop.hbase.security.access.SecureTestUtil;
-import org.apache.hadoop.hbase.security.access.TableAuthManager;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.SecurityTests;
 import org.apache.hadoop.hbase.util.Bytes;
+
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -52,7 +54,7 @@ import org.slf4j.LoggerFactory;
  * Performs authorization checks for rsgroup operations, according to different
  * levels of authorized users.
  */
-@Category({SecurityTests.class})
+@Category({SecurityTests.class, MediumTests.class})
 public class TestRSGroupsWithACL extends SecureTestUtil{
 
   @ClassRule
@@ -139,7 +141,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
     TableDescriptorBuilder tableBuilder = TableDescriptorBuilder.newBuilder(TEST_TABLE);
     ColumnFamilyDescriptorBuilder cfd = ColumnFamilyDescriptorBuilder.newBuilder(TEST_FAMILY);
     cfd.setMaxVersions(100);
-    tableBuilder.addColumnFamily(cfd.build());
+    tableBuilder.setColumnFamily(cfd.build());
     tableBuilder.setValue(TableDescriptorBuilder.OWNER, USER_OWNER.getShortName());
     createTable(TEST_UTIL, tableBuilder.build(),
         new byte[][] { Bytes.toBytes("s") });
@@ -176,9 +178,10 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
     try {
       assertEquals(4, AccessControlClient.getUserPermissions(systemUserConnection,
           TEST_TABLE.toString()).size());
+    } catch (AssertionError e) {
+      fail(e.getMessage());
     } catch (Throwable e) {
       LOG.error("error during call of AccessControlClient.getUserPermissions. ", e);
-      fail("error during call of AccessControlClient.getUserPermissions.");
     }
   }
 
@@ -200,7 +203,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
   public static void tearDownAfterClass() throws Exception {
     cleanUp();
     TEST_UTIL.shutdownMiniCluster();
-    int total = TableAuthManager.getTotalRefCount();
+    int total = AuthManager.getTotalRefCount();
     assertTrue("Unexpected reference count: " + total, total == 0);
   }
 
@@ -222,9 +225,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -234,9 +235,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -246,9 +245,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -258,9 +255,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -270,9 +265,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -282,9 +275,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -294,9 +285,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -306,9 +295,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -318,9 +305,7 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
-    verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
-    verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
-        USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);
+    validateAdminPermissions(action);
   }
 
   @Test
@@ -330,6 +315,20 @@ public class TestRSGroupsWithACL extends SecureTestUtil{
       return null;
     };
 
+    validateAdminPermissions(action);
+  }
+
+  @Test
+  public void testRemoveServers() throws Exception {
+    AccessTestAction action = () -> {
+      rsGroupAdminEndpoint.checkPermission("removeServers");
+      return null;
+    };
+
+    validateAdminPermissions(action);
+  }
+
+  private void validateAdminPermissions(AccessTestAction action) throws Exception {
     verifyAllowed(action, SUPERUSER, USER_ADMIN, USER_GROUP_ADMIN);
     verifyDenied(action, USER_CREATE, USER_OWNER, USER_RW, USER_RO,
         USER_NONE, USER_GROUP_READ, USER_GROUP_WRITE, USER_GROUP_CREATE);

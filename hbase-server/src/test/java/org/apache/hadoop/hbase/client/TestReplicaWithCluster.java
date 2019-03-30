@@ -74,7 +74,7 @@ public class TestReplicaWithCluster {
   private static final Logger LOG = LoggerFactory.getLogger(TestReplicaWithCluster.class);
 
   private static final int NB_SERVERS = 3;
-  private static final byte[] row = TestReplicaWithCluster.class.getName().getBytes();
+  private static final byte[] row = Bytes.toBytes(TestReplicaWithCluster.class.getName());
   private static final HBaseTestingUtility HTU = new HBaseTestingUtility();
 
   // second minicluster used in testing of replication
@@ -280,7 +280,7 @@ public class TestReplicaWithCluster {
     HTU.shutdownMiniCluster();
   }
 
-  @Test (timeout=30000)
+  @Test
   public void testCreateDeleteTable() throws IOException {
     // Create table then get the single region for our new table.
     HTableDescriptor hdt = HTU.createTableDescriptor("testCreateDeleteTable");
@@ -313,12 +313,12 @@ public class TestReplicaWithCluster {
     HTU.deleteTable(hdt.getTableName());
   }
 
-  @Test (timeout=120000)
+  @Test
   public void testChangeTable() throws Exception {
     TableDescriptor td = TableDescriptorBuilder.newBuilder(TableName.valueOf("testChangeTable"))
             .setRegionReplication(NB_SERVERS)
-            .addCoprocessor(SlowMeCopro.class.getName())
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of(f))
+            .setCoprocessor(SlowMeCopro.class.getName())
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of(f))
             .build();
     HTU.getAdmin().createTable(td);
     Table table = HTU.getConnection().getTable(td.getTableName());
@@ -334,7 +334,7 @@ public class TestReplicaWithCluster {
     // Add a CF, it should work.
     TableDescriptor bHdt = HTU.getAdmin().getDescriptor(td.getTableName());
     td = TableDescriptorBuilder.newBuilder(td)
-            .addColumnFamily(ColumnFamilyDescriptorBuilder.of(row))
+            .setColumnFamily(ColumnFamilyDescriptorBuilder.of(row))
             .build();
     HTU.getAdmin().disableTable(td.getTableName());
     HTU.getAdmin().modifyTable(td);
@@ -373,7 +373,7 @@ public class TestReplicaWithCluster {
   }
 
   @SuppressWarnings("deprecation")
-  @Test (timeout=300000)
+  @Test
   public void testReplicaAndReplication() throws Exception {
     HTableDescriptor hdt = HTU.createTableDescriptor("testReplicaAndReplication");
     hdt.setRegionReplication(NB_SERVERS);
@@ -457,7 +457,7 @@ public class TestReplicaWithCluster {
     // the minicluster has negative impact of deleting all HConnections in JVM.
   }
 
-  @Test (timeout=30000)
+  @Test
   public void testBulkLoad() throws IOException {
     // Create table then get the single region for our new table.
     LOG.debug("Creating test table");
@@ -670,7 +670,7 @@ public class TestReplicaWithCluster {
   // within configured hbase.client.metaReplicaCallTimeout.scan from primary meta region.
   @Test
   public void testGetRegionLocationFromPrimaryMetaRegion() throws IOException, InterruptedException {
-    HTU.getAdmin().setBalancerRunning(false, true);
+    HTU.getAdmin().balancerSwitch(false, true);
 
     ((ConnectionImplementation) HTU.getAdmin().getConnection()).setUseMetaReplicas(true);
 
@@ -690,7 +690,7 @@ public class TestReplicaWithCluster {
     } finally {
       RegionServerHostingPrimayMetaRegionSlowOrStopCopro.slowDownPrimaryMetaScan = false;
       ((ConnectionImplementation) HTU.getAdmin().getConnection()).setUseMetaReplicas(false);
-      HTU.getAdmin().setBalancerRunning(true, true);
+      HTU.getAdmin().balancerSwitch(true, true);
       HTU.getAdmin().disableTable(hdt.getTableName());
       HTU.deleteTable(hdt.getTableName());
     }
@@ -703,7 +703,7 @@ public class TestReplicaWithCluster {
   // with the primary meta region.
   @Test
   public void testReplicaGetWithPrimaryAndMetaDown() throws IOException, InterruptedException {
-    HTU.getAdmin().setBalancerRunning(false, true);
+    HTU.getAdmin().balancerSwitch(false, true);
 
     ((ConnectionImplementation)HTU.getAdmin().getConnection()).setUseMetaReplicas(true);
 
@@ -789,7 +789,7 @@ public class TestReplicaWithCluster {
     } finally {
       ((ConnectionImplementation)HTU.getAdmin().getConnection()).setUseMetaReplicas(false);
       RegionServerHostingPrimayMetaRegionSlowOrStopCopro.throwException = false;
-      HTU.getAdmin().setBalancerRunning(true, true);
+      HTU.getAdmin().balancerSwitch(true, true);
       HTU.getAdmin().disableTable(hdt.getTableName());
       HTU.deleteTable(hdt.getTableName());
     }

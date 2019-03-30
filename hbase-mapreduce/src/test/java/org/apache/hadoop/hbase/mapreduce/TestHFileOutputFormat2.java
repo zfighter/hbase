@@ -24,12 +24,15 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.verify;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -59,6 +62,7 @@ import org.apache.hadoop.hbase.HadoopShims;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.PerformanceEvaluation;
 import org.apache.hadoop.hbase.PrivateCellUtil;
+import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.TagType;
@@ -100,6 +104,9 @@ import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.partition.TotalOrderPartitioner;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.junit.Assert;
 import org.junit.ClassRule;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -606,7 +613,9 @@ public class TestHFileOutputFormat2  {
     for (int i = 0; i < hostCount; ++i) {
       hostnames[i] = "datanode_" + i;
     }
-    util.startMiniCluster(1, hostCount, hostnames);
+    StartMiniClusterOption option = StartMiniClusterOption.builder()
+        .numRegionServers(hostCount).dataNodeHosts(hostnames).build();
+    util.startMiniCluster(option);
 
     Map<String, Table> allTables = new HashMap<>(tableStr.size());
     List<HFileOutputFormat2.TableInfo> tableInfo = new ArrayList<>(tableStr.size());
@@ -627,15 +636,19 @@ public class TestHFileOutputFormat2  {
     Path testDir = util.getDataTestDirOnTestFS("testLocalMRIncrementalLoad");
     // Generate the bulk load files
     runIncrementalPELoad(conf, tableInfo, testDir, putSortReducer);
+    if (writeMultipleTables) {
+      testDir = new Path(testDir, "default");
+    }
 
     for (Table tableSingle : allTables.values()) {
       // This doesn't write into the table, just makes files
       assertEquals("HFOF should not touch actual table", 0, util.countRows(tableSingle));
     }
     int numTableDirs = 0;
-    for (FileStatus tf : testDir.getFileSystem(conf).listStatus(testDir)) {
+    FileStatus[] fss =
+        testDir.getFileSystem(conf).listStatus(testDir);
+    for (FileStatus tf: fss) {
       Path tablePath = testDir;
-
       if (writeMultipleTables) {
         if (allTables.containsKey(tf.getPath().getName())) {
           ++numTableDirs;
@@ -648,7 +661,8 @@ public class TestHFileOutputFormat2  {
 
       // Make sure that a directory was created for every CF
       int dir = 0;
-      for (FileStatus f : tablePath.getFileSystem(conf).listStatus(tablePath)) {
+      fss = tablePath.getFileSystem(conf).listStatus(tablePath);
+      for (FileStatus f: fss) {
         for (byte[] family : FAMILIES) {
           if (Bytes.toString(family).equals(f.getPath().getName())) {
             ++dir;
@@ -686,8 +700,8 @@ public class TestHFileOutputFormat2  {
       // Perform the actual load
       for (HFileOutputFormat2.TableInfo singleTableInfo : tableInfo) {
         Path tableDir = testDir;
-        String tableNameStr = singleTableInfo.getHTableDescriptor().getNameAsString();
-        LOG.info("Running LoadIncrementalHFiles on table" + tableNameStr);
+        String tableNameStr = singleTableInfo.getTableDescriptor().getTableName().getNameAsString();
+        LOG.info("Running BulkLoadHFiles on table" + tableNameStr);
         if (writeMultipleTables) {
           tableDir = new Path(testDir, tableNameStr);
         }
@@ -1223,7 +1237,7 @@ public class TestHFileOutputFormat2  {
       // deep inspection: get the StoreFile dir
       final Path storePath = new Path(
         FSUtils.getTableDir(FSUtils.getRootDir(conf), TABLE_NAMES[0]),
-          new Path(admin.getTableRegions(TABLE_NAMES[0]).get(0).getEncodedName(),
+          new Path(admin.getRegions(TABLE_NAMES[0]).get(0).getEncodedName(),
             Bytes.toString(FAMILIES[0])));
       assertEquals(0, fs.listStatus(storePath).length);
 
@@ -1304,7 +1318,7 @@ public class TestHFileOutputFormat2  {
       // deep inspection: get the StoreFile dir
       final Path storePath = new Path(
         FSUtils.getTableDir(FSUtils.getRootDir(conf), TABLE_NAMES[0]),
-          new Path(admin.getTableRegions(TABLE_NAMES[0]).get(0).getEncodedName(),
+          new Path(admin.getRegions(TABLE_NAMES[0]).get(0).getEncodedName(),
             Bytes.toString(FAMILIES[0])));
       assertEquals(0, fs.listStatus(storePath).length);
 
@@ -1397,8 +1411,10 @@ public class TestHFileOutputFormat2  {
           Admin admin = c.getAdmin();
           RegionLocator regionLocator = c.getRegionLocator(tname)) {
         Path outDir = new Path("incremental-out");
-        runIncrementalPELoad(conf, Arrays.asList(new HFileOutputFormat2.TableInfo(admin
-                .getTableDescriptor(tname), regionLocator)), outDir, false);
+        runIncrementalPELoad(conf,
+          Arrays
+            .asList(new HFileOutputFormat2.TableInfo(admin.getDescriptor(tname), regionLocator)),
+          outDir, false);
       }
     } else {
       throw new RuntimeException(
@@ -1489,5 +1505,96 @@ public class TestHFileOutputFormat2  {
 
     return null;
   }
+
+  @Test
+  public void TestConfigurePartitioner() throws IOException {
+    Configuration conf = util.getConfiguration();
+    // Create a user who is not the current user
+    String fooUserName = "foo1234";
+    String fooGroupName = "group1";
+    UserGroupInformation
+        ugi = UserGroupInformation.createUserForTesting(fooUserName, new String[]{fooGroupName});
+    // Get user's home directory
+    Path fooHomeDirectory = ugi.doAs(new PrivilegedAction<Path>() {
+      @Override public Path run() {
+        try (FileSystem fs = FileSystem.get(conf)) {
+          return fs.makeQualified(fs.getHomeDirectory());
+        } catch (IOException ioe) {
+          LOG.error("Failed to get foo's home directory", ioe);
+        }
+        return null;
+      }
+    });
+
+    Job job = Mockito.mock(Job.class);
+    Mockito.doReturn(conf).when(job).getConfiguration();
+    ImmutableBytesWritable writable = new ImmutableBytesWritable();
+    List<ImmutableBytesWritable> splitPoints = new LinkedList<ImmutableBytesWritable>();
+    splitPoints.add(writable);
+
+    ugi.doAs(new PrivilegedAction<Void>() {
+      @Override public Void run() {
+        try {
+          HFileOutputFormat2.configurePartitioner(job, splitPoints, false);
+        } catch (IOException ioe) {
+          LOG.error("Failed to configure partitioner", ioe);
+        }
+        return null;
+      }
+    });
+    FileSystem fs = FileSystem.get(conf);
+    // verify that the job uses TotalOrderPartitioner
+    verify(job).setPartitionerClass(TotalOrderPartitioner.class);
+    // verify that TotalOrderPartitioner.setPartitionFile() is called.
+    String partitionPathString = conf.get("mapreduce.totalorderpartitioner.path");
+    Assert.assertNotNull(partitionPathString);
+    // Make sure the partion file is in foo1234's home directory, and that
+    // the file exists.
+    Assert.assertTrue(partitionPathString.startsWith(fooHomeDirectory.toString()));
+    Assert.assertTrue(fs.exists(new Path(partitionPathString)));
+  }
+
+  @Test
+  public void TestConfigureCompression() throws Exception {
+    Configuration conf = new Configuration(this.util.getConfiguration());
+    RecordWriter<ImmutableBytesWritable, Cell> writer = null;
+    TaskAttemptContext context = null;
+    Path dir = util.getDataTestDir("TestConfigureCompression");
+    String hfileoutputformatCompression = "gz";
+
+    try {
+      conf.set(HFileOutputFormat2.OUTPUT_TABLE_NAME_CONF_KEY, TABLE_NAMES[0].getNameAsString());
+      conf.setBoolean(HFileOutputFormat2.LOCALITY_SENSITIVE_CONF_KEY, false);
+
+      conf.set(HFileOutputFormat2.COMPRESSION_OVERRIDE_CONF_KEY, hfileoutputformatCompression);
+
+      Job job = Job.getInstance(conf);
+      FileOutputFormat.setOutputPath(job, dir);
+      context = createTestTaskAttemptContext(job);
+      HFileOutputFormat2 hof = new HFileOutputFormat2();
+      writer = hof.getRecordWriter(context);
+      final byte[] b = Bytes.toBytes("b");
+
+      KeyValue kv = new KeyValue(b, b, b, HConstants.LATEST_TIMESTAMP, b);
+      writer.write(new ImmutableBytesWritable(), kv);
+      writer.close(context);
+      writer = null;
+      FileSystem fs = dir.getFileSystem(conf);
+      RemoteIterator<LocatedFileStatus> iterator = fs.listFiles(dir, true);
+      while (iterator.hasNext()) {
+        LocatedFileStatus keyFileStatus = iterator.next();
+        HFile.Reader reader =
+            HFile.createReader(fs, keyFileStatus.getPath(), new CacheConfig(conf), true, conf);
+        assertEquals(reader.getCompressionAlgorithm().getName(), hfileoutputformatCompression);
+      }
+    } finally {
+      if (writer != null && context != null) {
+        writer.close(context);
+      }
+      dir.getFileSystem(conf).delete(dir, true);
+    }
+
+  }
+
 }
 

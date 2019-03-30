@@ -39,6 +39,7 @@ import org.apache.hadoop.hbase.master.locking.LockManager;
 import org.apache.hadoop.hbase.master.normalizer.RegionNormalizer;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
 import org.apache.hadoop.hbase.master.replication.ReplicationPeerManager;
+import org.apache.hadoop.hbase.master.replication.SyncReplicationReplayWALManager;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.procedure.MasterProcedureManagerHost;
 import org.apache.hadoop.hbase.procedure2.LockedResource;
@@ -49,6 +50,7 @@ import org.apache.hadoop.hbase.quotas.MasterQuotaManager;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
@@ -321,11 +323,6 @@ public interface MasterServices extends Server {
   TableDescriptors getTableDescriptors();
 
   /**
-   * @return true if master enables ServerShutdownHandler;
-   */
-  boolean isServerCrashProcessingEnabled();
-
-  /**
    * Registers a new protocol buffer {@link Service} subclass as a master coprocessor endpoint.
    *
    * <p>
@@ -352,6 +349,7 @@ public interface MasterServices extends Server {
 
   /**
    * @return true if master is in maintanceMode
+   * @throws IOException if the inquiry failed due to an IO problem
    */
   boolean isInMaintenanceMode();
 
@@ -464,6 +462,11 @@ public interface MasterServices extends Server {
   ReplicationPeerManager getReplicationPeerManager();
 
   /**
+   * Returns the {@link SyncReplicationReplayWALManager}.
+   */
+  SyncReplicationReplayWALManager getSyncReplicationReplayWALManager();
+
+  /**
    * Update the peerConfig for the specified peer
    * @param peerId a short name that identifies the peer
    * @param peerConfig new config for the peer
@@ -480,20 +483,38 @@ public interface MasterServices extends Server {
       IOException;
 
   /**
+   * Set current cluster state for a synchronous replication peer.
+   * @param peerId a short name that identifies the peer
+   * @param clusterState state of current cluster
+   */
+  long transitReplicationPeerSyncReplicationState(String peerId, SyncReplicationState clusterState)
+      throws ReplicationException, IOException;
+
+  /**
    * @return {@link LockManager} to lock namespaces/tables/regions.
    */
   LockManager getLockManager();
 
   public String getRegionServerVersion(final ServerName sn);
 
+  /**
+   * Called when a new RegionServer is added to the cluster.
+   * Checks if new server has a newer version than any existing server and will move system tables
+   * there if so.
+   */
   public void checkIfShouldMoveSystemRegionAsync();
 
-  /**
-   * Recover meta table. Will result in no-op is meta is already initialized. Any code that has
-   * access to master and requires to access meta during process initialization can call this
-   * method to make sure meta is initialized.
-   */
-  boolean recoverMeta() throws IOException;
-
   String getClientIdAuditPrefix();
+
+  /**
+   * @return True if cluster is up; false if cluster is not up (we are shutting down).
+   */
+  boolean isClusterUp();
+
+  /**
+   * @return return null if current is zk-based WAL splitting
+   */
+  default SplitWALManager getSplitWALManager(){
+    return null;
+  }
 }

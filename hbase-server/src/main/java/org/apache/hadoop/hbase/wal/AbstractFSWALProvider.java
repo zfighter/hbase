@@ -24,6 +24,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.conf.Configuration;
@@ -43,6 +46,7 @@ import org.apache.hadoop.hbase.util.CancelableProgressable;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.LeaseNotRecoveredException;
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Base class of a WAL Provider that returns a single thread safe WAL that writes to Hadoop FS. By
@@ -76,35 +80,33 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
   }
 
   protected volatile T wal;
-  protected WALFactory factory = null;
-  protected Configuration conf = null;
-  protected List<WALActionsListener> listeners = null;
-  protected String providerId = null;
+  protected WALFactory factory;
+  protected Configuration conf;
+  protected List<WALActionsListener> listeners = new ArrayList<>();
+  protected String providerId;
   protected AtomicBoolean initialized = new AtomicBoolean(false);
   // for default wal provider, logPrefix won't change
-  protected String logPrefix = null;
+  protected String logPrefix;
 
   /**
-   * we synchronized on walCreateLock to prevent wal recreation in different threads
+   * We use walCreateLock to prevent wal recreation in different threads, and also prevent getWALs
+   * missing the newly created WAL, see HBASE-21503 for more details.
    */
-  private final Object walCreateLock = new Object();
+  private final ReadWriteLock walCreateLock = new ReentrantReadWriteLock();
 
   /**
    * @param factory factory that made us, identity used for FS layout. may not be null
    * @param conf may not be null
-   * @param listeners may be null
    * @param providerId differentiate between providers from one factory, used for FS layout. may be
    *          null
    */
   @Override
-  public void init(WALFactory factory, Configuration conf, List<WALActionsListener> listeners,
-      String providerId) throws IOException {
+  public void init(WALFactory factory, Configuration conf, String providerId) throws IOException {
     if (!initialized.compareAndSet(false, true)) {
       throw new IllegalStateException("WALProvider.init should only be called once.");
     }
     this.factory = factory;
     this.conf = conf;
-    this.listeners = listeners;
     this.providerId = providerId;
     // get log prefix
     StringBuilder sb = new StringBuilder().append(factory.factoryId);
@@ -121,29 +123,48 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
 
   @Override
   public List<WAL> getWALs() {
-    if (wal == null) {
-      return Collections.emptyList();
+    if (wal != null) {
+      return Lists.newArrayList(wal);
     }
-    List<WAL> wals = new ArrayList<>(1);
-    wals.add(wal);
-    return wals;
+    walCreateLock.readLock().lock();
+    try {
+      if (wal == null) {
+        return Collections.emptyList();
+      } else {
+        return Lists.newArrayList(wal);
+      }
+    } finally {
+      walCreateLock.readLock().unlock();
+    }
   }
 
   @Override
   public T getWAL(RegionInfo region) throws IOException {
     T walCopy = wal;
-    if (walCopy == null) {
-      // only lock when need to create wal, and need to lock since
-      // creating hlog on fs is time consuming
-      synchronized (walCreateLock) {
-        walCopy = wal;
-        if (walCopy == null) {
-          walCopy = createWAL();
-          wal = walCopy;
+    if (walCopy != null) {
+      return walCopy;
+    }
+    walCreateLock.writeLock().lock();
+    try {
+      walCopy = wal;
+      if (walCopy != null) {
+        return walCopy;
+      }
+      walCopy = createWAL();
+      boolean succ = false;
+      try {
+        walCopy.init();
+        succ = true;
+      } finally {
+        if (!succ) {
+          walCopy.close();
         }
       }
+      wal = walCopy;
+      return walCopy;
+    } finally {
+      walCreateLock.writeLock().unlock();
     }
-    return walCopy;
   }
 
   protected abstract T createWAL() throws IOException;
@@ -241,31 +262,35 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
     if (walName == null) {
       throw new IllegalArgumentException("The WAL path couldn't be null");
     }
-    final String[] walPathStrs = walName.toString().split("\\" + WAL_FILE_NAME_DELIMITER);
-    return Long.parseLong(walPathStrs[walPathStrs.length - (isMetaFile(walName) ? 2 : 1)]);
+    Matcher matcher = WAL_FILE_NAME_PATTERN.matcher(walName.getName());
+    if (matcher.matches()) {
+      return Long.parseLong(matcher.group(2));
+    } else {
+      throw new IllegalArgumentException(walName.getName() + " is not a valid wal file name");
+    }
   }
 
   /**
    * Pattern used to validate a WAL file name see {@link #validateWALFilename(String)} for
    * description.
    */
-  private static final Pattern pattern = Pattern
-      .compile(".*\\.\\d*(" + META_WAL_PROVIDER_ID + ")*");
+  private static final Pattern WAL_FILE_NAME_PATTERN =
+    Pattern.compile("(.+)\\.(\\d+)(\\.[0-9A-Za-z]+)?");
 
   /**
    * A WAL file name is of the format: &lt;wal-name&gt;{@link #WAL_FILE_NAME_DELIMITER}
-   * &lt;file-creation-timestamp&gt;[.meta]. provider-name is usually made up of a server-name and a
-   * provider-id
+   * &lt;file-creation-timestamp&gt;[.&lt;suffix&gt;]. provider-name is usually made up of a
+   * server-name and a provider-id
    * @param filename name of the file to validate
    * @return <tt>true</tt> if the filename matches an WAL, <tt>false</tt> otherwise
    */
   public static boolean validateWALFilename(String filename) {
-    return pattern.matcher(filename).matches();
+    return WAL_FILE_NAME_PATTERN.matcher(filename).matches();
   }
 
   /**
-   * Construct the directory name for all WALs on a given server. Dir names currently look like
-   * this for WALs: <code>hbase//WALs/kalashnikov.att.net,61634,1486865297088</code>.
+   * Construct the directory name for all WALs on a given server. Dir names currently look like this
+   * for WALs: <code>hbase//WALs/kalashnikov.att.net,61634,1486865297088</code>.
    * @param serverName Server name formatted as described in {@link ServerName}
    * @return the relative WAL directory name, e.g. <code>.logs/1.example.org,60030,12345</code> if
    *         <code>serverName</code> passed is <code>1.example.org,60030,12345</code>
@@ -278,9 +303,9 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
   }
 
   /**
-   * Construct the directory name for all old WALs on a given server. The default old WALs dir
-   * looks like: <code>hbase/oldWALs</code>. If you config hbase.separate.oldlogdir.by.regionserver
-   * to true, it looks like <code>hbase//oldWALs/kalashnikov.att.net,61634,1486865297088</code>.
+   * Construct the directory name for all old WALs on a given server. The default old WALs dir looks
+   * like: <code>hbase/oldWALs</code>. If you config hbase.separate.oldlogdir.by.regionserver to
+   * true, it looks like <code>hbase//oldWALs/kalashnikov.att.net,61634,1486865297088</code>.
    * @param conf
    * @param serverName Server name formatted as described in {@link ServerName}
    * @return the relative WAL directory name
@@ -372,7 +397,7 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
     }
     try {
       serverName = ServerName.parseServerName(logDirName);
-    } catch (IllegalArgumentException|IllegalStateException ex) {
+    } catch (IllegalArgumentException | IllegalStateException ex) {
       serverName = null;
       LOG.warn("Cannot parse a server name from path=" + logFile + "; " + ex.getMessage());
     }
@@ -430,16 +455,14 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
   }
 
   /**
-   * Opens WAL reader with retries and
-   * additional exception handling
+   * Opens WAL reader with retries and additional exception handling
    * @param path path to WAL file
    * @param conf configuration
    * @return WAL Reader instance
    * @throws IOException
    */
-  public static org.apache.hadoop.hbase.wal.WAL.Reader
-    openReader(Path path, Configuration conf)
-        throws IOException
+  public static org.apache.hadoop.hbase.wal.WAL.Reader openReader(Path path, Configuration conf)
+      throws IOException
 
   {
     long retryInterval = 2000; // 2 sec
@@ -503,16 +526,32 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
     }
   }
 
+  @Override
+  public void addWALActionsListener(WALActionsListener listener) {
+    listeners.add(listener);
+  }
 
+  private static String getWALNameGroupFromWALName(String name, int group) {
+    Matcher matcher = WAL_FILE_NAME_PATTERN.matcher(name);
+    if (matcher.matches()) {
+      return matcher.group(group);
+    } else {
+      throw new IllegalArgumentException(name + " is not a valid wal file name");
+    }
+  }
   /**
    * Get prefix of the log from its name, assuming WAL name in format of
    * log_prefix.filenumber.log_suffix
    * @param name Name of the WAL to parse
    * @return prefix of the log
+   * @throws IllegalArgumentException if the name passed in is not a valid wal file name
    * @see AbstractFSWAL#getCurrentFileName()
    */
   public static String getWALPrefixFromWALName(String name) {
-    int endIndex = name.replaceAll(META_WAL_PROVIDER_ID, "").lastIndexOf(".");
-    return name.substring(0, endIndex);
+    return getWALNameGroupFromWALName(name, 1);
+  }
+
+  public static long getWALStartTimeFromWALName(String name) {
+    return Long.parseLong(getWALNameGroupFromWALName(name, 2));
   }
 }

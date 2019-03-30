@@ -17,12 +17,14 @@
  */
 package org.apache.hadoop.hbase.client;
 
-import org.apache.hbase.thirdparty.io.netty.util.HashedWheelTimer;
+import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
 import java.util.concurrent.CompletableFuture;
-
-import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.hbase.ipc.HBaseRpcController;
+import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.io.netty.util.Timer;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.MasterService;
 
 /**
@@ -39,24 +41,24 @@ public class AsyncMasterRequestRpcRetryingCaller<T> extends AsyncRpcRetryingCall
 
   private final Callable<T> callable;
 
-  public AsyncMasterRequestRpcRetryingCaller(HashedWheelTimer retryTimer, AsyncConnectionImpl conn,
-      Callable<T> callable, long pauseNs, int maxRetries, long operationTimeoutNs,
+  public AsyncMasterRequestRpcRetryingCaller(Timer retryTimer, AsyncConnectionImpl conn,
+      Callable<T> callable, int priority, long pauseNs, int maxRetries, long operationTimeoutNs,
       long rpcTimeoutNs, int startLogErrorsCnt) {
-    super(retryTimer, conn, pauseNs, maxRetries, operationTimeoutNs, rpcTimeoutNs,
-        startLogErrorsCnt);
+    super(retryTimer, conn, priority, pauseNs, maxRetries, operationTimeoutNs, rpcTimeoutNs,
+      startLogErrorsCnt);
     this.callable = callable;
   }
 
   @Override
   protected void doCall() {
-    conn.getMasterStub().whenComplete((stub, error) -> {
+    addListener(conn.getMasterStub(), (stub, error) -> {
       if (error != null) {
         onError(error, () -> "Get async master stub failed", err -> {
         });
         return;
       }
       resetCallTimeout();
-      callable.call(controller, stub).whenComplete((result, error2) -> {
+      addListener(callable.call(controller, stub), (result, error2) -> {
         if (error2 != null) {
           onError(error2, () -> "Call to master failed", err -> {
           });
@@ -65,11 +67,5 @@ public class AsyncMasterRequestRpcRetryingCaller<T> extends AsyncRpcRetryingCall
         future.complete(result);
       });
     });
-  }
-
-  @Override
-  public CompletableFuture<T> call() {
-    doCall();
-    return future;
   }
 }

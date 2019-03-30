@@ -25,9 +25,9 @@ import java.util.Random;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
@@ -88,13 +88,13 @@ public class TestProcedureAdmin {
   public void tearDown() throws Exception {
     assertTrue("expected executor to be running", getMasterProcedureExecutor().isRunning());
     ProcedureTestingUtility.setKillAndToggleBeforeStoreUpdate(getMasterProcedureExecutor(), false);
-    for (HTableDescriptor htd: UTIL.getAdmin().listTables()) {
+    for (TableDescriptor htd: UTIL.getAdmin().listTableDescriptors()) {
       LOG.info("Tear down, remove table=" + htd.getTableName());
       UTIL.deleteTable(htd.getTableName());
     }
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testAbortProcedureSuccess() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -119,7 +119,7 @@ public class TestProcedureAdmin {
       tableName);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testAbortProcedureFailure() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -151,7 +151,7 @@ public class TestProcedureAdmin {
       UTIL.getHBaseCluster().getMaster(), tableName);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testAbortProcedureInterruptedNotAllowed() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -179,7 +179,7 @@ public class TestProcedureAdmin {
       UTIL.getHBaseCluster().getMaster(), tableName);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testAbortNonExistProcedure() throws Exception {
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
     Random randomGenerator = new Random();
@@ -193,7 +193,7 @@ public class TestProcedureAdmin {
     assertFalse(abortResult);
   }
 
-  @Test(timeout=60000)
+  @Test
   public void testGetProcedure() throws Exception {
     final TableName tableName = TableName.valueOf(name.getMethodName());
     final ProcedureExecutor<MasterProcedureEnv> procExec = getMasterProcedureExecutor();
@@ -207,7 +207,7 @@ public class TestProcedureAdmin {
     // Wait for one step to complete
     ProcedureTestingUtility.waitProcedure(procExec, procId);
 
-    List<Procedure<?>> procedures = procExec.getProcedures();
+    List<Procedure<MasterProcedureEnv>> procedures = procExec.getProcedures();
     assertTrue(procedures.size() >= 1);
     boolean found = false;
     for (Procedure<?> proc: procedures) {

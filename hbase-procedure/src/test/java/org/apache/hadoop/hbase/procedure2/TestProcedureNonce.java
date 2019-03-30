@@ -72,10 +72,10 @@ public class TestProcedureNonce {
     logDir = new Path(testDir, "proc-logs");
     procEnv = new TestProcEnv();
     procStore = ProcedureTestingUtility.createStore(htu.getConfiguration(), logDir);
-    procExecutor = new ProcedureExecutor(htu.getConfiguration(), procEnv, procStore);
+    procExecutor = new ProcedureExecutor<>(htu.getConfiguration(), procEnv, procStore);
     procExecutor.testing = new ProcedureExecutor.Testing();
     procStore.start(PROCEDURE_EXECUTOR_SLOTS);
-    procExecutor.start(PROCEDURE_EXECUTOR_SLOTS, true);
+    ProcedureTestingUtility.initAndStartWorkers(procExecutor, PROCEDURE_EXECUTOR_SLOTS, true);
   }
 
   @After
@@ -85,7 +85,7 @@ public class TestProcedureNonce {
     fs.delete(logDir, true);
   }
 
-  @Test(timeout=30000)
+  @Test
   public void testCompletedProcWithSameNonce() throws Exception {
     final long nonceGroup = 123;
     final long nonce = 2222;
@@ -111,7 +111,7 @@ public class TestProcedureNonce {
     ProcedureTestingUtility.assertProcNotFailed(result);
   }
 
-  @Test(timeout=30000)
+  @Test
   public void testRunningProcWithSameNonce() throws Exception {
     final long nonceGroup = 456;
     final long nonce = 33333;
@@ -163,12 +163,12 @@ public class TestProcedureNonce {
     ProcedureTestingUtility.assertProcFailed(result);
   }
 
-  @Test(timeout=30000)
+  @Test
   public void testConcurrentNonceRegistration() throws IOException {
     testConcurrentNonceRegistration(true, 567, 44444);
   }
 
-  @Test(timeout=30000)
+  @Test
   public void testConcurrentNonceRegistrationWithRollback() throws IOException {
     testConcurrentNonceRegistration(false, 890, 55555);
   }

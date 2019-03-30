@@ -34,6 +34,7 @@ import java.util.Random;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.zookeeper.server.NIOServerCnxnFactory;
 import org.apache.zookeeper.server.ZooKeeperServer;
@@ -54,6 +55,7 @@ public class MiniZooKeeperCluster {
 
   private static final int TICK_TIME = 2000;
   private static final int DEFAULT_CONNECTION_TIMEOUT = 30000;
+  private static final byte[] STATIC_BYTES = Bytes.toBytes("stat");
   private int connectionTimeout;
 
   private boolean started;
@@ -176,6 +178,8 @@ public class MiniZooKeeperCluster {
     // set env and directly in order to handle static init/gc issues
     System.setProperty("zookeeper.preAllocSize", "100");
     FileTxnLog.setPreallocSize(100 * 1024);
+    // allow all 4 letter words
+    System.setProperty("zookeeper.4lw.commands.whitelist","*");
   }
 
   public int startup(File baseDir) throws IOException, InterruptedException {
@@ -238,7 +242,7 @@ public class MiniZooKeeperCluster {
           standaloneServerFactory.configure(
             new InetSocketAddress(currentClientPort),
             configuration.getInt(HConstants.ZOOKEEPER_MAX_CLIENT_CNXNS,
-                    HConstants.DEFAULT_ZOOKEPER_MAX_CLIENT_CNXNS));
+                    HConstants.DEFAULT_ZOOKEEPER_MAX_CLIENT_CNXNS));
         } catch (BindException e) {
           LOG.debug("Failed binding ZK Server to client port: " +
               currentClientPort, e);
@@ -404,7 +408,7 @@ public class MiniZooKeeperCluster {
         Socket sock = new Socket("localhost", port);
         try {
           OutputStream outstream = sock.getOutputStream();
-          outstream.write("stat".getBytes());
+          outstream.write(STATIC_BYTES);
           outstream.flush();
         } finally {
           sock.close();
@@ -434,7 +438,7 @@ public class MiniZooKeeperCluster {
         BufferedReader reader = null;
         try {
           OutputStream outstream = sock.getOutputStream();
-          outstream.write("stat".getBytes());
+          outstream.write(STATIC_BYTES);
           outstream.flush();
 
           Reader isr = new InputStreamReader(sock.getInputStream());
