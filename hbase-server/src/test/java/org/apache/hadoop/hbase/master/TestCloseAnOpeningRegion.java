@@ -35,7 +35,6 @@ import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.zookeeper.KeeperException;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -65,7 +64,7 @@ public class TestCloseAnOpeningRegion {
 
   public static final class MockHMaster extends HMaster {
 
-    public MockHMaster(Configuration conf) throws IOException, KeeperException {
+    public MockHMaster(Configuration conf) throws IOException {
       super(conf);
     }
 
@@ -115,8 +114,7 @@ public class TestCloseAnOpeningRegion {
     HRegionServer dst = UTIL.getOtherRegionServer(src);
     Thread move0 = new Thread(() -> {
       try {
-        UTIL.getAdmin().move(region.getEncodedNameAsBytes(),
-          Bytes.toBytes(dst.getServerName().getServerName()));
+        UTIL.getAdmin().move(region.getEncodedNameAsBytes(), dst.getServerName());
       } catch (IOException e) {
         throw new UncheckedIOException(e);
       }
@@ -125,8 +123,7 @@ public class TestCloseAnOpeningRegion {
     ARRIVE.await();
     Thread move1 = new Thread(() -> {
       try {
-        UTIL.getAdmin().move(region.getEncodedNameAsBytes(),
-          Bytes.toBytes(src.getServerName().getServerName()));
+        UTIL.getAdmin().move(region.getEncodedNameAsBytes(), src.getServerName());
       } catch (IOException e) {
         throw new UncheckedIOException(e);
       }

@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.procedure2;
 
 import java.io.IOException;
@@ -33,8 +32,6 @@ import org.apache.hadoop.hbase.util.NonceKey;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ProcedureProtos.ProcedureState;
 
@@ -209,11 +206,12 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
    * of the execution.
    * @param env the environment passed to the ProcedureExecutor
    * @return a set of sub-procedures to run or ourselves if there is more work to do or null if the
-   * procedure is done.
-   * @throws ProcedureYieldException the procedure will be added back to the queue and retried later.
+   *         procedure is done.
+   * @throws ProcedureYieldException the procedure will be added back to the queue and retried
+   *         later.
    * @throws InterruptedException the procedure will be added back to the queue and retried later.
-   * @throws ProcedureSuspendedException Signal to the executor that Procedure has suspended itself and
-   * has set itself up waiting for an external event to wake it back up again.
+   * @throws ProcedureSuspendedException Signal to the executor that Procedure has suspended itself
+   *         and has set itself up waiting for an external event to wake it back up again.
    */
   protected abstract Procedure<TEnvironment>[] execute(TEnvironment env)
     throws ProcedureYieldException, ProcedureSuspendedException, InterruptedException;
@@ -468,7 +466,7 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
       sb.append(getParentProcId());
     }
 
-    /**
+    /*
      * TODO
      * Enable later when this is being used.
      * Currently owner not used.
@@ -588,7 +586,6 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
   /**
    * Called by the ProcedureExecutor to assign the ID to the newly created procedure.
    */
-  @VisibleForTesting
   protected void setProcId(long procId) {
     this.procId = procId;
     this.submittedTime = EnvironmentEdgeManager.currentTime();
@@ -609,12 +606,10 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
   /**
    * Called by the ProcedureExecutor to set the value to the newly created procedure.
    */
-  @VisibleForTesting
   protected void setNonceKey(NonceKey nonceKey) {
     this.nonceKey = nonceKey;
   }
 
-  @VisibleForTesting
   public void setOwner(String owner) {
     this.owner = StringUtils.isEmpty(owner) ? null : owner;
   }
@@ -710,7 +705,7 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
   /**
    * Will only be called when loading procedures from procedure store, where we need to record
    * whether the procedure has already held a lock. Later we will call
-   * {@link #restoreLock(Object, ProcedureStore)} to actually acquire the lock.
+   * {@link #restoreLock(Object)} to actually acquire the lock.
    */
   final void lockedWhenLoading() {
     this.lockedWhenLoading = true;
@@ -764,7 +759,7 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
 
   /**
    * @return true if the procedure is finished. The Procedure may be completed successfully or
-   * rolledback.
+   *         rolledback.
    */
   public synchronized boolean isFinished() {
     return isSuccess() || state == ProcedureState.ROLLEDBACK;
@@ -784,7 +779,6 @@ public abstract class Procedure<TEnvironment> implements Comparable<Procedure<TE
     return false;
   }
 
-  @VisibleForTesting
   protected synchronized void setState(final ProcedureState state) {
     this.state = state;
     updateTimestamp();

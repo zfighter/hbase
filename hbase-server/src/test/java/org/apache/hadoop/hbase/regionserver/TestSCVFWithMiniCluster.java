@@ -23,22 +23,23 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableExistsException;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.BinaryComparator;
-import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm;
@@ -122,7 +123,7 @@ public class TestSCVFWithMiniCluster {
      * We want to filter out from the scan all rows that do not have the column 'a:foo' with value
      * 'false'. Only row with key '1' should be returned in the scan.
      */
-    scanFilter = new SingleColumnValueFilter(FAMILY_A, QUALIFIER_FOO, CompareOp.EQUAL,
+    scanFilter = new SingleColumnValueFilter(FAMILY_A, QUALIFIER_FOO, CompareOperator.EQUAL,
       new BinaryComparator(Bytes.toBytes("false")));
     ((SingleColumnValueFilter) scanFilter).setFilterIfMissing(true);
   }
@@ -221,16 +222,15 @@ public class TestSCVFWithMiniCluster {
   }
 
   private static void create(Admin admin, TableName tableName, byte[]... families)
-      throws IOException {
-    HTableDescriptor desc = new HTableDescriptor(tableName);
+    throws IOException {
+    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
     for (byte[] family : families) {
-      HColumnDescriptor colDesc = new HColumnDescriptor(family);
-      colDesc.setMaxVersions(1);
-      colDesc.setCompressionType(Algorithm.GZ);
-      desc.addFamily(colDesc);
+      ColumnFamilyDescriptor familyDescriptor = ColumnFamilyDescriptorBuilder.newBuilder(family)
+        .setMaxVersions(1).setCompressionType(Algorithm.GZ).build();
+      builder.setColumnFamily(familyDescriptor);
     }
     try {
-      admin.createTable(desc);
+      admin.createTable(builder.build());
     } catch (TableExistsException tee) {
       /* Ignore */
     }

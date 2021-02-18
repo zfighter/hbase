@@ -18,6 +18,8 @@
  */
 package org.apache.hadoop.hbase.master.balancer;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -35,7 +37,6 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
-
 import org.apache.commons.lang3.NotImplementedException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ClusterMetrics;
@@ -48,21 +49,22 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionReplicaUtil;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.master.LoadBalancer;
 import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.RackManager;
 import org.apache.hadoop.hbase.master.RegionPlan;
-import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
-import org.apache.hadoop.hbase.master.assignment.RegionStates;
 import org.apache.hadoop.hbase.master.balancer.BaseLoadBalancer.Cluster.Action.Type;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.hbase.namequeues.NamedQueueRecorder;
+import org.apache.hadoop.hbase.net.Address;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 import org.apache.hbase.thirdparty.com.google.common.collect.ArrayListMultimap;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * The base class for load balancers. It provides the the functions used to by
@@ -73,6 +75,11 @@ import org.slf4j.LoggerFactory;
  */
 @InterfaceAudience.Private
 public abstract class BaseLoadBalancer implements LoadBalancer {
+
+  public static final String BALANCER_DECISION_BUFFER_ENABLED =
+    "hbase.master.balancer.decision.buffer.enabled";
+  public static final boolean DEFAULT_BALANCER_DECISION_BUFFER_ENABLED = false;
+
   protected static final int MIN_SERVER_BALANCE = 2;
   private volatile boolean stopped = false;
 
@@ -83,6 +90,12 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
 
   protected RegionLocationFinder regionFinder;
   protected boolean useRegionFinder;
+  protected boolean isByTable = false;
+
+  /**
+   * Use to add balancer decision history to ring-buffer
+   */
+  protected NamedQueueRecorder namedQueueRecorder;
 
   private static class DefaultRackManager extends RackManager {
     @Override
@@ -142,6 +155,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     int[]   serverIndexToRackIndex;      //serverIndex -> rack index
 
     int[][] regionsPerServer;            //serverIndex -> region list
+    int[]   serverIndexToRegionsOffset;  //serverIndex -> offset of region list
     int[][] regionsPerHost;              //hostIndex -> list of regions
     int[][] regionsPerRack;              //rackIndex -> region list
     int[][] primariesOfRegionsPerServer; //serverIndex -> sorted list of regions by primary region index
@@ -161,7 +175,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     Integer[] serverIndicesSortedByRegionCount;
     Integer[] serverIndicesSortedByLocality;
 
-    Map<String, Integer> serversToIndex;
+    Map<Address, Integer> serversToIndex;
     Map<String, Integer> hostsToIndex;
     Map<String, Integer> racksToIndex;
     Map<String, Integer> tablesToIndex;
@@ -230,15 +244,15 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
           }
           continue;
         }
-        if (serversToIndex.get(sn.getAddress().toString()) == null) {
-          serversToIndex.put(sn.getHostAndPort(), numServers++);
+        if (serversToIndex.get(sn.getAddress()) == null) {
+          serversToIndex.put(sn.getAddress(), numServers++);
         }
         if (!hostsToIndex.containsKey(sn.getHostname())) {
           hostsToIndex.put(sn.getHostname(), numHosts++);
           serversPerHostList.add(new ArrayList<>(1));
         }
 
-        int serverIndex = serversToIndex.get(sn.getHostAndPort());
+        int serverIndex = serversToIndex.get(sn.getAddress());
         int hostIndex = hostsToIndex.get(sn.getHostname());
         serversPerHostList.get(hostIndex).add(serverIndex);
 
@@ -276,6 +290,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       serverIndexToHostIndex = new int[numServers];
       serverIndexToRackIndex = new int[numServers];
       regionsPerServer = new int[numServers][];
+      serverIndexToRegionsOffset = new int[numServers];
       regionsPerHost = new int[numHosts][];
       regionsPerRack = new int[numRacks][];
       primariesOfRegionsPerServer = new int[numServers][];
@@ -289,7 +304,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
           LOG.warn("SERVERNAME IS NULL, skipping " + entry.getValue());
           continue;
         }
-        int serverIndex = serversToIndex.get(entry.getKey().getHostAndPort());
+        int serverIndex = serversToIndex.get(entry.getKey().getAddress());
 
         // keep the servername if this is the first server name for this hostname
         // or this servername has the newest startcode.
@@ -320,8 +335,8 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       }
 
       for (Entry<ServerName, List<RegionInfo>> entry : clusterState.entrySet()) {
-        int serverIndex = serversToIndex.get(entry.getKey().getHostAndPort());
-        regionPerServerIndex = 0;
+        int serverIndex = serversToIndex.get(entry.getKey().getAddress());
+        regionPerServerIndex = serverIndexToRegionsOffset[serverIndex];
 
         int hostIndex = hostsToIndex.get(entry.getKey().getHostname());
         serverIndexToHostIndex[serverIndex] = hostIndex;
@@ -334,6 +349,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
           regionsPerServer[serverIndex][regionPerServerIndex++] = regionIndex;
           regionIndex++;
         }
+        serverIndexToRegionsOffset[serverIndex] = regionPerServerIndex;
       }
 
       for (RegionInfo region : unassignedRegions) {
@@ -491,8 +507,8 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
         regionLocations[regionIndex] = new int[loc.size()];
         for (int i = 0; i < loc.size(); i++) {
           regionLocations[regionIndex][i] = loc.get(i) == null ? -1
-              : (serversToIndex.get(loc.get(i).getHostAndPort()) == null ? -1
-                  : serversToIndex.get(loc.get(i).getHostAndPort()));
+              : (serversToIndex.get(loc.get(i).getAddress()) == null ? -1
+                  : serversToIndex.get(loc.get(i).getAddress()));
         }
       }
     }
@@ -737,16 +753,26 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
      * @return true or false
      */
     boolean wouldLowerAvailability(RegionInfo regionInfo, ServerName serverName) {
-      if (!serversToIndex.containsKey(serverName.getHostAndPort())) {
+      if (!serversToIndex.containsKey(serverName.getAddress())) {
         return false; // safeguard against race between cluster.servers and servers from LB method args
       }
-      int server = serversToIndex.get(serverName.getHostAndPort());
+      int server = serversToIndex.get(serverName.getAddress());
       int region = regionsToIndex.get(regionInfo);
 
+      // Region replicas for same region should better assign to different servers
+      for (int i : regionsPerServer[server]) {
+        RegionInfo otherRegionInfo = regions[i];
+        if (RegionReplicaUtil.isReplicasForSameRegion(regionInfo, otherRegionInfo)) {
+          return true;
+        }
+      }
+
       int primary = regionIndexToPrimaryIndex[region];
+      if (primary == -1) {
+        return false;
+      }
       // there is a subset relation for server < host < rack
       // check server first
-
       if (contains(primariesOfRegionsPerServer[server], primary)) {
         // check for whether there are other servers that we can place this region
         for (int i = 0; i < primariesOfRegionsPerServer.length; i++) {
@@ -758,7 +784,8 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       }
 
       // check host
-      if (multiServersPerHost) { // these arrays would only be allocated if we have more than one server per host
+      if (multiServersPerHost) {
+        // these arrays would only be allocated if we have more than one server per host
         int host = serverIndexToHostIndex[server];
         if (contains(primariesOfRegionsPerHost[host], primary)) {
           // check for whether there are other hosts that we can place this region
@@ -784,14 +811,15 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
           return false; // there is not a better rack to place this
         }
       }
+
       return false;
     }
 
     void doAssignRegion(RegionInfo regionInfo, ServerName serverName) {
-      if (!serversToIndex.containsKey(serverName.getHostAndPort())) {
+      if (!serversToIndex.containsKey(serverName.getAddress())) {
         return;
       }
-      int server = serversToIndex.get(serverName.getHostAndPort());
+      int server = serversToIndex.get(serverName.getAddress());
       int region = regionsToIndex.get(regionInfo);
       doAction(new AssignRegionAction(region, server));
     }
@@ -971,12 +999,10 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       }
     }
 
-    @VisibleForTesting
     protected void setNumRegions(int numRegions) {
       this.numRegions = numRegions;
     }
 
-    @VisibleForTesting
     protected void setNumMovedRegions(int numMovedRegions) {
       this.numMovedRegions = numMovedRegions;
     }
@@ -987,7 +1013,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     public String toString() {
       StringBuilder desc = new StringBuilder("Cluster={servers=[");
       for(ServerName sn:servers) {
-        desc.append(sn.getHostAndPort()).append(", ");
+        desc.append(sn.getAddress().toString()).append(", ");
       }
       desc.append("], serverIndicesSortedByRegionCount=")
           .append(Arrays.toString(serverIndicesSortedByRegionCount))
@@ -1013,7 +1039,14 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
   protected ClusterMetrics clusterStatus = null;
   protected ServerName masterServerName;
   protected MasterServices services;
+
+  /**
+   * @deprecated since 2.4.0, will be removed in 3.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-15549">HBASE-15549</a>
+   */
+  @Deprecated
   protected boolean onlySystemTablesOnMaster;
+
   protected boolean maintenanceMode;
 
   @Override
@@ -1032,6 +1065,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     if (useRegionFinder) {
       regionFinder.setConf(conf);
     }
+    this.isByTable = conf.getBoolean(HConstants.HBASE_MASTER_LOADBALANCE_BYTABLE, isByTable);
     // Print out base configs. Don't print overallSlop since it for simple balancer exclusively.
     LOG.info("slop={}, systemTablesOnMaster={}",
         this.slop, this.onlySystemTablesOnMaster);
@@ -1045,7 +1079,11 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
   /**
    * Check if a region belongs to some system table.
    * If so, the primary replica may be expected to be put on the master regionserver.
+   *
+   * @deprecated since 2.4.0, will be removed in 3.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-15549">HBASE-15549</a>
    */
+  @Deprecated
   public boolean shouldBeOnMaster(RegionInfo region) {
     return (this.maintenanceMode || this.onlySystemTablesOnMaster)
         && region.getTable().isSystemTable();
@@ -1053,7 +1091,11 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
 
   /**
    * Balance the regions that should be on master regionserver.
+   *
+   * @deprecated since 2.4.0, will be removed in 3.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-15549">HBASE-15549</a>
    */
+  @Deprecated
   protected List<RegionPlan> balanceMasterRegions(Map<ServerName, List<RegionInfo>> clusterMap) {
     if (masterServerName == null || clusterMap == null || clusterMap.size() <= 1) return null;
     List<RegionPlan> plans = null;
@@ -1102,12 +1144,14 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
   /**
    * If master is configured to carry system tables only, in here is
    * where we figure what to assign it.
+   *
+   * @deprecated since 2.4.0, will be removed in 3.0.0.
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-15549">HBASE-15549</a>
    */
+  @Deprecated
+  @NonNull
   protected Map<ServerName, List<RegionInfo>> assignMasterSystemRegions(
       Collection<RegionInfo> regions, List<ServerName> servers) {
-    if (servers == null || regions == null || regions.isEmpty()) {
-      return null;
-    }
     Map<ServerName, List<RegionInfo>> assignments = new TreeMap<>();
     if (this.maintenanceMode || this.onlySystemTablesOnMaster) {
       if (masterServerName != null && servers.contains(masterServerName)) {
@@ -1135,10 +1179,6 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     }
   }
 
-  @Override
-  public void setClusterLoad(Map<TableName, Map<ServerName, List<RegionInfo>>> clusterLoad){
-
-  }
 
   @Override
   public void setMasterServices(MasterServices masterServices) {
@@ -1169,7 +1209,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     this.rackManager = rackManager;
   }
 
-  protected boolean needsBalance(Cluster c) {
+  protected boolean needsBalance(TableName tableName, Cluster c) {
     ClusterLoadState cs = new ClusterLoadState(c.clusterState);
     if (cs.getNumServers() < MIN_SERVER_BALANCE) {
       if (LOG.isDebugEnabled()) {
@@ -1179,6 +1219,10 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       return false;
     }
     if(areSomeRegionReplicasColocated(c)) return true;
+    if(idleRegionServerExist(c)) {
+      return true;
+    }
+
     // Check if we even need to do any load balancing
     // HBASE-3681 check sloppiness first
     float average = cs.getLoadAverage(); // for logging
@@ -1210,6 +1254,20 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     return false;
   }
 
+  protected final boolean idleRegionServerExist(Cluster c){
+    boolean isServerExistsWithMoreRegions = false;
+    boolean isServerExistsWithZeroRegions = false;
+    for (int[] serverList: c.regionsPerServer){
+      if (serverList.length > 1) {
+        isServerExistsWithMoreRegions = true;
+      }
+      if (serverList.length == 0) {
+        isServerExistsWithZeroRegions = true;
+      }
+    }
+    return isServerExistsWithMoreRegions && isServerExistsWithZeroRegions;
+  }
+
   /**
    * Generates a bulk assignment plan to be used on cluster startup using a
    * simple round-robin assignment.
@@ -1224,15 +1282,16 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
    *
    * @param regions all regions
    * @param servers all servers
-   * @return map of server to the regions it should take, or null if no
-   *         assignment is possible (ie. no regions or no servers)
+   * @return map of server to the regions it should take, or emptyMap if no
+   *         assignment is possible (ie. no servers)
    */
   @Override
+  @NonNull
   public Map<ServerName, List<RegionInfo>> roundRobinAssignment(List<RegionInfo> regions,
       List<ServerName> servers) throws HBaseIOException {
     metricsBalancer.incrMiscInvocations();
     Map<ServerName, List<RegionInfo>> assignments = assignMasterSystemRegions(regions, servers);
-    if (assignments != null && !assignments.isEmpty()) {
+    if (!assignments.isEmpty()) {
       servers = new ArrayList<>(servers);
       // Guarantee not to put other regions on master
       servers.remove(masterServerName);
@@ -1242,14 +1301,17 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
         regions.removeAll(masterRegions);
       }
     }
-    if (this.maintenanceMode || regions == null || regions.isEmpty()) {
+    /**
+     * only need assign system table
+     */
+    if (this.maintenanceMode || regions.isEmpty()) {
       return assignments;
     }
 
     int numServers = servers == null ? 0 : servers.size();
     if (numServers == 0) {
       LOG.warn("Wanted to do round robin assignment but no servers to assign to");
-      return null;
+      return Collections.emptyMap();
     }
 
     // TODO: instead of retainAssignment() and roundRobinAssignment(), we should just run the
@@ -1263,64 +1325,29 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       return assignments;
     }
 
-    Cluster cluster = createCluster(servers, regions, false);
-    List<RegionInfo> unassignedRegions = new ArrayList<>();
-
-    roundRobinAssignment(cluster, regions, unassignedRegions,
-      servers, assignments);
-
-    List<RegionInfo> lastFewRegions = new ArrayList<>();
-    // assign the remaining by going through the list and try to assign to servers one-by-one
-    int serverIdx = RANDOM.nextInt(numServers);
-    OUTER : for (RegionInfo region : unassignedRegions) {
-      boolean assigned = false;
-      INNER : for (int j = 0; j < numServers; j++) { // try all servers one by one
-        ServerName serverName = servers.get((j + serverIdx) % numServers);
-        if (!cluster.wouldLowerAvailability(region, serverName)) {
-          List<RegionInfo> serverRegions =
-              assignments.computeIfAbsent(serverName, k -> new ArrayList<>());
-          if (!RegionReplicaUtil.isDefaultReplica(region.getReplicaId())) {
-            // if the region is not a default replica
-            // check if the assignments map has the other replica region on this server
-            for (RegionInfo hri : serverRegions) {
-              if (RegionReplicaUtil.isReplicasForSameRegion(region, hri)) {
-                if (LOG.isTraceEnabled()) {
-                  LOG.trace("Skipping the server, " + serverName
-                      + " , got the same server for the region " + region);
-                }
-                // do not allow this case. The unassignedRegions we got because the
-                // replica region in this list was not assigned because of lower availablity issue.
-                // So when we assign here we should ensure that as far as possible the server being
-                // selected does not have the server where the replica region was not assigned.
-                continue INNER; // continue the inner loop, ie go to the next server
-              }
-            }
-          }
-          serverRegions.add(region);
-          cluster.doAssignRegion(region, serverName);
-          serverIdx = (j + serverIdx + 1) % numServers; //remain from next server
-          assigned = true;
-          break;
-        }
-      }
-      if (!assigned) {
-        lastFewRegions.add(region);
-      }
-    }
-    // just sprinkle the rest of the regions on random regionservers. The balanceCluster will
-    // make it optimal later. we can end up with this if numReplicas > numServers.
-    for (RegionInfo region : lastFewRegions) {
-      int i = RANDOM.nextInt(numServers);
-      ServerName server = servers.get(i);
-      List<RegionInfo> serverRegions = assignments.computeIfAbsent(server, k -> new ArrayList<>());
-      serverRegions.add(region);
-      cluster.doAssignRegion(region, server);
-    }
+    Cluster cluster = createCluster(servers, regions);
+    roundRobinAssignment(cluster, regions, servers, assignments);
     return assignments;
   }
 
-  protected Cluster createCluster(List<ServerName> servers, Collection<RegionInfo> regions,
-      boolean hasRegionReplica) {
+  protected Cluster createCluster(List<ServerName> servers, Collection<RegionInfo> regions)
+      throws HBaseIOException {
+    boolean hasRegionReplica = false;
+    try {
+      if (services != null && services.getTableDescriptors() != null) {
+        Map<String, TableDescriptor> tds = services.getTableDescriptors().getAll();
+        for (RegionInfo regionInfo : regions) {
+          TableDescriptor td = tds.get(regionInfo.getTable().getNameWithNamespaceInclAsString());
+          if (td != null && td.getRegionReplication() > 1) {
+            hasRegionReplica = true;
+            break;
+          }
+        }
+      }
+    } catch (IOException ioe) {
+      throw new HBaseIOException(ioe);
+    }
+
     // Get the snapshot of the current assignments for the regions in question, and then create
     // a cluster out of it. Note that we might have replicas already assigned to some servers
     // earlier. So we want to get the snapshot to see those assignments, but this will only contain
@@ -1380,7 +1407,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     final List<ServerName> finalServers = idleServers.isEmpty() ?
             servers : idleServers;
     List<RegionInfo> regions = Lists.newArrayList(regionInfo);
-    Cluster cluster = createCluster(finalServers, regions, false);
+    Cluster cluster = createCluster(finalServers, regions);
     return randomAssignment(cluster, regionInfo, finalServers);
   }
 
@@ -1399,15 +1426,17 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
    *
    * @param regions regions and existing assignment from meta
    * @param servers available servers
-   * @return map of servers and regions to be assigned to them
+   * @return map of servers and regions to be assigned to them, or emptyMap if no
+   *           assignment is possible (ie. no servers)
    */
   @Override
+  @NonNull
   public Map<ServerName, List<RegionInfo>> retainAssignment(Map<RegionInfo, ServerName> regions,
       List<ServerName> servers) throws HBaseIOException {
     // Update metrics
     metricsBalancer.incrMiscInvocations();
     Map<ServerName, List<RegionInfo>> assignments = assignMasterSystemRegions(regions.keySet(), servers);
-    if (assignments != null && !assignments.isEmpty()) {
+    if (!assignments.isEmpty()) {
       servers = new ArrayList<>(servers);
       // Guarantee not to put other regions on master
       servers.remove(masterServerName);
@@ -1422,7 +1451,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
     int numServers = servers == null ? 0 : servers.size();
     if (numServers == 0) {
       LOG.warn("Wanted to do retain assignment but no servers to assign to");
-      return null;
+      return Collections.emptyMap();
     }
     if (numServers == 1) { // Only one server, nothing fancy we can do here
       ServerName server = servers.get(0);
@@ -1452,21 +1481,9 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
 
     int numRandomAssignments = 0;
     int numRetainedAssigments = 0;
-    boolean hasRegionReplica = false;
     for (Map.Entry<RegionInfo, ServerName> entry : regions.entrySet()) {
       RegionInfo region = entry.getKey();
       ServerName oldServerName = entry.getValue();
-      // In the current set of regions even if one has region replica let us go with
-      // getting the entire snapshot
-      if (this.services != null) { // for tests
-        AssignmentManager am = this.services.getAssignmentManager();
-        if (am != null) {
-          RegionStates states = am.getRegionStates();
-          if (!hasRegionReplica && states != null && states.isReplicaAvailableForRegion(region)) {
-            hasRegionReplica = true;
-          }
-        }
-      }
       List<ServerName> localServers = new ArrayList<>();
       if (oldServerName != null) {
         localServers = serversByHostname.get(oldServerName.getHostnameLowerCase());
@@ -1506,7 +1523,7 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
 
     // If servers from prior assignment aren't present, then lets do randomAssignment on regions.
     if (randomAssignRegions.size() > 0) {
-      Cluster cluster = createCluster(servers, regions.keySet(), hasRegionReplica);
+      Cluster cluster = createCluster(servers, regions.keySet());
       for (Map.Entry<ServerName, List<RegionInfo>> entry : assignments.entrySet()) {
         ServerName sn = entry.getKey();
         for (RegionInfo region : entry.getValue()) {
@@ -1604,9 +1621,8 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
    * Round robin a list of regions to a list of servers
    */
   private void roundRobinAssignment(Cluster cluster, List<RegionInfo> regions,
-      List<RegionInfo> unassignedRegions, List<ServerName> servers,
-      Map<ServerName, List<RegionInfo>> assignments) {
-
+    List<ServerName> servers, Map<ServerName, List<RegionInfo>> assignments) {
+    List<RegionInfo> unassignedRegions = new ArrayList<>();
     int numServers = servers.size();
     int numRegions = regions.size();
     int max = (int) Math.ceil((float) numRegions / numServers);
@@ -1615,7 +1631,6 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       serverIdx = RANDOM.nextInt(numServers);
     }
     int regionIdx = 0;
-
     for (int j = 0; j < numServers; j++) {
       ServerName server = servers.get((j + serverIdx) % numServers);
       List<RegionInfo> serverRegions = new ArrayList<>(max);
@@ -1631,6 +1646,37 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       assignments.put(server, serverRegions);
       regionIdx++;
     }
+
+
+    List<RegionInfo> lastFewRegions = new ArrayList<>();
+    // assign the remaining by going through the list and try to assign to servers one-by-one
+    serverIdx = RANDOM.nextInt(numServers);
+    OUTER : for (RegionInfo region : unassignedRegions) {
+      boolean assigned = false;
+      INNER : for (int j = 0; j < numServers; j++) { // try all servers one by one
+        ServerName server = servers.get((j + serverIdx) % numServers);
+        if (cluster.wouldLowerAvailability(region, server)) {
+          continue INNER;
+        } else {
+          assignments.computeIfAbsent(server, k -> new ArrayList<>()).add(region);
+          cluster.doAssignRegion(region, server);
+          serverIdx = (j + serverIdx + 1) % numServers; //remain from next server
+          assigned = true;
+          break;
+        }
+      }
+      if (!assigned) {
+        lastFewRegions.add(region);
+      }
+    }
+    // just sprinkle the rest of the regions on random regionservers. The balanceCluster will
+    // make it optimal later. we can end up with this if numReplicas > numServers.
+    for (RegionInfo region : lastFewRegions) {
+      int i = RANDOM.nextInt(numServers);
+      ServerName server = servers.get(i);
+      assignments.computeIfAbsent(server, k -> new ArrayList<>()).add(region);
+      cluster.doAssignRegion(region, server);
+    }
   }
 
   protected Map<ServerName, List<RegionInfo>> getRegionAssignmentsByServer(
@@ -1639,6 +1685,42 @@ public abstract class BaseLoadBalancer implements LoadBalancer {
       return this.services.getAssignmentManager().getSnapShotOfAssignment(regions);
     } else {
       return new HashMap<>();
+    }
+  }
+
+  private Map<ServerName, List<RegionInfo>> toEnsumbleTableLoad(
+      Map<TableName, Map<ServerName, List<RegionInfo>>> LoadOfAllTable) {
+    Map<ServerName, List<RegionInfo>> returnMap = new TreeMap<>();
+    for (Map<ServerName, List<RegionInfo>> serverNameListMap : LoadOfAllTable.values()) {
+      serverNameListMap.forEach((serverName, regionInfoList) -> {
+        List<RegionInfo> regionInfos =
+            returnMap.computeIfAbsent(serverName, k -> new ArrayList<>());
+        regionInfos.addAll(regionInfoList);
+      });
+    }
+    return returnMap;
+  }
+
+  @Override
+  public abstract List<RegionPlan> balanceTable(TableName tableName,
+      Map<ServerName, List<RegionInfo>> loadOfOneTable);
+
+  @Override
+  public List<RegionPlan>
+      balanceCluster(Map<TableName, Map<ServerName, List<RegionInfo>>> loadOfAllTable) {
+    if (isByTable) {
+      List<RegionPlan> result = new ArrayList<>();
+      loadOfAllTable.forEach((tableName, loadOfOneTable) -> {
+        LOG.info("Start Generate Balance plan for table: " + tableName);
+        List<RegionPlan> partialPlans = balanceTable(tableName, loadOfOneTable);
+        if (partialPlans != null) {
+          result.addAll(partialPlans);
+        }
+      });
+      return result;
+    } else {
+      LOG.info("Start Generate Balance plan for cluster.");
+      return balanceTable(HConstants.ENSEMBLE_TABLE_NAME, toEnsumbleTableLoad(loadOfAllTable));
     }
   }
 

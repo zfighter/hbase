@@ -31,10 +31,12 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import org.apache.hadoop.hbase.util.ProcessUtils;
-import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 import org.apache.yetus.audience.InterfaceAudience;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Servlet that runs async-profiler as web-endpoint.
@@ -83,6 +85,7 @@ import org.slf4j.LoggerFactory;
  */
 @InterfaceAudience.Private
 public class ProfileServlet extends HttpServlet {
+
   private static final long serialVersionUID = 1L;
   private static final Logger LOG = LoggerFactory.getLogger(ProfileServlet.class);
 
@@ -174,7 +177,10 @@ public class ProfileServlet extends HttpServlet {
     if (asyncProfilerHome == null || asyncProfilerHome.trim().isEmpty()) {
       resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
       setResponseHeader(resp);
-      resp.getWriter().write("ASYNC_PROFILER_HOME env is not set.");
+      resp.getWriter().write("ASYNC_PROFILER_HOME env is not set.\n\n" +
+        "Please ensure the prerequsites for the Profiler Servlet have been installed and the\n" +
+        "environment is properly configured. For more information please see\n" +
+        "http://hbase.apache.org/book.html#profiler\n");
       return;
     }
 
@@ -264,7 +270,10 @@ public class ProfileServlet extends HttpServlet {
             resp.getWriter().write(
               "Started [" + event.getInternalName() +
               "] profiling. This page will automatically redirect to " +
-              relativeUrl + " after " + duration + " seconds.\n\ncommand:\n" +
+              relativeUrl + " after " + duration + " seconds. " +
+              "If empty diagram and Linux 4.6+, see 'Basic Usage' section on the Async " +
+              "Profiler Home Page, https://github.com/jvm-profiling-tools/async-profiler." +
+              "\n\nCommand:\n" +
               Joiner.on(" ").join(cmd));
 
             // to avoid auto-refresh by ProfileOutputServlet, refreshDelay can be specified
@@ -355,7 +364,7 @@ public class ProfileServlet extends HttpServlet {
     return Output.SVG;
   }
 
-  private void setResponseHeader(final HttpServletResponse response) {
+  static void setResponseHeader(final HttpServletResponse response) {
     response.setHeader(ACCESS_CONTROL_ALLOW_METHODS, ALLOWED_METHODS);
     response.setHeader(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
     response.setContentType(CONTENT_TYPE_TEXT);
@@ -370,4 +379,23 @@ public class ProfileServlet extends HttpServlet {
 
     return asyncProfilerHome;
   }
+
+  public static class DisabledServlet extends HttpServlet {
+
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    protected void doGet(final HttpServletRequest req, final HttpServletResponse resp)
+        throws IOException {
+      resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+      setResponseHeader(resp);
+      resp.getWriter().write("The profiler servlet was disabled at startup.\n\n" +
+        "Please ensure the prerequsites for the Profiler Servlet have been installed and the\n" +
+        "environment is properly configured. For more information please see\n" +
+        "http://hbase.apache.org/book.html#profiler\n");
+      return;
+    }
+
+  }
+
 }

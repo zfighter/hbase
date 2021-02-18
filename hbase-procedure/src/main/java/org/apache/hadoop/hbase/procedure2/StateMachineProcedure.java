@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.procedure2;
 
 import java.io.IOException;
@@ -23,13 +22,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ProcedureProtos.StateMachineProcedureData;
 
@@ -74,7 +70,6 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
    */
   private int previousState;
 
-  @VisibleForTesting
   public enum Flow {
     HAS_MORE_STATE,
     NO_MORE_STATE,
@@ -87,7 +82,7 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
    *         Flow.HAS_MORE_STATE if there is another step.
    */
   protected abstract Flow executeFromState(TEnvironment env, TState state)
-  throws ProcedureSuspendedException, ProcedureYieldException, InterruptedException;
+          throws ProcedureSuspendedException, ProcedureYieldException, InterruptedException;
 
   /**
    * called to perform the rollback of the specified state
@@ -156,19 +151,25 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
     }
     for (int i = 0; i < len; ++i) {
       Procedure<TEnvironment> proc = subProcedure[i];
-      if (!proc.hasOwner()) proc.setOwner(getOwner());
+      if (!proc.hasOwner()) {
+        proc.setOwner(getOwner());
+      }
+
       subProcList.add(proc);
     }
   }
 
   @Override
   protected Procedure[] execute(final TEnvironment env)
-  throws ProcedureSuspendedException, ProcedureYieldException, InterruptedException {
+          throws ProcedureSuspendedException, ProcedureYieldException, InterruptedException {
     updateTimestamp();
     try {
       failIfAborted();
 
-      if (!hasMoreState() || isFailed()) return null;
+      if (!hasMoreState() || isFailed()) {
+        return null;
+      }
+
       TState state = getCurrentState();
       if (stateCount == 0) {
         setNextState(getStateId(state));
@@ -187,7 +188,10 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
 
       LOG.trace("{}", this);
       stateFlow = executeFromState(env, state);
-      if (!hasMoreState()) setNextState(EOF_STATE);
+      if (!hasMoreState()) {
+        setNextState(EOF_STATE);
+      }
+
       if (subProcList != null && !subProcList.isEmpty()) {
         Procedure[] subProcedures = subProcList.toArray(new Procedure[subProcList.size()]);
         subProcList = null;
@@ -202,7 +206,10 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
   @Override
   protected void rollback(final TEnvironment env)
       throws IOException, InterruptedException {
-    if (isEofState()) stateCount--;
+    if (isEofState()) {
+      stateCount--;
+    }
+
     try {
       updateTimestamp();
       rollbackState(env, getCurrentState());
@@ -271,7 +278,6 @@ public abstract class StateMachineProcedure<TEnvironment, TState>
    * sequentially. Some procedures may skip steps/ states, some may add intermediate steps in
    * future.
    */
-  @VisibleForTesting
   public int getCurrentStateId() {
     return getStateId(getCurrentState());
   }

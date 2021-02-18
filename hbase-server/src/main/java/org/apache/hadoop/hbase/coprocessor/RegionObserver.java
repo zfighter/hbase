@@ -30,6 +30,8 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.client.Append;
+import org.apache.hadoop.hbase.client.CheckAndMutate;
+import org.apache.hadoop.hbase.client.CheckAndMutateResult;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
@@ -39,7 +41,9 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.filter.ByteArrayComparable;
+import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.FSDataInputStreamWrapper;
 import org.apache.hadoop.hbase.io.Reference;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
@@ -437,8 +441,9 @@ public interface RegionObserver {
   /**
    * This will be called for every batch mutation operation happening at the server. This will be
    * called after acquiring the locks on the mutating rows and after applying the proper timestamp
-   * for each Mutation at the server. The batch may contain Put/Delete. By setting OperationStatus
-   * of Mutations ({@link MiniBatchOperationInProgress#setOperationStatus(int, OperationStatus)}),
+   * for each Mutation at the server. The batch may contain Put/Delete/Increment/Append. By
+   * setting OperationStatus of Mutations
+   * ({@link MiniBatchOperationInProgress#setOperationStatus(int, OperationStatus)}),
    * {@link RegionObserver} can make Region to skip these Mutations.
    * <p>
    * Note: Do not retain references to any Cells in Mutations beyond the life of this invocation.
@@ -450,10 +455,12 @@ public interface RegionObserver {
       MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {}
 
   /**
-   * This will be called after applying a batch of Mutations on a region. The Mutations are added to
-   * memstore and WAL. The difference of this one with
-   * {@link #postPut(ObserverContext, Put, WALEdit, Durability) }
-   * and {@link #postDelete(ObserverContext, Delete, WALEdit, Durability) } is
+   * This will be called after applying a batch of Mutations on a region. The Mutations are added
+   * to memstore and WAL. The difference of this one with
+   * {@link #postPut(ObserverContext, Put, WALEdit, Durability)}
+   * and {@link #postDelete(ObserverContext, Delete, WALEdit, Durability)}
+   * and {@link #postIncrement(ObserverContext, Increment, Result)}
+   * and {@link #postAppend(ObserverContext, Append, Result)} is
    * this hook will be executed before the mvcc transaction completion.
    * <p>
    * Note: Do not retain references to any Cells in Mutations beyond the life of this invocation.
@@ -484,8 +491,8 @@ public interface RegionObserver {
       Operation operation) throws IOException {}
 
   /**
-   * Called after the completion of batch put/delete and will be called even if the batch operation
-   * fails.
+   * Called after the completion of batch put/delete/increment/append and will be called even if
+   * the batch operation fails.
    * <p>
    * Note: Do not retain references to any Cells in Mutations beyond the life of this invocation.
    * If need a Cell reference for later use, copy the cell and use that.
@@ -511,13 +518,40 @@ public interface RegionObserver {
    * @param op the comparison operation
    * @param comparator the comparator
    * @param put data to put if check succeeds
-   * @param result
-   * @return the return value to return to client if bypassing default
-   * processing
+   * @param result the default value of the result
+   * @return the return value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
    */
+  @Deprecated
   default boolean preCheckAndPut(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
       byte[] family, byte[] qualifier, CompareOperator op, ByteArrayComparable comparator, Put put,
       boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called before checkAndPut.
+   * <p>
+   * Call CoprocessorEnvironment#bypass to skip default actions.
+   * If 'bypass' is set, we skip out on calling any subsequent chained coprocessors.
+   * <p>
+   * Note: Do not retain references to any Cells in 'put' beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param row row to check
+   * @param filter filter
+   * @param put data to put if check succeeds
+   * @param result the default value of the result
+   * @return the return value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
+   */
+  @Deprecated
+  default boolean preCheckAndPut(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
+    Filter filter, Put put, boolean result) throws IOException {
     return result;
   }
 
@@ -540,13 +574,46 @@ public interface RegionObserver {
    * @param op the comparison operation
    * @param comparator the comparator
    * @param put data to put if check succeeds
-   * @param result
-   * @return the return value to return to client if bypassing default
-   * processing
+   * @param result the default value of the result
+   * @return the return value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutateAfterRowLock(ObserverContext, CheckAndMutate,CheckAndMutateResult)}
+   *   instead.
    */
+  @Deprecated
   default boolean preCheckAndPutAfterRowLock(ObserverContext<RegionCoprocessorEnvironment> c,
       byte[] row, byte[] family, byte[] qualifier, CompareOperator op,
       ByteArrayComparable comparator, Put put, boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called before checkAndPut but after acquiring rowlock.
+   * <p>
+   * <b>Note:</b> Caution to be taken for not doing any long time operation in this hook.
+   * Row will be locked for longer time. Trying to acquire lock on another row, within this,
+   * can lead to potential deadlock.
+   * <p>
+   * Call CoprocessorEnvironment#bypass to skip default actions.
+   * If 'bypass' is set, we skip out on calling any subsequent chained coprocessors.
+   * <p>
+   * Note: Do not retain references to any Cells in 'put' beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param row row to check
+   * @param filter filter
+   * @param put data to put if check succeeds
+   * @param result the default value of the result
+   * @return the return value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutateAfterRowLock(ObserverContext, CheckAndMutate,CheckAndMutateResult)}
+   *   instead.
+   */
+  @Deprecated
+  default boolean preCheckAndPutAfterRowLock(ObserverContext<RegionCoprocessorEnvironment> c,
+    byte[] row, Filter filter, Put put, boolean result) throws IOException {
     return result;
   }
 
@@ -564,10 +631,35 @@ public interface RegionObserver {
    * @param put data to put if check succeeds
    * @param result from the checkAndPut
    * @return the possibly transformed return value to return to client
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #postCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
    */
+  @Deprecated
   default boolean postCheckAndPut(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
       byte[] family, byte[] qualifier, CompareOperator op, ByteArrayComparable comparator, Put put,
       boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called after checkAndPut
+   * <p>
+   * Note: Do not retain references to any Cells in 'put' beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param row row to check
+   * @param filter filter
+   * @param put data to put if check succeeds
+   * @param result from the checkAndPut
+   * @return the possibly transformed return value to return to client
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #postCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
+   */
+  @Deprecated
+  default boolean postCheckAndPut(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
+    Filter filter, Put put, boolean result) throws IOException {
     return result;
   }
 
@@ -586,12 +678,40 @@ public interface RegionObserver {
    * @param op the comparison operation
    * @param comparator the comparator
    * @param delete delete to commit if check succeeds
-   * @param result
+   * @param result the default value of the result
    * @return the value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
    */
+  @Deprecated
   default boolean preCheckAndDelete(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
       byte[] family, byte[] qualifier, CompareOperator op, ByteArrayComparable comparator,
       Delete delete, boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called before checkAndDelete.
+   * <p>
+   * Call CoprocessorEnvironment#bypass to skip default actions.
+   * If 'bypass' is set, we skip out on calling any subsequent chained coprocessors.
+   * <p>
+   * Note: Do not retain references to any Cells in 'delete' beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param row row to check
+   * @param filter column family
+   * @param delete delete to commit if check succeeds
+   * @param result the default value of the result
+   * @return the value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
+   */
+  @Deprecated
+  default boolean preCheckAndDelete(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
+    Filter filter, Delete delete, boolean result) throws IOException {
     return result;
   }
 
@@ -614,12 +734,46 @@ public interface RegionObserver {
    * @param op the comparison operation
    * @param comparator the comparator
    * @param delete delete to commit if check succeeds
-   * @param result
+   * @param result the default value of the result
    * @return the value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutateAfterRowLock(ObserverContext, CheckAndMutate,CheckAndMutateResult)}
+   *   instead.
    */
+  @Deprecated
   default boolean preCheckAndDeleteAfterRowLock(ObserverContext<RegionCoprocessorEnvironment> c,
       byte[] row, byte[] family, byte[] qualifier, CompareOperator op,
       ByteArrayComparable comparator, Delete delete, boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called before checkAndDelete but after acquiring rowock.
+   * <p>
+   * <b>Note:</b> Caution to be taken for not doing any long time operation in this hook.
+   * Row will be locked for longer time. Trying to acquire lock on another row, within this,
+   * can lead to potential deadlock.
+   * <p>
+   * Call CoprocessorEnvironment#bypass to skip default actions.
+   * If 'bypass' is set, we skip out on calling any subsequent chained coprocessors.
+   * <p>
+   * Note: Do not retain references to any Cells in 'delete' beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param row row to check
+   * @param filter filter
+   * @param delete delete to commit if check succeeds
+   * @param result the default value of the result
+   * @return the value to return to client if bypassing default processing
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #preCheckAndMutateAfterRowLock(ObserverContext, CheckAndMutate,CheckAndMutateResult)}
+   *   instead.
+   */
+  @Deprecated
+  default boolean preCheckAndDeleteAfterRowLock(ObserverContext<RegionCoprocessorEnvironment> c,
+    byte[] row, Filter filter, Delete delete, boolean result) throws IOException {
     return result;
   }
 
@@ -637,10 +791,169 @@ public interface RegionObserver {
    * @param delete delete to commit if check succeeds
    * @param result from the CheckAndDelete
    * @return the possibly transformed returned value to return to client
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #postCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
    */
+  @Deprecated
   default boolean postCheckAndDelete(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
       byte[] family, byte[] qualifier, CompareOperator op, ByteArrayComparable comparator,
       Delete delete, boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called after checkAndDelete
+   * <p>
+   * Note: Do not retain references to any Cells in 'delete' beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param row row to check
+   * @param filter filter
+   * @param delete delete to commit if check succeeds
+   * @param result from the CheckAndDelete
+   * @return the possibly transformed returned value to return to client
+   *
+   * @deprecated since 3.0.0 and will be removed in 4.0.0. Use
+   *   {@link #postCheckAndMutate(ObserverContext, CheckAndMutate, CheckAndMutateResult)} instead.
+   */
+  @Deprecated
+  default boolean postCheckAndDelete(ObserverContext<RegionCoprocessorEnvironment> c, byte[] row,
+    Filter filter, Delete delete, boolean result) throws IOException {
+    return result;
+  }
+
+  /**
+   * Called before checkAndMutate
+   * <p>
+   * Call CoprocessorEnvironment#bypass to skip default actions.
+   * If 'bypass' is set, we skip out on calling any subsequent chained coprocessors.
+   * <p>
+   * Note: Do not retain references to any Cells in actions beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param checkAndMutate the CheckAndMutate object
+   * @param result the default value of the result
+   * @return the return value to return to client if bypassing default processing
+   * @throws IOException if an error occurred on the coprocessor
+   */
+  default CheckAndMutateResult preCheckAndMutate(ObserverContext<RegionCoprocessorEnvironment> c,
+    CheckAndMutate checkAndMutate, CheckAndMutateResult result) throws IOException {
+    if (checkAndMutate.getAction() instanceof Put) {
+      boolean success;
+      if (checkAndMutate.hasFilter()) {
+        success = preCheckAndPut(c, checkAndMutate.getRow(), checkAndMutate.getFilter(),
+          (Put) checkAndMutate.getAction(), result.isSuccess());
+      } else {
+        success = preCheckAndPut(c, checkAndMutate.getRow(), checkAndMutate.getFamily(),
+          checkAndMutate.getQualifier(), checkAndMutate.getCompareOp(),
+          new BinaryComparator(checkAndMutate.getValue()), (Put) checkAndMutate.getAction(),
+          result.isSuccess());
+      }
+      return new CheckAndMutateResult(success, null);
+    } else if (checkAndMutate.getAction() instanceof Delete) {
+      boolean success;
+      if (checkAndMutate.hasFilter()) {
+        success = preCheckAndDelete(c, checkAndMutate.getRow(), checkAndMutate.getFilter(),
+          (Delete) checkAndMutate.getAction(), result.isSuccess());
+      } else {
+        success = preCheckAndDelete(c, checkAndMutate.getRow(), checkAndMutate.getFamily(),
+          checkAndMutate.getQualifier(), checkAndMutate.getCompareOp(),
+          new BinaryComparator(checkAndMutate.getValue()), (Delete) checkAndMutate.getAction(),
+          result.isSuccess());
+      }
+      return new CheckAndMutateResult(success, null);
+    }
+    return result;
+  }
+
+  /**
+   * Called before checkAndDelete but after acquiring rowlock.
+   * <p>
+   * <b>Note:</b> Caution to be taken for not doing any long time operation in this hook.
+   * Row will be locked for longer time. Trying to acquire lock on another row, within this,
+   * can lead to potential deadlock.
+   * <p>
+   * Call CoprocessorEnvironment#bypass to skip default actions.
+   * If 'bypass' is set, we skip out on calling any subsequent chained coprocessors.
+   * <p>
+   * Note: Do not retain references to any Cells in actions beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param checkAndMutate the CheckAndMutate object
+   * @param result the default value of the result
+   * @return the value to return to client if bypassing default processing
+   * @throws IOException if an error occurred on the coprocessor
+   */
+  default CheckAndMutateResult preCheckAndMutateAfterRowLock(
+    ObserverContext<RegionCoprocessorEnvironment> c, CheckAndMutate checkAndMutate,
+    CheckAndMutateResult result) throws IOException {
+    if (checkAndMutate.getAction() instanceof Put) {
+      boolean success;
+      if (checkAndMutate.hasFilter()) {
+        success = preCheckAndPutAfterRowLock(c, checkAndMutate.getRow(),
+          checkAndMutate.getFilter(), (Put) checkAndMutate.getAction(), result.isSuccess());
+      } else {
+        success = preCheckAndPutAfterRowLock(c, checkAndMutate.getRow(),
+          checkAndMutate.getFamily(), checkAndMutate.getQualifier(),
+          checkAndMutate.getCompareOp(), new BinaryComparator(checkAndMutate.getValue()),
+          (Put) checkAndMutate.getAction(), result.isSuccess());
+      }
+      return new CheckAndMutateResult(success, null);
+    } else if (checkAndMutate.getAction() instanceof Delete) {
+      boolean success;
+      if (checkAndMutate.hasFilter()) {
+        success = preCheckAndDeleteAfterRowLock(c, checkAndMutate.getRow(),
+          checkAndMutate.getFilter(), (Delete) checkAndMutate.getAction(), result.isSuccess());
+      } else {
+        success = preCheckAndDeleteAfterRowLock(c, checkAndMutate.getRow(),
+          checkAndMutate.getFamily(), checkAndMutate.getQualifier(),
+          checkAndMutate.getCompareOp(), new BinaryComparator(checkAndMutate.getValue()),
+          (Delete) checkAndMutate.getAction(), result.isSuccess());
+      }
+      return new CheckAndMutateResult(success, null);
+    }
+    return result;
+  }
+
+  /**
+   * Called after checkAndMutate
+   * <p>
+   * Note: Do not retain references to any Cells in actions beyond the life of this invocation.
+   * If need a Cell reference for later use, copy the cell and use that.
+   * @param c the environment provided by the region server
+   * @param checkAndMutate the CheckAndMutate object
+   * @param result from the checkAndMutate
+   * @return the possibly transformed returned value to return to client
+   * @throws IOException if an error occurred on the coprocessor
+   */
+  default CheckAndMutateResult postCheckAndMutate(ObserverContext<RegionCoprocessorEnvironment> c,
+    CheckAndMutate checkAndMutate, CheckAndMutateResult result) throws IOException {
+    if (checkAndMutate.getAction() instanceof Put) {
+      boolean success;
+      if (checkAndMutate.hasFilter()) {
+        success = postCheckAndPut(c, checkAndMutate.getRow(),
+          checkAndMutate.getFilter(), (Put) checkAndMutate.getAction(), result.isSuccess());
+      } else {
+        success = postCheckAndPut(c, checkAndMutate.getRow(),
+          checkAndMutate.getFamily(), checkAndMutate.getQualifier(),
+          checkAndMutate.getCompareOp(), new BinaryComparator(checkAndMutate.getValue()),
+          (Put) checkAndMutate.getAction(), result.isSuccess());
+      }
+      return new CheckAndMutateResult(success, null);
+    } else if (checkAndMutate.getAction() instanceof Delete) {
+      boolean success;
+      if (checkAndMutate.hasFilter()) {
+        success = postCheckAndDelete(c, checkAndMutate.getRow(),
+          checkAndMutate.getFilter(), (Delete) checkAndMutate.getAction(), result.isSuccess());
+      } else {
+        success = postCheckAndDelete(c, checkAndMutate.getRow(),
+          checkAndMutate.getFamily(), checkAndMutate.getQualifier(),
+          checkAndMutate.getCompareOp(), new BinaryComparator(checkAndMutate.getValue()),
+          (Delete) checkAndMutate.getAction(), result.isSuccess());
+      }
+      return new CheckAndMutateResult(success, null);
+    }
     return result;
   }
 
@@ -1030,7 +1343,12 @@ public interface RegionObserver {
    * @param oldCell old cell containing previous value
    * @param newCell the new cell containing the computed value
    * @return the new cell, possibly changed
-   * @deprecated Use {@link #postIncrementBeforeWAL} or {@link #postAppendBeforeWAL} instead.
+   * @deprecated since 2.2.0 and will be removedin 4.0.0. Use
+   *   {@link #postIncrementBeforeWAL(ObserverContext, Mutation, List)} or
+   *   {@link #postAppendBeforeWAL(ObserverContext, Mutation, List)} instead.
+   * @see #postIncrementBeforeWAL(ObserverContext, Mutation, List)
+   * @see #postAppendBeforeWAL(ObserverContext, Mutation, List)
+   * @see <a href="https://issues.apache.org/jira/browse/HBASE-21643">HBASE-21643</a>
    */
   @Deprecated
   default Cell postMutationBeforeWAL(ObserverContext<RegionCoprocessorEnvironment> ctx,
@@ -1098,5 +1416,17 @@ public interface RegionObserver {
       ObserverContext<RegionCoprocessorEnvironment> ctx, DeleteTracker delTracker)
       throws IOException {
     return delTracker;
+  }
+
+  /**
+   * Called just before the WAL Entry is appended to the WAL. Implementing this hook allows
+   * coprocessors to add extended attributes to the WALKey that then get persisted to the
+   * WAL, and are available to replication endpoints to use in processing WAL Entries.
+   * @param ctx the environment provided by the region server
+   * @param key the WALKey associated with a particular append to a WAL
+   */
+  default void preWALAppend(ObserverContext<RegionCoprocessorEnvironment> ctx, WALKey key,
+                            WALEdit edit)
+    throws IOException {
   }
 }

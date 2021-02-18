@@ -73,6 +73,8 @@ allowed_expr+="|^org/apache/hbase/"
 allowed_expr+="|^META-INF/"
 #   * the folding tables from jcodings
 allowed_expr+="|^tables/"
+#   * contents of hbase-webapps
+allowed_expr+="|^hbase-webapps/"
 #   * HBase's default configuration files, which have the form
 #     "_module_-default.xml"
 allowed_expr+="|^hbase-default.xml$"
@@ -83,6 +85,9 @@ allowed_expr+="|^mozilla/public-suffix-list.txt$"
 allowed_expr+="|^digesterRules.xml$"
 allowed_expr+="|^properties.dtd$"
 allowed_expr+="|^PropertyList-1.0.dtd$"
+# Shaded jetty resources
+allowed_expr+="|^about.html$"
+allowed_expr+="|^jetty-dir.css$"
 
 
 if [ -n "${allow_hadoop}" ]; then

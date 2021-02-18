@@ -21,7 +21,6 @@ import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hbase.client.ConnectionUtils.allOf;
 import static org.apache.hadoop.hbase.client.ConnectionUtils.toCheckExistenceOnly;
 
-import com.google.protobuf.RpcChannel;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -29,11 +28,13 @@ import java.util.function.Function;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hbase.thirdparty.com.google.protobuf.RpcChannel;
 
 /**
  * The interface for asynchronous version of Table. Obtain an instance from a
@@ -60,6 +61,15 @@ public interface AsyncTable<C extends ScanResultConsumerBase> {
    */
   Configuration getConfiguration();
 
+  /**
+   * Gets the {@link TableDescriptor} for this table.
+   */
+  CompletableFuture<TableDescriptor> getDescriptor();
+
+  /**
+   * Gets the {@link AsyncTableRegionLocator} for this table.
+   */
+  AsyncTableRegionLocator getRegionLocator();
   /**
    * Get timeout of each rpc request in this Table instance. It will be overridden by a more
    * specific rpc timeout config such as readRpcTimeout or writeRpcTimeout.
@@ -221,12 +231,20 @@ public interface AsyncTable<C extends ScanResultConsumerBase> {
    *     });
    * </code>
    * </pre>
+   *
+   * @deprecated Since 3.0.0, will be removed in 4.0.0. For internal test use only, do not use it
+   *   any more.
    */
+  @Deprecated
   CheckAndMutateBuilder checkAndMutate(byte[] row, byte[] family);
 
   /**
    * A helper class for sending checkAndMutate request.
+   *
+   * @deprecated Since 3.0.0, will be removed in 4.0.0. For internal test use only, do not use it
+   *   any more.
    */
+  @Deprecated
   interface CheckAndMutateBuilder {
 
     /**
@@ -281,12 +299,106 @@ public interface AsyncTable<C extends ScanResultConsumerBase> {
   }
 
   /**
+   * Atomically checks if a row matches the specified filter. If it does, it adds the
+   * Put/Delete/RowMutations.
+   * <p>
+   * Use the returned {@link CheckAndMutateWithFilterBuilder} to construct your request and then
+   * execute it. This is a fluent style API, the code is like:
+   *
+   * <pre>
+   * <code>
+   * table.checkAndMutate(row, filter).thenPut(put)
+   *     .thenAccept(succ -> {
+   *       if (succ) {
+   *         System.out.println("Check and put succeeded");
+   *       } else {
+   *         System.out.println("Check and put failed");
+   *       }
+   *     });
+   * </code>
+   * </pre>
+   *
+   * @deprecated Since 3.0.0, will be removed in 4.0.0. For internal test use only, do not use it
+   *   any more.
+   */
+  @Deprecated
+  CheckAndMutateWithFilterBuilder checkAndMutate(byte[] row, Filter filter);
+
+  /**
+   * A helper class for sending checkAndMutate request with a filter.
+   *
+   * @deprecated Since 3.0.0, will be removed in 4.0.0. For internal test use only, do not use it
+   *   any more.
+   */
+  @Deprecated
+  interface CheckAndMutateWithFilterBuilder {
+
+    /**
+     * @param timeRange time range to check.
+     */
+    CheckAndMutateWithFilterBuilder timeRange(TimeRange timeRange);
+
+    /**
+     * @param put data to put if check succeeds
+     * @return {@code true} if the new put was executed, {@code false} otherwise. The return value
+     *         will be wrapped by a {@link CompletableFuture}.
+     */
+    CompletableFuture<Boolean> thenPut(Put put);
+
+    /**
+     * @param delete data to delete if check succeeds
+     * @return {@code true} if the new delete was executed, {@code false} otherwise. The return
+     *         value will be wrapped by a {@link CompletableFuture}.
+     */
+    CompletableFuture<Boolean> thenDelete(Delete delete);
+
+    /**
+     * @param mutation mutations to perform if check succeeds
+     * @return true if the new mutation was executed, false otherwise. The return value will be
+     *         wrapped by a {@link CompletableFuture}.
+     */
+    CompletableFuture<Boolean> thenMutate(RowMutations mutation);
+  }
+
+  /**
+   * checkAndMutate that atomically checks if a row matches the specified condition. If it does,
+   * it performs the specified action.
+   *
+   * @param checkAndMutate The CheckAndMutate object.
+   * @return A {@link CompletableFuture}s that represent the result for the CheckAndMutate.
+   */
+  CompletableFuture<CheckAndMutateResult> checkAndMutate(CheckAndMutate checkAndMutate);
+
+  /**
+   * Batch version of checkAndMutate. The specified CheckAndMutates are batched only in the sense
+   * that they are sent to a RS in one RPC, but each CheckAndMutate operation is still executed
+   * atomically (and thus, each may fail independently of others).
+   *
+   * @param checkAndMutates The list of CheckAndMutate.
+   * @return A list of {@link CompletableFuture}s that represent the result for each
+   *   CheckAndMutate.
+   */
+  List<CompletableFuture<CheckAndMutateResult>> checkAndMutate(
+    List<CheckAndMutate> checkAndMutates);
+
+  /**
+   * A simple version of batch checkAndMutate. It will fail if there are any failures.
+   *
+   * @param checkAndMutates The list of rows to apply.
+   * @return A {@link CompletableFuture} that wrapper the result list.
+   */
+  default CompletableFuture<List<CheckAndMutateResult>> checkAndMutateAll(
+    List<CheckAndMutate> checkAndMutates) {
+    return allOf(checkAndMutate(checkAndMutates));
+  }
+
+  /**
    * Performs multiple mutations atomically on a single row. Currently {@link Put} and
    * {@link Delete} are supported.
    * @param mutation object that specifies the set of mutations to perform atomically
-   * @return A {@link CompletableFuture} that always returns null when complete normally.
+   * @return A {@link CompletableFuture} that returns results of Increment/Append operations
    */
-  CompletableFuture<Void> mutateRow(RowMutations mutation);
+  CompletableFuture<Result> mutateRow(RowMutations mutation);
 
   /**
    * The scan API uses the observer pattern.

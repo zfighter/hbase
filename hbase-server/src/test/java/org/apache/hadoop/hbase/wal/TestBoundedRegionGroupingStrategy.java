@@ -36,9 +36,9 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -55,7 +55,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @RunWith(Parameterized.class)
-@Category({ RegionServerTests.class, LargeTests.class })
+@Category({ RegionServerTests.class, MediumTests.class })
 public class TestBoundedRegionGroupingStrategy {
 
   @ClassRule
@@ -183,7 +183,7 @@ public class TestBoundedRegionGroupingStrategy {
     try {
       CONF.setInt(NUM_REGION_GROUPS, temp * 4);
       // Set HDFS root directory for storing WAL
-      FSUtils.setRootDir(CONF, TEST_UTIL.getDataTestDirOnTestFS());
+      CommonFSUtils.setRootDir(CONF, TEST_UTIL.getDataTestDirOnTestFS());
 
       wals = new WALFactory(CONF, "setMembershipDedups");
       Set<WAL> seen = new HashSet<>(temp * 4);

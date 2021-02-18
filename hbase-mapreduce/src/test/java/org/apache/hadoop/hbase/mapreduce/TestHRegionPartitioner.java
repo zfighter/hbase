@@ -77,4 +77,26 @@ public class TestHRegionPartitioner {
     assertEquals(1, partitioner.getPartition(writable, 10L, 3));
     assertEquals(0, partitioner.getPartition(writable, 10L, 1));
   }
+
+  @Test
+  public void testHRegionPartitionerMoreRegions() throws Exception {
+    byte[][] families = { Bytes.toBytes("familyA"), Bytes.toBytes("familyB") };
+
+    TableName tableName = TableName.valueOf(name.getMethodName());
+    UTIL.createTable(tableName, families, 1, Bytes.toBytes("aa"), Bytes.toBytes("cc"), 5);
+
+    Configuration configuration = UTIL.getConfiguration();
+    int numberOfRegions = UTIL.getMiniHBaseCluster().getRegions(tableName).size();
+    assertEquals(5, numberOfRegions);
+
+    HRegionPartitioner<Long, Long> partitioner = new HRegionPartitioner<>();
+    configuration.set(TableOutputFormat.OUTPUT_TABLE, name.getMethodName());
+    partitioner.setConf(configuration);
+
+    // Get some rowKey for the lastRegion
+    ImmutableBytesWritable writable = new ImmutableBytesWritable(Bytes.toBytes("df"));
+
+    // getPartition should return 4 since number of partition = number of reduces.
+    assertEquals(4, partitioner.getPartition(writable, 10L, 5));
+  }
 }

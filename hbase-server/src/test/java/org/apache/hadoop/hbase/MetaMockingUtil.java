@@ -22,7 +22,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-
+import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.util.Bytes;
 
@@ -38,7 +38,7 @@ public class MetaMockingUtil {
    * @return A mocked up Result that fakes a Get on a row in the <code>hbase:meta</code> table.
    * @throws IOException
    */
-  public static Result getMetaTableRowResult(final HRegionInfo region)
+  public static Result getMetaTableRowResult(final RegionInfo region)
       throws IOException {
     return getMetaTableRowResult(region, null, null, null);
   }
@@ -51,7 +51,7 @@ public class MetaMockingUtil {
    * @return A mocked up Result that fakes a Get on a row in the <code>hbase:meta</code> table.
    * @throws IOException
    */
-  public static Result getMetaTableRowResult(final HRegionInfo region, final ServerName sn)
+  public static Result getMetaTableRowResult(final RegionInfo region, final ServerName sn)
       throws IOException {
     return getMetaTableRowResult(region, sn, null, null);
   }
@@ -59,27 +59,27 @@ public class MetaMockingUtil {
   /**
    * Returns a Result object constructed from the given region information simulating
    * a catalog table result.
-   * @param region the HRegionInfo object or null
+   * @param region the RegionInfo object or null
    * @param sn to use making startcode and server hostname:port in meta or null
    * @param splita daughter region or null
    * @param splitb  daughter region or null
    * @return A mocked up Result that fakes a Get on a row in the <code>hbase:meta</code> table.
    * @throws IOException
    */
-  public static Result getMetaTableRowResult(HRegionInfo region, final ServerName sn,
-      HRegionInfo splita, HRegionInfo splitb) throws IOException {
+  public static Result getMetaTableRowResult(RegionInfo region, final ServerName sn,
+      RegionInfo splita, RegionInfo splitb) throws IOException {
     List<Cell> kvs = new ArrayList<>();
     if (region != null) {
       kvs.add(new KeyValue(
         region.getRegionName(),
         HConstants.CATALOG_FAMILY, HConstants.REGIONINFO_QUALIFIER,
-        region.toByteArray()));
+        RegionInfo.toByteArray(region)));
     }
 
     if (sn != null) {
       kvs.add(new KeyValue(region.getRegionName(),
         HConstants.CATALOG_FAMILY, HConstants.SERVER_QUALIFIER,
-        Bytes.toBytes(sn.getHostAndPort())));
+        Bytes.toBytes(sn.getAddress().toString())));
       kvs.add(new KeyValue(region.getRegionName(),
         HConstants.CATALOG_FAMILY, HConstants.STARTCODE_QUALIFIER,
         Bytes.toBytes(sn.getStartcode())));
@@ -89,18 +89,18 @@ public class MetaMockingUtil {
       kvs.add(new KeyValue(
           region.getRegionName(),
           HConstants.CATALOG_FAMILY, HConstants.SPLITA_QUALIFIER,
-          splita.toByteArray()));
+          RegionInfo.toByteArray(splita)));
     }
 
     if (splitb != null) {
       kvs.add(new KeyValue(
           region.getRegionName(),
           HConstants.CATALOG_FAMILY, HConstants.SPLITB_QUALIFIER,
-          splitb.toByteArray()));
+          RegionInfo.toByteArray(splitb)));
     }
 
     //important: sort the kvs so that binary search work
-    Collections.sort(kvs, CellComparatorImpl.META_COMPARATOR);
+    Collections.sort(kvs, MetaCellComparator.META_COMPARATOR);
 
     return Result.create(kvs);
   }

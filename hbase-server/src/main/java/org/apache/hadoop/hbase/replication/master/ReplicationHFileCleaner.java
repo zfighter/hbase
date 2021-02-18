@@ -34,7 +34,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Predicate;
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
 
@@ -69,6 +68,11 @@ public class ReplicationHFileCleaner extends BaseHFileCleanerDelegate {
     return Iterables.filter(files, new Predicate<FileStatus>() {
       @Override
       public boolean apply(FileStatus file) {
+        // just for overriding the findbugs NP warnings, as the parameter is marked as Nullable in
+        // the guava Predicate.
+        if (file == null) {
+          return false;
+        }
         String hfile = file.getPath().getName();
         boolean foundHFileRefInQueue = hfileRefs.contains(hfile);
         if (LOG.isDebugEnabled()) {
@@ -105,7 +109,7 @@ public class ReplicationHFileCleaner extends BaseHFileCleanerDelegate {
     }
   }
 
-  @VisibleForTesting
+  @InterfaceAudience.Private
   public void setConf(Configuration conf, ZKWatcher zk) {
     super.setConf(conf);
     try {

@@ -19,34 +19,32 @@ package org.apache.hadoop.hbase.security.visibility;
 
 import static org.apache.hadoop.hbase.security.visibility.VisibilityConstants.LABELS_TABLE_NAME;
 
-import com.google.protobuf.ByteString;
-import com.google.protobuf.ServiceException;
-
 import java.io.IOException;
 import java.util.Map;
 import java.util.regex.Pattern;
-
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
 import org.apache.hadoop.hbase.client.security.SecurityCapability;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcUtils;
 import org.apache.hadoop.hbase.ipc.ServerRpcController;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.GetAuthsRequest;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.GetAuthsResponse;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.ListLabelsRequest;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.ListLabelsResponse;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.SetAuthsRequest;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.VisibilityLabel;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsRequest;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsResponse;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsService;
-import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
+import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
+import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.GetAuthsRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.GetAuthsResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.ListLabelsRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.ListLabelsResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.SetAuthsRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.VisibilityLabel;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos.VisibilityLabelsService;
 
 
 /**
@@ -69,23 +67,6 @@ public class VisibilityClient {
   /**
    * Utility method for adding label to the system.
    *
-   * @param conf
-   * @param label
-   * @return VisibilityLabelsResponse
-   * @throws Throwable
-   * @deprecated Use {@link #addLabel(Connection,String)} instead.
-   */
-  @Deprecated
-  public static VisibilityLabelsResponse addLabel(Configuration conf, final String label)
-      throws Throwable {
-    try (Connection connection = ConnectionFactory.createConnection(conf)) {
-      return addLabels(connection, new String[] { label });
-    }
-  }
-
-  /**
-   * Utility method for adding label to the system.
-   *
    * @param connection
    * @param label
    * @return VisibilityLabelsResponse
@@ -94,23 +75,6 @@ public class VisibilityClient {
   public static VisibilityLabelsResponse addLabel(Connection connection, final String label)
       throws Throwable {
     return addLabels(connection, new String[] { label });
-  }
-
-  /**
-   * Utility method for adding labels to the system.
-   *
-   * @param conf
-   * @param labels
-   * @return VisibilityLabelsResponse
-   * @throws Throwable
-   * @deprecated Use {@link #addLabels(Connection,String[])} instead.
-   */
-  @Deprecated
-  public static VisibilityLabelsResponse addLabels(Configuration conf, final String[] labels)
-      throws Throwable {
-    try (Connection connection = ConnectionFactory.createConnection(conf)) {
-      return addLabels(connection, labels);
-    }
   }
 
   /**
@@ -136,7 +100,7 @@ public class VisibilityClient {
           for (String label : labels) {
             if (label.length() > 0) {
               VisibilityLabel.Builder newBuilder = VisibilityLabel.newBuilder();
-              newBuilder.setLabel(ByteStringer.wrap(Bytes.toBytes(label)));
+              newBuilder.setLabel(UnsafeByteOperations.unsafeWrap((Bytes.toBytes(label))));
               builder.addVisLabel(newBuilder.build());
             }
           }
@@ -158,23 +122,6 @@ public class VisibilityClient {
 
   /**
    * Sets given labels globally authorized for the user.
-   * @param conf
-   * @param auths
-   * @param user
-   * @return VisibilityLabelsResponse
-   * @throws Throwable
-   * @deprecated Use {@link #setAuths(Connection,String[],String)} instead.
-   */
-  @Deprecated
-  public static VisibilityLabelsResponse setAuths(Configuration conf, final String[] auths,
-      final String user) throws Throwable {
-    try (Connection connection = ConnectionFactory.createConnection(conf)) {
-      return setOrClearAuths(connection, auths, user, true);
-    }
-  }
-
-  /**
-   * Sets given labels globally authorized for the user.
    * @param connection
    * @param auths
    * @param user
@@ -184,20 +131,6 @@ public class VisibilityClient {
   public static VisibilityLabelsResponse setAuths(Connection connection, final String[] auths,
       final String user) throws Throwable {
     return setOrClearAuths(connection, auths, user, true);
-  }
-
-  /**
-   * @param conf
-   * @param user
-   * @return labels, the given user is globally authorized for.
-   * @throws Throwable
-   * @deprecated Use {@link #getAuths(Connection,String)} instead.
-   */
-  @Deprecated
-  public static GetAuthsResponse getAuths(Configuration conf, final String user) throws Throwable {
-    try (Connection connection = ConnectionFactory.createConnection(conf)) {
-      return getAuths(connection, user);
-    }
   }
 
   /**
@@ -218,7 +151,7 @@ public class VisibilityClient {
         @Override
         public GetAuthsResponse call(VisibilityLabelsService service) throws IOException {
           GetAuthsRequest.Builder getAuthReqBuilder = GetAuthsRequest.newBuilder();
-          getAuthReqBuilder.setUser(ByteStringer.wrap(Bytes.toBytes(user)));
+          getAuthReqBuilder.setUser(UnsafeByteOperations.unsafeWrap(Bytes.toBytes(user)));
           service.getAuths(controller, getAuthReqBuilder.build(), rpcCallback);
           GetAuthsResponse response = rpcCallback.get();
           if (controller.failedOnException()) {
@@ -232,22 +165,6 @@ public class VisibilityClient {
               HConstants.EMPTY_BYTE_ARRAY, callable);
       return result.values().iterator().next(); // There will be exactly one region for labels
       // table and so one entry in result Map.
-    }
-  }
-
-  /**
-   * Retrieve the list of visibility labels defined in the system.
-   * @param conf
-   * @param regex  The regular expression to filter which labels are returned.
-   * @return labels The list of visibility labels defined in the system.
-   * @throws Throwable
-   * @deprecated Use {@link #listLabels(Connection,String)} instead.
-   */
-  @Deprecated
-  public static ListLabelsResponse listLabels(Configuration conf, final String regex)
-      throws Throwable {
-    try(Connection connection = ConnectionFactory.createConnection(conf)){
-      return listLabels(connection, regex);
     }
   }
 
@@ -293,23 +210,6 @@ public class VisibilityClient {
 
   /**
    * Removes given labels from user's globally authorized list of labels.
-   * @param conf
-   * @param auths
-   * @param user
-   * @return VisibilityLabelsResponse
-   * @throws Throwable
-   * @deprecated Use {@link #clearAuths(Connection,String[],String)} instead.
-   */
-  @Deprecated
-  public static VisibilityLabelsResponse clearAuths(Configuration conf, final String[] auths,
-      final String user) throws Throwable {
-    try (Connection connection = ConnectionFactory.createConnection(conf)) {
-      return setOrClearAuths(connection, auths, user, false);
-    }
-  }
-
-  /**
-   * Removes given labels from user's globally authorized list of labels.
    * @param connection
    * @param auths
    * @param user
@@ -335,7 +235,7 @@ public class VisibilityClient {
         @Override
         public VisibilityLabelsResponse call(VisibilityLabelsService service) throws IOException {
           SetAuthsRequest.Builder setAuthReqBuilder = SetAuthsRequest.newBuilder();
-          setAuthReqBuilder.setUser(ByteStringer.wrap(Bytes.toBytes(user)));
+          setAuthReqBuilder.setUser(UnsafeByteOperations.unsafeWrap(Bytes.toBytes(user)));
           for (String auth : auths) {
             if (auth.length() > 0) {
               setAuthReqBuilder.addAuth((ByteString.copyFromUtf8(auth)));

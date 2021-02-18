@@ -21,6 +21,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -37,9 +38,8 @@ import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.Stoppable;
 import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.replication.TableCFs;
 import org.apache.hadoop.hbase.io.WALLink;
 import org.apache.hadoop.hbase.procedure2.util.StringUtils;
@@ -204,10 +204,8 @@ public class DumpReplicationQueues extends Configured implements Tool {
   }
 
   private int dumpReplicationQueues(DumpOptions opts) throws Exception {
-
     Configuration conf = getConf();
-    HBaseAdmin.available(conf);
-    ClusterConnection connection = (ClusterConnection) ConnectionFactory.createConnection(conf);
+    Connection connection = ConnectionFactory.createConnection(conf);
     Admin admin = connection.getAdmin();
 
     ZKWatcher zkw = new ZKWatcher(conf, "DumpReplicationQueues" + System.currentTimeMillis(),
@@ -310,7 +308,7 @@ public class DumpReplicationQueues extends Configured implements Tool {
     queueStorage = ReplicationStorageFactory.getReplicationQueueStorage(zkw, getConf());
     replicationTracker = ReplicationFactory.getReplicationTracker(zkw, new WarnOnlyAbortable(),
       new WarnOnlyStoppable());
-    Set<String> liveRegionServers = new HashSet<>(replicationTracker.getListOfRegionServers());
+    Set<ServerName> liveRegionServers = new HashSet<>(replicationTracker.getListOfRegionServers());
 
     // Loops each peer on each RS and dumps the queues
     List<ServerName> regionservers = queueStorage.getListOfReplicators();
@@ -319,12 +317,13 @@ public class DumpReplicationQueues extends Configured implements Tool {
     }
     for (ServerName regionserver : regionservers) {
       List<String> queueIds = queueStorage.getAllQueues(regionserver);
-      if (!liveRegionServers.contains(regionserver.getServerName())) {
+      if (!liveRegionServers.contains(regionserver)) {
         deadRegionServers.add(regionserver.getServerName());
       }
       for (String queueId : queueIds) {
         ReplicationQueueInfo queueInfo = new ReplicationQueueInfo(queueId);
         List<String> wals = queueStorage.getWALsInQueue(regionserver, queueId);
+        Collections.sort(wals);
         if (!peerIds.contains(queueInfo.getPeerId())) {
           deletedQueues.add(regionserver + "/" + queueId);
           sb.append(formatQueue(regionserver, queueStorage, queueInfo, queueId, wals, true, hdfs));

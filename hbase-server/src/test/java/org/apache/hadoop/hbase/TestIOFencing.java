@@ -31,6 +31,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.regionserver.CompactingMemStore;
@@ -41,7 +42,6 @@ import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
 import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerServices;
-import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.regionserver.wal.WALUtil;
@@ -194,17 +194,19 @@ public class TestIOFencing {
         TableDescriptor htd, RegionServerServices rsServices) {
       super(tableDir, log, fs, confParam, info, htd, rsServices);
     }
+
     @Override
-    protected HStore instantiateHStore(final ColumnFamilyDescriptor family) throws IOException {
-      return new BlockCompactionsInCompletionHStore(this, family, this.conf);
+    protected HStore instantiateHStore(final ColumnFamilyDescriptor family, boolean warmup)
+        throws IOException {
+      return new BlockCompactionsInCompletionHStore(this, family, this.conf, warmup);
     }
   }
 
   public static class BlockCompactionsInCompletionHStore extends HStore {
     CompactionBlockerRegion r;
     protected BlockCompactionsInCompletionHStore(HRegion region, ColumnFamilyDescriptor family,
-        Configuration confParam) throws IOException {
-      super(region, family, confParam);
+        Configuration confParam, boolean warmup) throws IOException {
+      super(region, family, confParam, warmup);
       r = (CompactionBlockerRegion) region;
     }
 
@@ -290,8 +292,7 @@ public class TestIOFencing {
 
       // add a compaction from an older (non-existing) region to see whether we successfully skip
       // those entries
-      HRegionInfo oldHri = new HRegionInfo(table.getName(),
-        HConstants.EMPTY_START_ROW, HConstants.EMPTY_END_ROW);
+      RegionInfo oldHri = RegionInfoBuilder.newBuilder(table.getName()).build();
       CompactionDescriptor compactionDescriptor = ProtobufUtil.toCompactionDescriptor(oldHri,
         FAMILY, Lists.newArrayList(new Path("/a")), Lists.newArrayList(new Path("/b")),
         new Path("store_dir"));
@@ -365,7 +366,7 @@ public class TestIOFencing {
       int count;
       for (int i = 0;; i++) {
         try {
-          count = TEST_UTIL.countRows(table);
+          count = HBaseTestingUtility.countRows(table);
           break;
         } catch (DoNotRetryIOException e) {
           // wait up to 30s

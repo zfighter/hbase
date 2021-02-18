@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -31,15 +30,15 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.TestTableName;
+import org.apache.hadoop.hbase.TableNameTestRule;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotHFileCleaner;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSVisitor;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -57,7 +56,7 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 /**
  * Test Case for HBASE-21387
  */
-@Category({ LargeTests.class })
+@Category({ MediumTests.class })
 public class TestSnapshotWhenChoreCleaning {
 
   @ClassRule
@@ -75,7 +74,7 @@ public class TestSnapshotWhenChoreCleaning {
   private static Table TABLE;
 
   @Rule
-  public TestTableName TEST_TABLE = new TestTableName();
+  public TableNameTestRule testTable = new TableNameTestRule();
 
   @BeforeClass
   public static void setUp() throws Exception {
@@ -126,7 +125,7 @@ public class TestSnapshotWhenChoreCleaning {
   }
 
   private static boolean isAnySnapshots(FileSystem fs) throws IOException {
-    Path snapshotDir = SnapshotDescriptionUtils.getSnapshotsDir(FSUtils.getRootDir(CONF));
+    Path snapshotDir = SnapshotDescriptionUtils.getSnapshotsDir(CommonFSUtils.getRootDir(CONF));
     FileStatus[] snapFiles = fs.listStatus(snapshotDir);
     if (snapFiles.length == 0) {
       return false;
@@ -149,9 +148,9 @@ public class TestSnapshotWhenChoreCleaning {
     cleaner.init(ImmutableMap.of(HMaster.MASTER, TEST_UTIL.getHBaseCluster().getMaster()));
     cleaner.setConf(CONF);
 
-    FileSystem fs = FSUtils.getCurrentFileSystem(CONF);
+    FileSystem fs = CommonFSUtils.getCurrentFileSystem(CONF);
     List<Path> fileNames =
-        listHFileNames(fs, FSUtils.getTableDir(FSUtils.getRootDir(CONF), TABLE_NAME));
+        listHFileNames(fs, CommonFSUtils.getTableDir(CommonFSUtils.getRootDir(CONF), TABLE_NAME));
     List<FileStatus> files = new ArrayList<>();
     for (Path fileName : fileNames) {
       files.add(fs.getFileStatus(fileName));

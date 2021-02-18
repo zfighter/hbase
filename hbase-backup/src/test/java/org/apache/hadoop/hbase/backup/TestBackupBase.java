@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
@@ -34,9 +33,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupInfo.BackupPhase;
@@ -50,13 +47,14 @@ import org.apache.hadoop.hbase.backup.impl.IncrementalTableBackupClient;
 import org.apache.hadoop.hbase.backup.master.LogRollMasterProcedureManager;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Durability;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.cleaner.LogCleaner;
 import org.apache.hadoop.hbase.master.cleaner.TimeToLiveLogCleaner;
 import org.apache.hadoop.hbase.security.HadoopSecurityEnabledUserProviderForTesting;
@@ -86,7 +84,7 @@ public class TestBackupBase {
   protected static Configuration conf2;
 
   protected static TableName table1 = TableName.valueOf("table1");
-  protected static HTableDescriptor table1Desc;
+  protected static TableDescriptor table1Desc;
   protected static TableName table2 = TableName.valueOf("table2");
   protected static TableName table3 = TableName.valueOf("table3");
   protected static TableName table4 = TableName.valueOf("table4");
@@ -343,7 +341,7 @@ public class TestBackupBase {
   @AfterClass
   public static void tearDown() throws Exception {
     try{
-      SnapshotTestingUtils.deleteAllSnapshots(TEST_UTIL.getHBaseAdmin());
+      SnapshotTestingUtils.deleteAllSnapshots(TEST_UTIL.getAdmin());
     } catch (Exception e) {
     }
     SnapshotTestingUtils.deleteArchiveDirectory(TEST_UTIL);
@@ -354,9 +352,9 @@ public class TestBackupBase {
     TEST_UTIL.shutdownMiniMapReduceCluster();
   }
 
-  HTable insertIntoTable(Connection conn, TableName table, byte[] family, int id, int numRows)
+  Table insertIntoTable(Connection conn, TableName table, byte[] family, int id, int numRows)
       throws IOException {
-    HTable t = (HTable) conn.getTable(table);
+    Table t = conn.getTable(table);
     Put p1;
     for (int i = 0; i < numRows; i++) {
       p1 = new Put(Bytes.toBytes("row-" + table + "-" + id + "-" + i));
@@ -417,7 +415,7 @@ public class TestBackupBase {
   protected static void createTables() throws Exception {
     long tid = System.currentTimeMillis();
     table1 = TableName.valueOf("test-" + tid);
-    HBaseAdmin ha = TEST_UTIL.getHBaseAdmin();
+    Admin ha = TEST_UTIL.getAdmin();
 
     // Create namespaces
     NamespaceDescriptor desc1 = NamespaceDescriptor.create("ns1").build();
@@ -430,9 +428,8 @@ public class TestBackupBase {
     ha.createNamespace(desc3);
     ha.createNamespace(desc4);
 
-    HTableDescriptor desc = new HTableDescriptor(table1);
-    HColumnDescriptor fam = new HColumnDescriptor(famName);
-    desc.addFamily(fam);
+    TableDescriptor desc = TableDescriptorBuilder.newBuilder(table1)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(famName)).build();
     ha.createTable(desc);
     table1Desc = desc;
     Connection conn = ConnectionFactory.createConnection(conf1);
@@ -440,8 +437,8 @@ public class TestBackupBase {
     loadTable(table);
     table.close();
     table2 = TableName.valueOf("ns2:test-" + tid + 1);
-    desc = new HTableDescriptor(table2);
-    desc.addFamily(fam);
+    desc = TableDescriptorBuilder.newBuilder(table2)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(famName)).build();
     ha.createTable(desc);
     table = conn.getTable(table2);
     loadTable(table);

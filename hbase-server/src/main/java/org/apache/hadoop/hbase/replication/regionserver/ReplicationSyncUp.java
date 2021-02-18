@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -29,9 +29,10 @@ import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
+import org.apache.hadoop.hbase.wal.WALFactory;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
@@ -75,14 +76,15 @@ public class ReplicationSyncUp extends Configured implements Tool {
     Configuration conf = getConf();
     try (ZKWatcher zkw =
       new ZKWatcher(conf, "syncupReplication" + System.currentTimeMillis(), abortable, true)) {
-      Path walRootDir = FSUtils.getWALRootDir(conf);
-      FileSystem fs = FSUtils.getWALFileSystem(conf);
+      Path walRootDir = CommonFSUtils.getWALRootDir(conf);
+      FileSystem fs = CommonFSUtils.getWALFileSystem(conf);
       Path oldLogDir = new Path(walRootDir, HConstants.HREGION_OLDLOGDIR_NAME);
       Path logDir = new Path(walRootDir, HConstants.HREGION_LOGDIR_NAME);
 
       System.out.println("Start Replication Server start");
       Replication replication = new Replication();
-      replication.initialize(new DummyServer(zkw), fs, logDir, oldLogDir, null);
+      replication.initialize(new DummyServer(zkw), fs, logDir, oldLogDir,
+        new WALFactory(conf, "test", null, false));
       ReplicationSourceManager manager = replication.getReplicationManager();
       manager.init().get();
       while (manager.activeFailoverTaskCount() > 0) {
@@ -104,7 +106,7 @@ public class ReplicationSyncUp extends Configured implements Tool {
     ZKWatcher zkw;
 
     DummyServer(ZKWatcher zkw) {
-      // an unique name in case the first run fails
+      // a unique name in case the first run fails
       hostname = System.currentTimeMillis() + ".SyncUpTool.replication.org";
       this.zkw = zkw;
     }
@@ -152,17 +154,12 @@ public class ReplicationSyncUp extends Configured implements Tool {
     }
 
     @Override
-    public ClusterConnection getConnection() {
+    public Connection getConnection() {
       return null;
     }
 
     @Override
     public ChoreService getChoreService() {
-      return null;
-    }
-
-    @Override
-    public ClusterConnection getClusterConnection() {
       return null;
     }
 
@@ -178,6 +175,11 @@ public class ReplicationSyncUp extends Configured implements Tool {
 
     @Override
     public Connection createConnection(Configuration conf) throws IOException {
+      return null;
+    }
+
+    @Override
+    public AsyncClusterConnection getAsyncClusterConnection() {
       return null;
     }
   }

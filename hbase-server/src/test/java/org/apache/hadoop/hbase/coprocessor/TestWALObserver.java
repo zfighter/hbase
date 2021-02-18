@@ -55,9 +55,9 @@ import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.testclassification.CoprocessorTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdge;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.wal.WALEdit;
@@ -126,8 +126,8 @@ public class TestWALObserver {
     Path hbaseWALRootDir = TEST_UTIL.getDFSCluster().getFileSystem()
             .makeQualified(new Path("/hbaseLogRoot"));
     LOG.info("hbase.rootdir=" + hbaseRootDir);
-    FSUtils.setRootDir(conf, hbaseRootDir);
-    FSUtils.setWALRootDir(conf, hbaseWALRootDir);
+    CommonFSUtils.setRootDir(conf, hbaseRootDir);
+    CommonFSUtils.setWALRootDir(conf, hbaseWALRootDir);
   }
 
   @AfterClass
@@ -140,8 +140,8 @@ public class TestWALObserver {
     this.conf = HBaseConfiguration.create(TEST_UTIL.getConfiguration());
     // this.cluster = TEST_UTIL.getDFSCluster();
     this.fs = TEST_UTIL.getDFSCluster().getFileSystem();
-    this.hbaseRootDir = FSUtils.getRootDir(conf);
-    this.hbaseWALRootDir = FSUtils.getWALRootDir(conf);
+    this.hbaseRootDir = CommonFSUtils.getRootDir(conf);
+    this.hbaseWALRootDir = CommonFSUtils.getWALRootDir(conf);
     this.oldLogDir = new Path(this.hbaseWALRootDir,
         HConstants.HREGION_OLDLOGDIR_NAME);
     String serverName = ServerName.valueOf(currentTest.getMethodName(), 16010,
@@ -239,9 +239,8 @@ public class TestWALObserver {
     // it's where WAL write cp should occur.
     long now = EnvironmentEdgeManager.currentTime();
     // we use HLogKey here instead of WALKeyImpl directly to support legacy coprocessors.
-    long txid = log.append(hri, new WALKeyImpl(hri.getEncodedNameAsBytes(), hri.getTable(), now,
-        new MultiVersionConcurrencyControl(), scopes),
-      edit, true);
+    long txid = log.appendData(hri, new WALKeyImpl(hri.getEncodedNameAsBytes(), hri.getTable(), now,
+      new MultiVersionConcurrencyControl(), scopes), edit);
     log.sync(txid);
 
     // the edit shall have been change now by the coprocessor.
@@ -291,9 +290,9 @@ public class TestWALObserver {
       assertFalse(cp.isPostWALWriteCalled());
 
       final long now = EnvironmentEdgeManager.currentTime();
-      long txid = log.append(hri,
-          new WALKeyImpl(hri.getEncodedNameAsBytes(), hri.getTable(), now, mvcc, scopes),
-          new WALEdit(), true);
+      long txid = log.appendData(hri,
+        new WALKeyImpl(hri.getEncodedNameAsBytes(), hri.getTable(), now, mvcc, scopes),
+        new WALEdit());
       log.sync(txid);
 
       assertFalse("Empty WALEdit should skip coprocessor evaluation.", cp.isPreWALWriteCalled());
@@ -319,8 +318,7 @@ public class TestWALObserver {
     // createBasic3FamilyHRegionInfo(Bytes.toString(tableName));
     RegionInfo hri = RegionInfoBuilder.newBuilder(tableName).build();
 
-    final Path basedir =
-        FSUtils.getTableDir(this.hbaseRootDir, tableName);
+    final Path basedir = CommonFSUtils.getTableDir(this.hbaseRootDir, tableName);
     deleteDir(basedir);
     fs.mkdirs(new Path(basedir, hri.getEncodedName()));
 
@@ -340,8 +338,8 @@ public class TestWALObserver {
       addWALEdits(tableName, hri, TEST_ROW, fam, countPerFamily,
         EnvironmentEdgeManager.getDelegate(), wal, scopes, mvcc);
     }
-    wal.append(hri, new WALKeyImpl(hri.getEncodedNameAsBytes(), tableName, now, mvcc, scopes), edit,
-      true);
+    wal.appendData(hri, new WALKeyImpl(hri.getEncodedNameAsBytes(), tableName, now, mvcc, scopes),
+      edit);
     // sync to fs.
     wal.sync();
 
@@ -456,8 +454,8 @@ public class TestWALObserver {
       edit.add(new KeyValue(rowName, family, qualifierBytes, ee.currentTime(), columnBytes));
       // uses WALKeyImpl instead of HLogKey on purpose. will only work for tests where we don't care
       // about legacy coprocessors
-      txid = wal.append(hri,
-        new WALKeyImpl(hri.getEncodedNameAsBytes(), tableName, ee.currentTime(), mvcc), edit, true);
+      txid = wal.appendData(hri,
+        new WALKeyImpl(hri.getEncodedNameAsBytes(), tableName, ee.currentTime(), mvcc), edit);
     }
     if (-1 != txid) {
       wal.sync(txid);

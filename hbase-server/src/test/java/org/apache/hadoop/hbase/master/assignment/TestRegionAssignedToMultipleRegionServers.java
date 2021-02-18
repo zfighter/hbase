@@ -41,7 +41,6 @@ import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.zookeeper.KeeperException;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -110,7 +109,7 @@ public class TestRegionAssignedToMultipleRegionServers {
 
   public static final class HMasterForTest extends HMaster {
 
-    public HMasterForTest(Configuration conf) throws IOException, KeeperException {
+    public HMasterForTest(Configuration conf) throws IOException {
       super(conf);
     }
 
@@ -164,7 +163,7 @@ public class TestRegionAssignedToMultipleRegionServers {
     KILL = true;
     HMaster activeMaster = UTIL.getMiniHBaseCluster().getMaster();
     activeMaster.abort("For testing");
-    activeMaster.getThread().join();
+    activeMaster.join();
     KILL = false;
 
     // sleep a while to reproduce the problem, as after the fix in HBASE-21472 the execution logic

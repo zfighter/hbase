@@ -32,7 +32,7 @@
 #      --annotation org.apache.yetus.audience.InterfaceAudience.LimitedPrivate \
 #      --include-file "hbase-*" \
 #      --known_problems_path ~/known_problems.json \
-#      rel/1.0.0 branch-1.2
+#      rel/1.3.0 branch-1.4
 
 import json
 import logging
@@ -229,7 +229,7 @@ def compare_results(tool_results, known_issues, compare_warnings):
                                       observed_count=tool_results[check][issue_type])
                      for check, known_issue_counts in known_issues.items()
                         for issue_type, known_count in known_issue_counts.items()
-                            if tool_results[check][issue_type] > known_count]
+                           if compare_tool_results_count(tool_results, check, issue_type, known_count)]
 
     if not compare_warnings:
         unexpected_issues = [tup for tup in unexpected_issues
@@ -241,6 +241,14 @@ def compare_results(tool_results, known_issues, compare_warnings):
 
     return bool(unexpected_issues)
 
+def compare_tool_results_count(tool_results, check, issue_type, known_count):
+    """ Check problem counts are no more than the known count.
+    (This function exists just so can add in logging; previous was inlined
+    one-liner but this made it hard debugging)
+    """
+    # logging.info("known_count=%s, check key=%s, tool_results=%s, issue_type=%s",
+    #        str(known_count), str(check), str(tool_results), str(issue_type))
+   return tool_results[check][issue_type] > known_count
 
 def process_java_acc_output(output):
     """ Process the output string to find the problems and warnings in both the
@@ -325,14 +333,14 @@ def get_known_problems(json_path, src_rev, dst_rev):
     keys in the format source_branch/destination_branch and the values
     dictionaries with binary and source problems and warnings
     Example:
-    {'branch-1.0.0': {
-      'rel/1.0.0': {'binary': {'problems': 123, 'warnings': 16},
+    {'branch-1.3': {
+      'rel/1.3.0': {'binary': {'problems': 123, 'warnings': 16},
                       'source': {'problems': 167, 'warnings': 1}},
-      'branch-1.2.0': {'binary': {'problems': 0, 'warnings': 0},
+      'branch-1.4': {'binary': {'problems': 0, 'warnings': 0},
                       'source': {'problems': 0, 'warnings': 0}}
       },
-    'branch-1.2.0': {
-      'rel/1.2.1': {'binary': {'problems': 13, 'warnings': 1},
+    'branch-1.4': {
+      'rel/1.4.1': {'binary': {'problems': 13, 'warnings': 1},
                       'source': {'problems': 23, 'warnings': 0}}
       }
     } """

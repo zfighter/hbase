@@ -32,27 +32,29 @@ import java.util.List;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.HBaseTestCase;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.HTestConst;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.UnknownScannerException;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.InclusiveStopFilter;
 import org.apache.hadoop.hbase.filter.PrefixFilter;
 import org.apache.hadoop.hbase.filter.WhileMatchFilter;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.ClassRule;
 import org.junit.Rule;
@@ -65,7 +67,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Test of a long-lived scanner validating as we go.
  */
-@Category({RegionServerTests.class, SmallTests.class})
+@Category({RegionServerTests.class, MediumTests.class})
 public class TestScanner {
 
   @ClassRule
@@ -75,7 +77,7 @@ public class TestScanner {
   @Rule public TestName name = new TestName();
 
   private static final Logger LOG = LoggerFactory.getLogger(TestScanner.class);
-  private final static HBaseTestingUtility TEST_UTIL = HBaseTestingUtility.createLocalHTU();
+  private final static HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
 
   private static final byte [] FIRST_ROW = HConstants.EMPTY_START_ROW;
   private static final byte [][] COLS = { HConstants.CATALOG_FAMILY };
@@ -85,23 +87,18 @@ public class TestScanner {
       //HConstants.STARTCODE_QUALIFIER
   };
 
-  static final HTableDescriptor TESTTABLEDESC =
-    new HTableDescriptor(TableName.valueOf("testscanner"));
-  static {
-    TESTTABLEDESC.addFamily(
-        new HColumnDescriptor(HConstants.CATALOG_FAMILY)
-            // Ten is an arbitrary number.  Keep versions to help debugging.
-            .setMaxVersions(10)
-            .setBlockCacheEnabled(false)
-            .setBlocksize(8 * 1024)
-    );
-  }
-  /** HRegionInfo for root region */
-  public static final HRegionInfo REGION_INFO =
-    new HRegionInfo(TESTTABLEDESC.getTableName(), HConstants.EMPTY_BYTE_ARRAY,
-    HConstants.EMPTY_BYTE_ARRAY);
+  static final TableDescriptor TESTTABLEDESC =
+    TableDescriptorBuilder.newBuilder(TableName.valueOf("testscanner"))
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(HConstants.CATALOG_FAMILY)
+        // Ten is an arbitrary number. Keep versions to help debugging.
+        .setMaxVersions(10).setBlockCacheEnabled(false).setBlocksize(8 * 1024).build())
+      .build();
 
-  private static final byte [] ROW_KEY = REGION_INFO.getRegionName();
+  /** HRegionInfo for root region */
+  public static final RegionInfo REGION_INFO =
+    RegionInfoBuilder.newBuilder(TESTTABLEDESC.getTableName()).build();
+
+  private static final byte[] ROW_KEY = REGION_INFO.getRegionName();
 
   private static final long START_CODE = Long.MAX_VALUE;
 
@@ -125,7 +122,6 @@ public class TestScanner {
 
   /**
    * Test basic stop row filter works.
-   * @throws Exception
    */
   @Test
   public void testStopRow() throws Exception {
@@ -133,10 +129,11 @@ public class TestScanner {
     byte [] stoprow = Bytes.toBytes("ccc");
     try {
       this.region = TEST_UTIL.createLocalHRegion(TESTTABLEDESC, null, null);
-      HBaseTestCase.addContent(this.region, HConstants.CATALOG_FAMILY);
+      HTestConst.addContent(this.region, HConstants.CATALOG_FAMILY);
       List<Cell> results = new ArrayList<>();
       // Do simple test of getting one row only first.
-      Scan scan = new Scan(Bytes.toBytes("abc"), Bytes.toBytes("abd"));
+      Scan scan = new Scan().withStartRow(Bytes.toBytes("abc"))
+        .withStopRow(Bytes.toBytes("abd"));
       scan.addFamily(HConstants.CATALOG_FAMILY);
 
       InternalScanner s = region.getScanner(scan);
@@ -147,7 +144,7 @@ public class TestScanner {
       s.close();
       assertEquals(0, count);
       // Now do something a bit more imvolved.
-      scan = new Scan(startrow, stoprow);
+      scan = new Scan().withStartRow(startrow).withStopRow(stoprow);
       scan.addFamily(HConstants.CATALOG_FAMILY);
 
       s = region.getScanner(scan);
@@ -206,7 +203,7 @@ public class TestScanner {
   public void testFilters() throws IOException {
     try {
       this.region = TEST_UTIL.createLocalHRegion(TESTTABLEDESC, null, null);
-      HBaseTestCase.addContent(this.region, HConstants.CATALOG_FAMILY);
+      HTestConst.addContent(this.region, HConstants.CATALOG_FAMILY);
       byte [] prefix = Bytes.toBytes("ab");
       Filter newFilter = new PrefixFilter(prefix);
       Scan scan = new Scan();
@@ -227,13 +224,12 @@ public class TestScanner {
   /**
    * Test that closing a scanner while a client is using it doesn't throw
    * NPEs but instead a UnknownScannerException. HBASE-2503
-   * @throws Exception
    */
   @Test
   public void testRaceBetweenClientAndTimeout() throws Exception {
     try {
       this.region = TEST_UTIL.createLocalHRegion(TESTTABLEDESC, null, null);
-      HBaseTestCase.addContent(this.region, HConstants.CATALOG_FAMILY);
+      HTestConst.addContent(this.region, HConstants.CATALOG_FAMILY);
       Scan scan = new Scan();
       InternalScanner s = region.getScanner(scan);
       List<Cell> results = new ArrayList<>();
@@ -252,7 +248,6 @@ public class TestScanner {
   }
 
   /** The test!
-   * @throws IOException
    */
   @Test
   public void testScanner() throws IOException {
@@ -265,7 +260,7 @@ public class TestScanner {
       Put put = new Put(ROW_KEY, System.currentTimeMillis());
 
       put.addColumn(HConstants.CATALOG_FAMILY, HConstants.REGIONINFO_QUALIFIER,
-          REGION_INFO.toByteArray());
+          RegionInfo.toByteArray(REGION_INFO));
       table.put(put);
 
       // What we just committed is in the memstore. Verify that we can get
@@ -364,7 +359,7 @@ public class TestScanner {
 
   /** Compare the HRegionInfo we read from HBase to what we stored */
   private void validateRegionInfo(byte [] regionBytes) throws IOException {
-    HRegionInfo info = HRegionInfo.parseFromOrNull(regionBytes);
+    RegionInfo info = RegionInfo.parseFromOrNull(regionBytes);
 
     assertEquals(REGION_INFO.getRegionId(), info.getRegionId());
     assertEquals(0, info.getStartKey().length);
@@ -375,18 +370,14 @@ public class TestScanner {
 
   /** Use a scanner to get the region info and then validate the results */
   private void scan(boolean validateStartcode, String serverName)
-  throws IOException {
+      throws IOException {
     InternalScanner scanner = null;
     Scan scan = null;
     List<Cell> results = new ArrayList<>();
-    byte [][][] scanColumns = {
-        COLS,
-        EXPLICIT_COLS
-    };
-
+    byte [][][] scanColumns = {COLS, EXPLICIT_COLS};
     for(int i = 0; i < scanColumns.length; i++) {
       try {
-        scan = new Scan(FIRST_ROW);
+        scan = new Scan().withStartRow(FIRST_ROW);
         for (int ii = 0; ii < EXPLICIT_COLS.length; ii++) {
           scan.addColumn(COLS[0],  EXPLICIT_COLS[ii]);
         }
@@ -463,16 +454,15 @@ public class TestScanner {
    * Tests to do a sync flush during the middle of a scan. This is testing the StoreScanner
    * update readers code essentially.  This is not highly concurrent, since its all 1 thread.
    * HBase-910.
-   * @throws Exception
    */
   @Test
   public void testScanAndSyncFlush() throws Exception {
     this.region = TEST_UTIL.createLocalHRegion(TESTTABLEDESC, null, null);
     Table hri = new RegionAsTable(region);
     try {
-        LOG.info("Added: " +
-          HBaseTestCase.addContent(hri, Bytes.toString(HConstants.CATALOG_FAMILY),
-            Bytes.toString(HConstants.REGIONINFO_QUALIFIER)));
+      LOG.info("Added: " +
+        HTestConst.addContent(hri, Bytes.toString(HConstants.CATALOG_FAMILY),
+          Bytes.toString(HConstants.REGIONINFO_QUALIFIER)));
       int count = count(hri, -1, false);
       assertEquals(count, count(hri, 100, false)); // do a sync flush.
     } catch (Exception e) {
@@ -486,17 +476,15 @@ public class TestScanner {
   /**
    * Tests to do a concurrent flush (using a 2nd thread) while scanning.  This tests both
    * the StoreScanner update readers and the transition from memstore -> snapshot -> store file.
-   *
-   * @throws Exception
    */
   @Test
   public void testScanAndRealConcurrentFlush() throws Exception {
     this.region = TEST_UTIL.createLocalHRegion(TESTTABLEDESC, null, null);
     Table hri = new RegionAsTable(region);
     try {
-        LOG.info("Added: " +
-          HBaseTestCase.addContent(hri, Bytes.toString(HConstants.CATALOG_FAMILY),
-            Bytes.toString(HConstants.REGIONINFO_QUALIFIER)));
+      LOG.info("Added: " +
+        HTestConst.addContent(hri, Bytes.toString(HConstants.CATALOG_FAMILY),
+          Bytes.toString(HConstants.REGIONINFO_QUALIFIER)));
       int count = count(hri, -1, false);
       assertEquals(count, count(hri, 100, true)); // do a true concurrent background thread flush
     } catch (Exception e) {
@@ -510,20 +498,19 @@ public class TestScanner {
   /**
    * Make sure scanner returns correct result when we run a major compaction
    * with deletes.
-   *
-   * @throws Exception
    */
   @Test
-  @SuppressWarnings("deprecation")
   public void testScanAndConcurrentMajorCompact() throws Exception {
-    HTableDescriptor htd = TEST_UTIL.createTableDescriptor(name.getMethodName());
+    TableDescriptor htd = TEST_UTIL.createTableDescriptor(TableName.valueOf(name.getMethodName()),
+      ColumnFamilyDescriptorBuilder.DEFAULT_MIN_VERSIONS, 3, HConstants.FOREVER,
+      ColumnFamilyDescriptorBuilder.DEFAULT_KEEP_DELETED);
     this.region = TEST_UTIL.createLocalHRegion(htd, null, null);
     Table hri = new RegionAsTable(region);
 
     try {
-      HBaseTestCase.addContent(hri, Bytes.toString(fam1), Bytes.toString(col1),
+      HTestConst.addContent(hri, Bytes.toString(fam1), Bytes.toString(col1),
           firstRowBytes, secondRowBytes);
-      HBaseTestCase.addContent(hri, Bytes.toString(fam2), Bytes.toString(col1),
+      HTestConst.addContent(hri, Bytes.toString(fam2), Bytes.toString(col1),
           firstRowBytes, secondRowBytes);
 
       Delete dc = new Delete(firstRowBytes);
@@ -532,9 +519,9 @@ public class TestScanner {
       region.delete(dc);
       region.flush(true);
 
-      HBaseTestCase.addContent(hri, Bytes.toString(fam1), Bytes.toString(col1),
+      HTestConst.addContent(hri, Bytes.toString(fam1), Bytes.toString(col1),
           secondRowBytes, thirdRowBytes);
-      HBaseTestCase.addContent(hri, Bytes.toString(fam2), Bytes.toString(col1),
+      HTestConst.addContent(hri, Bytes.toString(fam2), Bytes.toString(col1),
           secondRowBytes, thirdRowBytes);
       region.flush(true);
 
@@ -573,7 +560,7 @@ public class TestScanner {
    * @throws IOException
    */
   private int count(final Table countTable, final int flushIndex, boolean concurrent)
-  throws IOException {
+      throws IOException {
     LOG.info("Taking out counting scan");
     Scan scan = new Scan();
     for (byte [] qualifier: EXPLICIT_COLS) {

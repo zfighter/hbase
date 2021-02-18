@@ -19,11 +19,13 @@ package org.apache.hadoop.hbase.master.procedure;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.util.ArrayList;
 import java.util.List;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
@@ -41,7 +43,7 @@ import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveTestingUtil;
 import org.junit.ClassRule;
 import org.junit.Rule;
@@ -133,6 +135,21 @@ public class TestDeleteTableProcedure extends TestTableDDLProcedureBase {
     testSimpleDelete(tableName, splitKeys);
   }
 
+  @Test
+  public void testDeleteFromMeta() throws Exception {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
+    RegionInfo[] regions = MasterProcedureTestingUtility.createTable(
+      getMasterProcedureExecutor(), tableName, null, "f1", "f2");
+    List<RegionInfo> regionsList = new ArrayList<>();
+    UTIL.getAdmin().disableTable(tableName);
+    MasterProcedureEnv procedureEnv = getMasterProcedureExecutor().getEnvironment();
+    assertNotNull("Table should be on TableDescriptors cache.",
+      procedureEnv.getMasterServices().getTableDescriptors().get(tableName));
+    DeleteTableProcedure.deleteFromMeta(procedureEnv, tableName, regionsList);
+    assertNull("Table shouldn't be on TableDescriptors anymore.",
+      procedureEnv.getMasterServices().getTableDescriptors().get(tableName));
+  }
+
   private void testSimpleDelete(final TableName tableName, byte[][] splitKeys) throws Exception {
     RegionInfo[] regions = MasterProcedureTestingUtility.createTable(
       getMasterProcedureExecutor(), tableName, splitKeys, "f1", "f2");
@@ -197,9 +214,9 @@ public class TestDeleteTableProcedure extends TestTableDDLProcedureBase {
 
     final MasterFileSystem masterFileSystem =
       UTIL.getMiniHBaseCluster().getMaster().getMasterFileSystem();
-    final Path tableDir = FSUtils.getTableDir(masterFileSystem.getRootDir(), tableName);
+    final Path tableDir = CommonFSUtils.getTableDir(masterFileSystem.getRootDir(), tableName);
     final Path tempDir = masterFileSystem.getTempDir();
-    final Path tempTableDir = FSUtils.getTableDir(tempDir, tableName);
+    final Path tempTableDir = CommonFSUtils.getTableDir(tempDir, tableName);
     final FileSystem fs = masterFileSystem.getFileSystem();
 
     // copy the table to the temporary directory to make sure the temp directory is not empty

@@ -28,15 +28,15 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.io.hfile.TestHFile;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
 import org.apache.hadoop.hbase.mob.MobUtils;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.hbck.HFileCorruptionChecker;
 import org.apache.hadoop.hbase.util.hbck.HbckTestingUtil;
+import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -44,7 +44,7 @@ import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
-@Category({MiscTests.class, LargeTests.class})
+@Category({MiscTests.class, MediumTests.class})
 public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
 
   @ClassRule
@@ -66,7 +66,8 @@ public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
     TEST_UTIL.startMiniCluster(1);
 
     tableExecutorService = new ThreadPoolExecutor(1, POOL_SIZE, 60, TimeUnit.SECONDS,
-        new SynchronousQueue<>(), Threads.newDaemonThreadFactory("testhbck"));
+      new SynchronousQueue<>(), new ThreadFactoryBuilder().setNameFormat("testhbck-pool-%d")
+        .setDaemon(true).setUncaughtExceptionHandler(Threads.LOGGING_EXCEPTION_HANDLER).build());
 
     hbfsckExecutorService = new ScheduledThreadPoolExecutor(POOL_SIZE);
 
@@ -74,7 +75,7 @@ public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
         TEST_UTIL.getHBaseCluster().getMaster().getAssignmentManager();
     regionStates = assignmentManager.getRegionStates();
 
-    connection = (ClusterConnection) TEST_UTIL.getConnection();
+    connection = TEST_UTIL.getConnection();
 
     admin = connection.getAdmin();
     admin.balancerSwitch(false, true);
@@ -99,6 +100,7 @@ public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
   /**
    * This creates a table and then corrupts a mob file.  Hbck should quarantine the file.
    */
+  @SuppressWarnings("deprecation")
   @Test
   public void testQuarantineCorruptMobFile() throws Exception {
     TableName table = TableName.valueOf(name.getMethodName());
@@ -115,7 +117,7 @@ public class TestHBaseFsckMOB extends BaseTestHBaseFsck {
       Path corrupt = new Path(mobFile.getParent(), corruptMobFile);
       TestHFile.truncateFile(fs, mobFile, corrupt);
       LOG.info("Created corrupted mob file " + corrupt);
-      HBaseFsck.debugLsr(conf, FSUtils.getRootDir(conf));
+      HBaseFsck.debugLsr(conf, CommonFSUtils.getRootDir(conf));
       HBaseFsck.debugLsr(conf, MobUtils.getMobHome(conf));
 
       // A corrupt mob file doesn't abort the start of regions, so we can enable the table.

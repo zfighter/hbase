@@ -45,7 +45,7 @@ import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.wal.WALEdit;
@@ -122,8 +122,8 @@ public class TestLogRollAbort {
 
     // disable region rebalancing (interferes with log watching)
     cluster.getMaster().balanceSwitch(false);
-    FSUtils.setRootDir(conf, HBASEDIR);
-    FSUtils.setWALRootDir(conf, HBASELOGDIR);
+    CommonFSUtils.setRootDir(conf, HBASEDIR);
+    CommonFSUtils.setWALRootDir(conf, HBASELOGDIR);
   }
 
   @After
@@ -207,9 +207,8 @@ public class TestLogRollAbort {
         kvs.add(new KeyValue(Bytes.toBytes(i), tableName.getName(), tableName.getName()));
         NavigableMap<byte[], Integer> scopes = new TreeMap<>(Bytes.BYTES_COMPARATOR);
         scopes.put(Bytes.toBytes("column"), 0);
-        log.append(regionInfo, new WALKeyImpl(regionInfo.getEncodedNameAsBytes(), tableName,
-            System.currentTimeMillis(), mvcc, scopes),
-          kvs, true);
+        log.appendData(regionInfo, new WALKeyImpl(regionInfo.getEncodedNameAsBytes(), tableName,
+          System.currentTimeMillis(), mvcc, scopes), kvs);
       }
       // Send the data to HDFS datanodes and close the HDFS writer
       log.sync();

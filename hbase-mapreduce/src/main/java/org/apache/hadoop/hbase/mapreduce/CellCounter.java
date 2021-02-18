@@ -33,7 +33,6 @@ import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.filter.CompareFilter;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.PrefixFilter;
 import org.apache.hadoop.hbase.filter.RegexStringComparator;
@@ -235,7 +234,7 @@ public class CellCounter extends Configured implements Tool {
     // Set Scan Versions
     if (conf.get(TableInputFormat.SCAN_MAXVERSIONS) == null) {
       // default to all versions unless explicitly set
-      s.setMaxVersions(Integer.MAX_VALUE);
+      s.readVersions(Integer.MAX_VALUE);
     }
     s.setCacheBlocks(false);
     // Set RowFilter or Prefix Filter if applicable.

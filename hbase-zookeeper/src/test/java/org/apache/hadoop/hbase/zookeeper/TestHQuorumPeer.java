@@ -19,6 +19,7 @@ package org.apache.hadoop.hbase.zookeeper;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 import java.io.IOException;
 import java.util.Properties;
@@ -29,7 +30,7 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseZKTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.testclassification.ZKTests;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -39,9 +40,8 @@ import org.junit.experimental.categories.Category;
 /**
  * Test for HQuorumPeer.
  */
-@Category({ ZKTests.class, MediumTests.class })
+@Category({ ZKTests.class, SmallTests.class })
 public class TestHQuorumPeer {
-
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestHQuorumPeer.class);
@@ -74,8 +74,8 @@ public class TestHQuorumPeer {
     assertEquals(dataDir.toString(), (String)properties.get("dataDir"));
     assertEquals(Integer.valueOf(PORT_NO),
       Integer.valueOf(properties.getProperty("clientPort")));
-    assertEquals("localhost:2888:3888", properties.get("server.0"));
-    assertEquals(null, properties.get("server.1"));
+    assertEquals("127.0.0.1:2888:3888", properties.get("server.0"));
+    assertNull(properties.get("server.1"));
 
     String oldValue = conf.get(HConstants.ZOOKEEPER_QUORUM);
     conf.set(HConstants.ZOOKEEPER_QUORUM, "a.foo.bar,b.foo.bar,c.foo.bar");
@@ -86,7 +86,7 @@ public class TestHQuorumPeer {
     assertEquals("a.foo.bar:2888:3888", properties.get("server.0"));
     assertEquals("b.foo.bar:2888:3888", properties.get("server.1"));
     assertEquals("c.foo.bar:2888:3888", properties.get("server.2"));
-    assertEquals(null, properties.get("server.3"));
+    assertNull(properties.get("server.3"));
     conf.set(HConstants.ZOOKEEPER_QUORUM, oldValue);
   }
 

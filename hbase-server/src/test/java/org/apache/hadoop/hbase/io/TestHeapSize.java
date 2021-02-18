@@ -43,8 +43,12 @@ import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.io.hfile.BlockCacheKey;
+import org.apache.hadoop.hbase.io.hfile.ExclusiveMemHFileBlock;
+import org.apache.hadoop.hbase.io.hfile.HFileBlock;
+import org.apache.hadoop.hbase.io.hfile.HFileContext;
 import org.apache.hadoop.hbase.io.hfile.LruBlockCache;
 import org.apache.hadoop.hbase.io.hfile.LruCachedBlock;
+import org.apache.hadoop.hbase.io.hfile.SharedMemHFileBlock;
 import org.apache.hadoop.hbase.regionserver.CSLMImmutableSegment;
 import org.apache.hadoop.hbase.regionserver.CellArrayImmutableSegment;
 import org.apache.hadoop.hbase.regionserver.CellArrayMap;
@@ -58,6 +62,7 @@ import org.apache.hadoop.hbase.regionserver.ImmutableSegment;
 import org.apache.hadoop.hbase.regionserver.MemStoreCompactor;
 import org.apache.hadoop.hbase.regionserver.MutableSegment;
 import org.apache.hadoop.hbase.regionserver.Segment;
+import org.apache.hadoop.hbase.regionserver.StoreContext;
 import org.apache.hadoop.hbase.regionserver.TimeRangeTracker.NonSyncTimeRangeTracker;
 import org.apache.hadoop.hbase.regionserver.TimeRangeTracker.SyncTimeRangeTracker;
 import org.apache.hadoop.hbase.regionserver.throttle.StoreHotnessProtector;
@@ -516,6 +521,28 @@ public class TestHeapSize  {
   }
 
   @Test
+  public void testHFileBlockSize() throws IOException {
+    long expected;
+    long actual;
+
+    actual = HFileContext.FIXED_OVERHEAD;
+    expected = ClassSize.estimateBase(HFileContext.class, false);
+    assertEquals(expected, actual);
+
+    actual = HFileBlock.FIXED_OVERHEAD;
+    expected = ClassSize.estimateBase(HFileBlock.class, false);
+    assertEquals(expected, actual);
+
+    actual = ExclusiveMemHFileBlock.FIXED_OVERHEAD;
+    expected = ClassSize.estimateBase(ExclusiveMemHFileBlock.class, false);
+    assertEquals(expected, actual);
+
+    actual = SharedMemHFileBlock.FIXED_OVERHEAD;
+    expected = ClassSize.estimateBase(SharedMemHFileBlock.class, false);
+    assertEquals(expected, actual);
+  }
+
+  @Test
   public void testMutations(){
     Class<?> cl;
     long expected;
@@ -576,5 +603,19 @@ public class TestHeapSize  {
       assertEquals(ClassSize.ARRAY, ClassSize.OBJECT + 8);
     }
   }
-}
 
+  @Test
+  public void testAutoCalcFixedOverHead() {
+    Class[] classList = new Class[] { HFileContext.class, HRegion.class, BlockCacheKey.class,
+      HFileBlock.class, HStore.class, LruBlockCache.class, StoreContext.class };
+    for (Class cl : classList) {
+      // do estimate in advance to ensure class is loaded
+      ClassSize.estimateBase(cl, false);
+
+      long startTime = System.currentTimeMillis();
+      ClassSize.estimateBase(cl, false);
+      long endTime = System.currentTimeMillis();
+      assertTrue(endTime - startTime < 5);
+    }
+  }
+}

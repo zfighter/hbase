@@ -35,7 +35,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
@@ -62,12 +61,12 @@ public class TestSimpleRequestController {
   private static final byte[] DUMMY_BYTES_3 = Bytes.toBytes("DUMMY_BYTES_3");
   private static final ServerName SN = ServerName.valueOf("s1,1,1");
   private static final ServerName SN2 = ServerName.valueOf("s2,2,2");
-  private static final HRegionInfo HRI1
-          = new HRegionInfo(DUMMY_TABLE, DUMMY_BYTES_1, DUMMY_BYTES_2, false, 1);
-  private static final HRegionInfo HRI2
-          = new HRegionInfo(DUMMY_TABLE, DUMMY_BYTES_2, HConstants.EMPTY_END_ROW, false, 2);
-  private static final HRegionInfo HRI3
-          = new HRegionInfo(DUMMY_TABLE, DUMMY_BYTES_3, HConstants.EMPTY_END_ROW, false, 3);
+  private static final RegionInfo HRI1 = RegionInfoBuilder.newBuilder(DUMMY_TABLE)
+    .setStartKey(DUMMY_BYTES_1).setEndKey(DUMMY_BYTES_2).setRegionId(1).build();
+  private static final RegionInfo HRI2 = RegionInfoBuilder.newBuilder(DUMMY_TABLE)
+    .setStartKey(DUMMY_BYTES_2).setEndKey(HConstants.EMPTY_END_ROW).setRegionId(2).build();
+  private static final RegionInfo HRI3 = RegionInfoBuilder.newBuilder(DUMMY_TABLE)
+    .setStartKey(DUMMY_BYTES_3).setEndKey(HConstants.EMPTY_END_ROW).setRegionId(3).build();
   private static final HRegionLocation LOC1 = new HRegionLocation(HRI1, SN);
   private static final HRegionLocation LOC2 = new HRegionLocation(HRI2, SN);
   private static final HRegionLocation LOC3 = new HRegionLocation(HRI3, SN2);
@@ -101,7 +100,7 @@ public class TestSimpleRequestController {
     Configuration conf = HBaseConfiguration.create();
     conf.setLong(key, value);
     try {
-      SimpleRequestController controller = new SimpleRequestController(conf);
+      new SimpleRequestController(conf);
       fail("The " + key + " must be bigger than zero");
     } catch (IllegalArgumentException e) {
     }
@@ -148,7 +147,7 @@ public class TestSimpleRequestController {
     assertNotEquals(ReturnCode.INCLUDE, loc2Code);
 
     // fill the task slots for LOC3.
-    taskCounterPerRegion.put(LOC3.getRegionInfo().getRegionName(), new AtomicInteger(100));
+    taskCounterPerRegion.put(LOC3.getRegion().getRegionName(), new AtomicInteger(100));
     taskCounterPerServer.put(LOC3.getServerName(), new AtomicInteger(100));
 
     ReturnCode loc3Code = checker.canTakeRow(LOC3, createPut(1L));
@@ -156,7 +155,7 @@ public class TestSimpleRequestController {
     assertNotEquals(ReturnCode.INCLUDE, loc3Code);
 
     // release the task slots for LOC3.
-    taskCounterPerRegion.put(LOC3.getRegionInfo().getRegionName(), new AtomicInteger(0));
+    taskCounterPerRegion.put(LOC3.getRegion().getRegionName(), new AtomicInteger(0));
     taskCounterPerServer.put(LOC3.getServerName(), new AtomicInteger(0));
 
     ReturnCode loc3Code_2 = checker.canTakeRow(LOC3, createPut(1L));
@@ -306,7 +305,7 @@ public class TestSimpleRequestController {
     checker.notifyFinal(code, LOC1, heapSizeOfRow);
 
     // fill the task slots for LOC1.
-    taskCounterPerRegion.put(LOC1.getRegionInfo().getRegionName(), new AtomicInteger(100));
+    taskCounterPerRegion.put(LOC1.getRegion().getRegionName(), new AtomicInteger(100));
     taskCounterPerServer.put(LOC1.getServerName(), new AtomicInteger(100));
 
     // the region was previously accepted, so it must be accpted now.
@@ -317,7 +316,7 @@ public class TestSimpleRequestController {
     }
 
     // fill the task slots for LOC3.
-    taskCounterPerRegion.put(LOC3.getRegionInfo().getRegionName(), new AtomicInteger(100));
+    taskCounterPerRegion.put(LOC3.getRegion().getRegionName(), new AtomicInteger(100));
     taskCounterPerServer.put(LOC3.getServerName(), new AtomicInteger(100));
 
     // no task slots.
@@ -328,7 +327,7 @@ public class TestSimpleRequestController {
     }
 
     // release the tasks for LOC3.
-    taskCounterPerRegion.put(LOC3.getRegionInfo().getRegionName(), new AtomicInteger(0));
+    taskCounterPerRegion.put(LOC3.getRegion().getRegionName(), new AtomicInteger(0));
     taskCounterPerServer.put(LOC3.getServerName(), new AtomicInteger(0));
 
     // add LOC3 region.

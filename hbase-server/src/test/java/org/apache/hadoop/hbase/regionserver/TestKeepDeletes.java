@@ -32,16 +32,17 @@ import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.PrivateCellUtil;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManagerTestHelper;
@@ -54,14 +55,14 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 
-@Category({RegionServerTests.class, SmallTests.class})
+@Category({RegionServerTests.class, MediumTests.class})
 public class TestKeepDeletes {
 
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestKeepDeletes.class);
 
-  HBaseTestingUtility hbu = HBaseTestingUtility.createLocalHTU();
+  HBaseTestingUtility hbu = new HBaseTestingUtility();
   private final byte[] T0 = Bytes.toBytes("0");
   private final byte[] T1 = Bytes.toBytes("1");
   private final byte[] T2 = Bytes.toBytes("2");
@@ -104,7 +105,7 @@ public class TestKeepDeletes {
   @Test
   public void testBasicScenario() throws Exception {
     // keep 3 versions, rows do not expire
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 3,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 3,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -132,7 +133,7 @@ public class TestKeepDeletes {
 
     // get something *before* the delete marker
     Get g = new Get(T1);
-    g.setMaxVersions();
+    g.readAllVersions();
     g.setTimeRange(0L, ts+2);
     Result r = region.get(g);
     checkResult(r, c0, c0, T2,T1);
@@ -201,7 +202,7 @@ public class TestKeepDeletes {
   @Test
   public void testRawScanWithoutKeepingDeletes() throws Exception {
     // KEEP_DELETED_CELLS is NOT enabled
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 3,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 3,
         HConstants.FOREVER, KeepDeletedCells.FALSE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -217,7 +218,7 @@ public class TestKeepDeletes {
     // scan still returns delete markers and deletes rows
     Scan s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     InternalScanner scan = region.getScanner(s);
     List<Cell> kvs = new ArrayList<>();
     scan.next(kvs);
@@ -231,7 +232,7 @@ public class TestKeepDeletes {
     //  KEEP_DELETED_CELLS)
     s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     scan = region.getScanner(s);
     kvs = new ArrayList<>();
     scan.next(kvs);
@@ -246,7 +247,7 @@ public class TestKeepDeletes {
   @Test
   public void testWithoutKeepingDeletes() throws Exception {
     // KEEP_DELETED_CELLS is NOT enabled
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 3,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 3,
         HConstants.FOREVER, KeepDeletedCells.FALSE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -256,7 +257,7 @@ public class TestKeepDeletes {
     region.put(p);
 
     Get gOne = new Get(T1);
-    gOne.setMaxVersions();
+    gOne.readAllVersions();
     gOne.setTimeRange(0L, ts + 1);
     Result rOne = region.get(gOne);
     assertFalse(rOne.isEmpty());
@@ -268,19 +269,20 @@ public class TestKeepDeletes {
 
     // "past" get does not see rows behind delete marker
     Get g = new Get(T1);
-    g.setMaxVersions();
+    g.readAllVersions();
     g.setTimeRange(0L, ts+1);
     Result r = region.get(g);
     assertTrue(r.isEmpty());
 
     // "past" scan does not see rows behind delete marker
     Scan s = new Scan();
-    s.setMaxVersions();
+    s.readAllVersions();
     s.setTimeRange(0L, ts+1);
     InternalScanner scanner = region.getScanner(s);
     List<Cell> kvs = new ArrayList<>();
-    while (scanner.next(kvs))
-      ;
+    while (scanner.next(kvs)) {
+      continue;
+    }
     assertTrue(kvs.isEmpty());
 
     // flushing and minor compaction keep delete markers
@@ -299,13 +301,13 @@ public class TestKeepDeletes {
    */
   @Test
   public void testRawScanWithColumns() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 3,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 3,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     Region region = hbu.createLocalHRegion(htd, null, null);
 
     Scan s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     s.addColumn(c0, c0);
 
     try {
@@ -323,7 +325,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testRawScan() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 3,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 3,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     Region region = hbu.createLocalHRegion(htd, null, null);
 
@@ -351,7 +353,7 @@ public class TestKeepDeletes {
 
     Scan s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     InternalScanner scan = region.getScanner(s);
     List<Cell> kvs = new ArrayList<>();
     scan.next(kvs);
@@ -369,7 +371,7 @@ public class TestKeepDeletes {
     // verify that raw scans honor the passed timerange
     s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     s.setTimeRange(0, 1);
     scan = region.getScanner(s);
     kvs = new ArrayList<>();
@@ -380,7 +382,7 @@ public class TestKeepDeletes {
     // filter new delete markers
     s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     s.setTimeRange(0, ts+2);
     scan = region.getScanner(s);
     kvs = new ArrayList<>();
@@ -395,7 +397,7 @@ public class TestKeepDeletes {
     // filter old delete markers
     s = new Scan();
     s.setRaw(true);
-    s.setMaxVersions();
+    s.readAllVersions();
     s.setTimeRange(ts+3, ts+5);
     scan = region.getScanner(s);
     kvs = new ArrayList<>();
@@ -413,7 +415,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testDeleteMarkerExpirationEmptyStore() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 1,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 1,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -456,7 +458,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testDeleteMarkerExpiration() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 1,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 1,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -519,7 +521,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testWithOldRow() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 1,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 1,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -597,7 +599,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testRanges() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 3,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 3,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     Region region = hbu.createLocalHRegion(htd, null, null);
 
@@ -679,7 +681,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testDeleteMarkerVersioning() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 1,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 1,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
@@ -772,7 +774,7 @@ public class TestKeepDeletes {
    */
   @Test
   public void testWithMixedCFs() throws Exception {
-    HTableDescriptor htd = hbu.createTableDescriptor(name.getMethodName(), 0, 1,
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 0, 1,
         HConstants.FOREVER, KeepDeletedCells.TRUE);
     Region region = hbu.createLocalHRegion(htd, null, null);
 
@@ -799,7 +801,7 @@ public class TestKeepDeletes {
     d = new Delete(T2, ts+2);
     region.delete(d);
 
-    Scan s = new Scan(T1);
+    Scan s = new Scan().withStartRow(T1);
     s.setTimeRange(0, ts+1);
     InternalScanner scanner = region.getScanner(s);
     List<Cell> kvs = new ArrayList<>();
@@ -807,7 +809,7 @@ public class TestKeepDeletes {
     assertEquals(4, kvs.size());
     scanner.close();
 
-    s = new Scan(T2);
+    s = new Scan().withStartRow(T2);
     s.setTimeRange(0, ts+2);
     scanner = region.getScanner(s);
     kvs = new ArrayList<>();
@@ -820,12 +822,11 @@ public class TestKeepDeletes {
 
   /**
    * Test keeping deleted rows together with min versions set
-   * @throws Exception
    */
   @Test
   public void testWithMinVersions() throws Exception {
-    HTableDescriptor htd =
-        hbu.createTableDescriptor(name.getMethodName(), 3, 1000, 1, KeepDeletedCells.TRUE);
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 3,
+      1000, 1, KeepDeletedCells.TRUE);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
     long ts = EnvironmentEdgeManager.currentTime() - 2000; // 2s in the past
@@ -854,7 +855,7 @@ public class TestKeepDeletes {
     region.delete(d);
 
     Get g = new Get(T1);
-    g.setMaxVersions();
+    g.readAllVersions();
     g.setTimeRange(0L, ts-2);
     Result r = region.get(g);
     checkResult(r, c0, c0, T1,T0);
@@ -899,12 +900,11 @@ public class TestKeepDeletes {
 
   /**
    * Test keeping deleted rows together with min versions set
-   * @throws Exception
    */
   @Test
   public void testWithTTL() throws Exception {
-    HTableDescriptor htd =
-        hbu.createTableDescriptor(name.getMethodName(), 1, 1000, 1, KeepDeletedCells.TTL);
+    TableDescriptor htd = hbu.createTableDescriptor(TableName.valueOf(name.getMethodName()), 1,
+      1000, 1, KeepDeletedCells.TTL);
     HRegion region = hbu.createLocalHRegion(htd, null, null);
 
     long ts = EnvironmentEdgeManager.currentTime() - 2000; // 2s in the past
@@ -946,7 +946,7 @@ public class TestKeepDeletes {
       long time, byte[]... vals) throws IOException {
     Get g = new Get(row);
     g.addColumn(fam, col);
-    g.setMaxVersions();
+    g.readAllVersions();
     g.setTimeRange(0L, time);
     Result r = region.get(g);
     checkResult(r, fam, col, vals);
@@ -957,7 +957,7 @@ public class TestKeepDeletes {
     Scan s = new Scan();
     s.setRaw(true);
     // use max versions from the store(s)
-    s.setMaxVersions(region.getStores().iterator().next().getScanInfo().getMaxVersions());
+    s.readVersions(region.getStores().iterator().next().getScanInfo().getMaxVersions());
     InternalScanner scan = region.getScanner(s);
     List<Cell> kvs = new ArrayList<>();
     int res = 0;
@@ -965,7 +965,9 @@ public class TestKeepDeletes {
     do {
       hasMore = scan.next(kvs);
       for (Cell kv : kvs) {
-        if(CellUtil.isDelete(kv)) res++;
+        if(CellUtil.isDelete(kv)) {
+          res++;
+        }
       }
       kvs.clear();
     } while (hasMore);

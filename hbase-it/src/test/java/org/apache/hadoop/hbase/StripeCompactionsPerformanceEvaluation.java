@@ -23,6 +23,8 @@ import java.util.Locale;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.DisabledRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.StoreEngine;
@@ -264,42 +266,41 @@ public class StripeCompactionsPerformanceEvaluation extends AbstractHBaseTool {
     System.out.println(s);
   }
 
-  private HTableDescriptor createHtd(boolean isStripe) throws Exception {
-    HTableDescriptor htd = new HTableDescriptor(TABLE_NAME);
-    htd.addFamily(new HColumnDescriptor(COLUMN_FAMILY));
+  private TableDescriptorBuilder createHtd(boolean isStripe) throws Exception {
+    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(TABLE_NAME)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(COLUMN_FAMILY));
     String noSplitsPolicy = DisabledRegionSplitPolicy.class.getName();
-    htd.setConfiguration(HConstants.HBASE_REGION_SPLIT_POLICY_KEY, noSplitsPolicy);
+    builder.setValue(HConstants.HBASE_REGION_SPLIT_POLICY_KEY, noSplitsPolicy);
     if (isStripe) {
-      htd.setConfiguration(StoreEngine.STORE_ENGINE_CLASS_KEY, StripeStoreEngine.class.getName());
+      builder.setValue(StoreEngine.STORE_ENGINE_CLASS_KEY, StripeStoreEngine.class.getName());
       if (initialStripeCount != null) {
-        htd.setConfiguration(
-            StripeStoreConfig.INITIAL_STRIPE_COUNT_KEY, initialStripeCount.toString());
-        htd.setConfiguration(
-            HStore.BLOCKING_STOREFILES_KEY, Long.toString(10 * initialStripeCount));
+        builder.setValue(StripeStoreConfig.INITIAL_STRIPE_COUNT_KEY, initialStripeCount.toString());
+        builder.setValue(HStore.BLOCKING_STOREFILES_KEY, Long.toString(10 * initialStripeCount));
       } else {
-        htd.setConfiguration(HStore.BLOCKING_STOREFILES_KEY, "500");
+        builder.setValue(HStore.BLOCKING_STOREFILES_KEY, "500");
       }
       if (splitSize != null) {
-        htd.setConfiguration(StripeStoreConfig.SIZE_TO_SPLIT_KEY, splitSize.toString());
+        builder.setValue(StripeStoreConfig.SIZE_TO_SPLIT_KEY, splitSize.toString());
       }
       if (splitParts != null) {
-        htd.setConfiguration(StripeStoreConfig.SPLIT_PARTS_KEY, splitParts.toString());
+        builder.setValue(StripeStoreConfig.SPLIT_PARTS_KEY, splitParts.toString());
       }
     } else {
-      htd.setConfiguration(HStore.BLOCKING_STOREFILES_KEY, "10"); // default
+      builder.setValue(HStore.BLOCKING_STOREFILES_KEY, "10"); // default
     }
-    return htd;
+    return builder;
   }
 
-  protected void createTable(HTableDescriptor htd) throws Exception {
+  private void createTable(TableDescriptorBuilder builder)
+      throws Exception {
     deleteTable();
     if (util.getHBaseClusterInterface() instanceof MiniHBaseCluster) {
       LOG.warn("Test does not make a lot of sense for minicluster. Will set flush size low.");
-      htd.setConfiguration(HConstants.HREGION_MEMSTORE_FLUSH_SIZE, "1048576");
+      builder.setValue(HConstants.HREGION_MEMSTORE_FLUSH_SIZE, "1048576");
     }
     byte[][] splits = new RegionSplitter.HexStringSplit().split(
         util.getHBaseClusterInterface().getClusterMetrics().getLiveServerMetrics().size());
-    util.getAdmin().createTable(htd, splits);
+    util.getAdmin().createTable(builder.build(), splits);
   }
 
   public static class SeqShardedDataGenerator extends LoadTestDataGenerator {

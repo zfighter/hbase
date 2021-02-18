@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -53,6 +54,7 @@ import org.apache.hadoop.hbase.client.AsyncConnection;
 import org.apache.hadoop.hbase.client.AsyncTable;
 import org.apache.hadoop.hbase.client.BufferedMutator;
 import org.apache.hadoop.hbase.client.BufferedMutatorParams;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Consistency;
@@ -61,11 +63,16 @@ import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.RowMutations;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.client.metrics.ScanMetrics;
 import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.filter.Filter;
@@ -157,17 +164,18 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
   static {
     addCommandDescriptor(AsyncRandomReadTest.class, "asyncRandomRead",
-        "Run async random read test");
+      "Run async random read test");
     addCommandDescriptor(AsyncRandomWriteTest.class, "asyncRandomWrite",
-        "Run async random write test");
+      "Run async random write test");
     addCommandDescriptor(AsyncSequentialReadTest.class, "asyncSequentialRead",
-        "Run async sequential read test");
+      "Run async sequential read test");
     addCommandDescriptor(AsyncSequentialWriteTest.class, "asyncSequentialWrite",
-        "Run async sequential write test");
+      "Run async sequential write test");
     addCommandDescriptor(AsyncScanTest.class, "asyncScan",
-        "Run async scan test (read every row)");
-    addCommandDescriptor(RandomReadTest.class, RANDOM_READ,
-      "Run random read test");
+      "Run async scan test (read every row)");
+    addCommandDescriptor(RandomReadTest.class, RANDOM_READ, "Run random read test");
+    addCommandDescriptor(MetaRandomReadTest.class, "metaRandomRead",
+      "Run getRegionLocation test");
     addCommandDescriptor(RandomSeekScanTest.class, RANDOM_SEEK_SCAN,
       "Run random seek and scan 100 test");
     addCommandDescriptor(RandomScanWithRange10Test.class, "scanRange10",
@@ -184,11 +192,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
       "Run sequential read test");
     addCommandDescriptor(SequentialWriteTest.class, "sequentialWrite",
       "Run sequential write test");
-    addCommandDescriptor(ScanTest.class, "scan",
-      "Run scan test (read every row)");
+    addCommandDescriptor(MetaWriteTest.class, "metaWrite",
+      "Populate meta table;used with 1 thread; to be cleaned up by cleanMeta");
+    addCommandDescriptor(ScanTest.class, "scan", "Run scan test (read every row)");
     addCommandDescriptor(FilteredScanTest.class, "filterScan",
       "Run scan test using a filter to find a specific row based on it's value " +
-      "(make sure to use --rows=20)");
+        "(make sure to use --rows=20)");
     addCommandDescriptor(IncrementTest.class, "increment",
       "Increment on each row; clients overlap on keyspace so some concurrent operations");
     addCommandDescriptor(AppendTest.class, "append",
@@ -199,6 +208,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
       "CheckAndPut on each row; clients overlap on keyspace so some concurrent operations");
     addCommandDescriptor(CheckAndDeleteTest.class, "checkAndDelete",
       "CheckAndDelete on each row; clients overlap on keyspace so some concurrent operations");
+    addCommandDescriptor(CleanMetaTest.class, "cleanMeta",
+      "Remove fake region entries on meta table inserted by metaWrite; used with 1 thread");
   }
 
   /**
@@ -216,10 +227,22 @@ public class PerformanceEvaluation extends Configured implements Tool {
     public RunResult(long duration, Histogram hist) {
       this.duration = duration;
       this.hist = hist;
+      numbOfReplyOverThreshold = 0;
+      numOfReplyFromReplica = 0;
+    }
+
+    public RunResult(long duration, long numbOfReplyOverThreshold, long numOfReplyFromReplica,
+      Histogram hist) {
+      this.duration = duration;
+      this.hist = hist;
+      this.numbOfReplyOverThreshold = numbOfReplyOverThreshold;
+      this.numOfReplyFromReplica = numOfReplyFromReplica;
     }
 
     public final long duration;
     public final Histogram hist;
+    public final long numbOfReplyOverThreshold;
+    public final long numOfReplyFromReplica;
 
     @Override
     public String toString() {
@@ -339,8 +362,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
       throw new IllegalStateException(
         "Must specify an existing table for read commands. Run a write command first.");
     }
-    HTableDescriptor desc =
-      exists ? new HTableDescriptor(admin.getDescriptor(TableName.valueOf(opts.tableName))) : null;
+    TableDescriptor desc =
+      exists ? admin.getDescriptor(TableName.valueOf(opts.tableName)) : null;
     byte[][] splits = getSplits(opts);
 
     // recreate the table when user has requested presplit or when existing
@@ -383,7 +406,11 @@ public class PerformanceEvaluation extends Configured implements Tool {
           }
         }
       }
-      admin.createTable(desc, splits);
+      if (splits != null) {
+        admin.createTable(desc, splits);
+      } else {
+        admin.createTable(desc);
+      }
       LOG.info("Table " + desc + " created");
     }
     return admin.tableExists(tableName);
@@ -392,28 +419,31 @@ public class PerformanceEvaluation extends Configured implements Tool {
   /**
    * Create an HTableDescriptor from provided TestOptions.
    */
-  protected static HTableDescriptor getTableDescriptor(TestOptions opts) {
-    HTableDescriptor tableDesc = new HTableDescriptor(TableName.valueOf(opts.tableName));
+  protected static TableDescriptor getTableDescriptor(TestOptions opts) {
+    TableDescriptorBuilder builder =
+      TableDescriptorBuilder.newBuilder(TableName.valueOf(opts.tableName));
+
     for (int family = 0; family < opts.families; family++) {
       byte[] familyName = Bytes.toBytes(FAMILY_NAME_BASE + family);
-      HColumnDescriptor familyDesc = new HColumnDescriptor(familyName);
-      familyDesc.setDataBlockEncoding(opts.blockEncoding);
-      familyDesc.setCompressionType(opts.compression);
-      familyDesc.setBloomFilterType(opts.bloomType);
-      familyDesc.setBlocksize(opts.blockSize);
+      ColumnFamilyDescriptorBuilder cfBuilder =
+        ColumnFamilyDescriptorBuilder.newBuilder(familyName);
+      cfBuilder.setDataBlockEncoding(opts.blockEncoding);
+      cfBuilder.setCompressionType(opts.compression);
+      cfBuilder.setBloomFilterType(opts.bloomType);
+      cfBuilder.setBlocksize(opts.blockSize);
       if (opts.inMemoryCF) {
-        familyDesc.setInMemory(true);
+        cfBuilder.setInMemory(true);
       }
-      familyDesc.setInMemoryCompaction(opts.inMemoryCompaction);
-      tableDesc.addFamily(familyDesc);
+      cfBuilder.setInMemoryCompaction(opts.inMemoryCompaction);
+      builder.setColumnFamily(cfBuilder.build());
     }
     if (opts.replicas != DEFAULT_OPTS.replicas) {
-      tableDesc.setRegionReplication(opts.replicas);
+      builder.setRegionReplication(opts.replicas);
     }
     if (opts.splitPolicy != null && !opts.splitPolicy.equals(DEFAULT_OPTS.splitPolicy)) {
-      tableDesc.setRegionSplitPolicyClassName(opts.splitPolicy);
+      builder.setRegionSplitPolicyClassName(opts.splitPolicy);
     }
-    return tableDesc;
+    return builder.build();
   }
 
   /**
@@ -482,6 +512,10 @@ public class PerformanceEvaluation extends Configured implements Tool {
           });
           LOG.info("Finished " + Thread.currentThread().getName() + " in " + run.duration +
             "ms over " + threadOpts.perClientRunRows + " rows");
+          if (opts.latencyThreshold > 0) {
+            LOG.info("Number of replies over latency threshold " + opts.latencyThreshold +
+              "(ms) is " + run.numbOfReplyOverThreshold);
+          }
           return run;
         }
       });
@@ -502,10 +536,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
     long total = 0;
     float avgLatency = 0 ;
     float avgTPS = 0;
+    long replicaWins = 0;
     for (RunResult result : results) {
       total += result.duration;
       avgLatency += result.hist.getSnapshot().getMean();
       avgTPS += opts.perClientRunRows * 1.0f / result.duration;
+      replicaWins += result.numOfReplyFromReplica;
     }
     avgTPS *= 1000; // ms to second
     avgLatency = avgLatency / results.length;
@@ -515,11 +551,14 @@ public class PerformanceEvaluation extends Configured implements Tool {
       + "\tAvg: " + (total / results.length) + "ms");
     LOG.info("[ Avg latency (us)]\t" + Math.round(avgLatency));
     LOG.info("[ Avg TPS/QPS]\t" + Math.round(avgTPS) + "\t row per second");
+    if (opts.replicas > 1) {
+      LOG.info("[results from replica regions] " + replicaWins);
+    }
+
     for (int i = 0; i < opts.connCount; i++) {
       cons[i].close();
       asyncCons[i].close();
     }
-
 
     return results;
   }
@@ -682,7 +721,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     int randomSleep = 0;
     boolean inMemoryCF = false;
     int presplitRegions = 0;
-    int replicas = HTableDescriptor.DEFAULT_REGION_REPLICATION;
+    int replicas = TableDescriptorBuilder.DEFAULT_REGION_REPLICATION;
     String splitPolicy = null;
     Compression.Algorithm compression = Compression.Algorithm.NONE;
     BloomType bloomType = BloomType.ROW;
@@ -696,6 +735,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     int columns = 1;
     int families = 1;
     int caching = 30;
+    int latencyThreshold = 0; // in millsecond
     boolean addColumns = true;
     MemoryCompactionPolicy inMemoryCompaction =
         MemoryCompactionPolicy.valueOf(
@@ -731,6 +771,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       this.useTags = that.useTags;
       this.noOfTags = that.noOfTags;
       this.reportLatency = that.reportLatency;
+      this.latencyThreshold = that.latencyThreshold;
       this.multiGet = that.multiGet;
       this.multiPut = that.multiPut;
       this.inMemoryCF = that.inMemoryCF;
@@ -1120,6 +1161,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     private String testName;
     private Histogram latencyHistogram;
+    private Histogram replicaLatencyHistogram;
     private Histogram valueSizeHistogram;
     private Histogram rpcCallsHistogram;
     private Histogram remoteRpcCallsHistogram;
@@ -1128,6 +1170,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     private Histogram bytesInResultsHistogram;
     private Histogram bytesInRemoteResultsHistogram;
     private RandomDistribution.Zipf zipf;
+    private long numOfReplyOverLatencyThreshold = 0;
+    private long numOfReplyFromReplica = 0;
 
     /**
      * Note that all subclasses of this class must provide a public constructor
@@ -1165,13 +1209,28 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     void updateValueSize(final Result [] rs) throws IOException {
-      if (rs == null || !isRandomValueSize()) return;
-      for (Result r: rs) updateValueSize(r);
+      updateValueSize(rs, 0);
+    }
+
+    void updateValueSize(final Result [] rs, final long latency) throws IOException {
+      if (rs == null || (latency == 0)) return;
+      for (Result r: rs) updateValueSize(r, latency);
     }
 
     void updateValueSize(final Result r) throws IOException {
-      if (r == null || !isRandomValueSize()) return;
+      updateValueSize(r, 0);
+    }
+
+    void updateValueSize(final Result r, final long latency) throws IOException {
+      if (r == null || (latency == 0)) return;
       int size = 0;
+      // update replicaHistogram
+      if (r.isStale()) {
+        replicaLatencyHistogram.update(latency / 1000);
+        numOfReplyFromReplica ++;
+      }
+      if (!isRandomValueSize()) return;
+
       for (CellScanner scanner = r.cellScanner(); scanner.advance();) {
         size += scanner.current().getValueLength();
       }
@@ -1235,6 +1294,10 @@ public class PerformanceEvaluation extends Configured implements Tool {
     void testSetup() throws IOException {
       // test metrics
       latencyHistogram = YammerHistogramUtils.newHistogram(new UniformReservoir(1024 * 500));
+      // If it is a replica test, set up histogram for replica.
+      if (opts.replicas > 1) {
+        replicaLatencyHistogram = YammerHistogramUtils.newHistogram(new UniformReservoir(1024 * 500));
+      }
       valueSizeHistogram = YammerHistogramUtils.newHistogram(new UniformReservoir(1024 * 500));
       // scan metrics
       rpcCallsHistogram = YammerHistogramUtils.newHistogram(new UniformReservoir(1024 * 500));
@@ -1258,6 +1321,10 @@ public class PerformanceEvaluation extends Configured implements Tool {
         status.setStatus("Test : " + testName + ", Thread : " + Thread.currentThread().getName());
         status.setStatus("Latency (us) : " + YammerHistogramUtils.getHistogramReport(
             latencyHistogram));
+        if (opts.replicas > 1) {
+          status.setStatus("Latency (us) from Replica Regions: " +
+            YammerHistogramUtils.getHistogramReport(replicaLatencyHistogram));
+        }
         status.setStatus("Num measures (latency) : " + latencyHistogram.getCount());
         status.setStatus(YammerHistogramUtils.getPrettyHistogramReport(latencyHistogram));
         if (valueSizeHistogram.getCount() > 0) {
@@ -1339,7 +1406,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
           long startTime = System.nanoTime();
           boolean requestSent = false;
           try (TraceScope scope = TraceUtil.createTrace("test row");){
-            requestSent = testRow(i);
+            requestSent = testRow(i, startTime);
           }
           if ( (i - startRow) > opts.measureAfter) {
             // If multiget or multiput is enabled, say set to 10, testRow() returns immediately
@@ -1347,7 +1414,11 @@ public class PerformanceEvaluation extends Configured implements Tool {
             // We should only set latency when actual request is sent because otherwise
             // it turns out to be 0.
             if (requestSent) {
-              latencyHistogram.update((System.nanoTime() - startTime) / 1000);
+              long latency = (System.nanoTime() - startTime) / 1000;
+              latencyHistogram.update(latency);
+              if ((opts.latencyThreshold > 0) && (latency / 1000 >= opts.latencyThreshold)) {
+                numOfReplyOverLatencyThreshold ++;
+              }
             }
             if (status != null && i > 0 && (i % getReportingPeriod()) == 0) {
               status.setStatus(generateStatus(startRow, i, lastRow));
@@ -1379,7 +1450,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
      *         False if not, multiGet and multiPut e.g., the rows are sent
      *         to server only if enough gets/puts are gathered.
      */
-    abstract boolean testRow(final int i) throws IOException, InterruptedException;
+    abstract boolean testRow(final int i, final long startTime) throws IOException, InterruptedException;
   }
 
   static abstract class Test extends TestBase {
@@ -1418,6 +1489,31 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
   }
 
+  /*
+  * Parent class for all meta tests: MetaWriteTest, MetaRandomReadTest and CleanMetaTest
+  */
+  static abstract class MetaTest extends TableTest {
+    protected int keyLength;
+
+    MetaTest(Connection con, TestOptions options, Status status) {
+      super(con, options, status);
+      keyLength = Integer.toString(opts.perClientRunRows).length();
+    }
+
+    @Override
+    void onTakedown() throws IOException {
+      // No clean up
+    }
+
+    /*
+    Generates Lexicographically ascending strings
+     */
+    protected byte[] getSplitKey(final int i) {
+      return Bytes.toBytes(String.format("%0" + keyLength + "d", i));
+    }
+
+  }
+
   static abstract class AsyncTableTest extends AsyncTest {
     protected AsyncTable<?> table;
 
@@ -1450,7 +1546,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException, InterruptedException {
+    boolean testRow(final int i, final long startTime) throws IOException, InterruptedException {
       if (opts.randomSleep > 0) {
         Thread.sleep(rd.nextInt(opts.randomSleep));
       }
@@ -1559,7 +1655,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       if (this.testScanner == null) {
         Scan scan =
             new Scan().withStartRow(format(opts.startRow)).setCaching(opts.caching)
@@ -1593,7 +1689,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException, InterruptedException {
+    boolean testRow(final int i, final long startTime) throws IOException, InterruptedException {
       Get get = new Get(format(i));
       for (int family = 0; family < opts.families; family++) {
         byte[] familyName = Bytes.toBytes(FAMILY_NAME_BASE + family);
@@ -1635,7 +1731,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
     @Override
     @SuppressWarnings("ReturnValueIgnored")
-    boolean testRow(final int i) throws IOException, InterruptedException {
+    boolean testRow(final int i, final long startTime) throws IOException, InterruptedException {
       byte[] row = generateRow(i);
       Put put = new Put(row);
       for (int family = 0; family < opts.families; family++) {
@@ -1710,7 +1806,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       Scan scan = new Scan().withStartRow(getRandomRow(this.rand, opts.totalRows))
           .setCaching(opts.caching).setCacheBlocks(opts.cacheBlocks)
           .setAsyncPrefetch(opts.asyncPrefetch).setReadType(opts.scanReadType)
@@ -1758,7 +1854,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       Pair<byte[], byte[]> startAndStopRow = getStartAndStopRow();
       Scan scan = new Scan().withStartRow(startAndStopRow.getFirst())
           .withStopRow(startAndStopRow.getSecond()).setCaching(opts.caching)
@@ -1861,6 +1957,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     private final Consistency consistency;
     private ArrayList<Get> gets;
     private Random rd = new Random();
+    private long numOfReplyFromReplica = 0;
 
     RandomReadTest(Connection con, TestOptions options, Status status) {
       super(con, options, status);
@@ -1872,7 +1969,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException, InterruptedException {
+    boolean testRow(final int i, final long startTime) throws IOException, InterruptedException {
       if (opts.randomSleep > 0) {
         Thread.sleep(rd.nextInt(opts.randomSleep));
       }
@@ -1897,13 +1994,24 @@ public class PerformanceEvaluation extends Configured implements Tool {
         this.gets.add(get);
         if (this.gets.size() == opts.multiGet) {
           Result [] rs = this.table.get(this.gets);
-          updateValueSize(rs);
+          if (opts.replicas > 1) {
+            long latency = System.nanoTime() - startTime;
+            updateValueSize(rs, latency);
+          } else {
+            updateValueSize(rs);
+          }
           this.gets.clear();
         } else {
           return false;
         }
       } else {
-        updateValueSize(this.table.get(get));
+        if (opts.replicas > 1) {
+          Result r = this.table.get(get);
+          long latency = System.nanoTime() - startTime;
+          updateValueSize(r, latency);
+        } else {
+          updateValueSize(this.table.get(get));
+        }
       }
       return true;
     }
@@ -1920,6 +2028,46 @@ public class PerformanceEvaluation extends Configured implements Tool {
         this.table.get(gets);
         this.gets.clear();
       }
+      super.testTakedown();
+    }
+  }
+
+  /*
+  * Send random reads against fake regions inserted by MetaWriteTest
+  */
+  static class MetaRandomReadTest extends MetaTest {
+    private RegionLocator regionLocator;
+
+    MetaRandomReadTest(Connection con, TestOptions options, Status status) {
+      super(con, options, status);
+      LOG.info("call getRegionLocation");
+    }
+
+    @Override
+    void onStartup() throws IOException {
+      super.onStartup();
+      this.regionLocator = connection.getRegionLocator(table.getName());
+    }
+
+    @Override
+    boolean testRow(final int i, final long startTime) throws IOException, InterruptedException {
+      if (opts.randomSleep > 0) {
+        Thread.sleep(rand.nextInt(opts.randomSleep));
+      }
+      HRegionLocation hRegionLocation = regionLocator.getRegionLocation(
+        getSplitKey(rand.nextInt(opts.perClientRunRows)), true);
+      LOG.debug("get location for region: " + hRegionLocation);
+      return true;
+    }
+
+    @Override
+    protected int getReportingPeriod() {
+      int period = opts.perClientRunRows / 10;
+      return period == 0 ? opts.perClientRunRows : period;
+    }
+
+    @Override
+    protected void testTakedown() throws IOException {
       super.testTakedown();
     }
   }
@@ -1954,7 +2102,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
 
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       if (this.testScanner == null) {
         Scan scan = new Scan().withStartRow(format(opts.startRow)).setCaching(opts.caching)
             .setCacheBlocks(opts.cacheBlocks).setAsyncPrefetch(opts.asyncPrefetch)
@@ -2017,7 +2165,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       Increment increment = new Increment(format(i));
       // unlike checkAndXXX tests, which make most sense to do on a single value,
       // if multiple families are specified for an increment test we assume it is
@@ -2037,7 +2185,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       byte [] bytes = format(i);
       Append append = new Append(bytes);
       // unlike checkAndXXX tests, which make most sense to do on a single value,
@@ -2058,7 +2206,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       final byte [] bytes = format(i);
       // checkAndXXX tests operate on only a single value
       // Put a known value so when we go to check it, it is there.
@@ -2079,7 +2227,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       final byte [] bytes = format(i);
       // checkAndXXX tests operate on only a single value
       // Put a known value so when we go to check it, it is there.
@@ -2098,7 +2246,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       final byte [] bytes = format(i);
       // checkAndXXX tests operate on only a single value
       // Put a known value so when we go to check it, it is there.
@@ -2113,13 +2261,41 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
   }
 
+  /*
+  * Delete all fake regions inserted to meta table by MetaWriteTest.
+  */
+  static class CleanMetaTest extends MetaTest {
+    CleanMetaTest(Connection con, TestOptions options, Status status) {
+      super(con, options, status);
+    }
+
+    @Override
+    boolean testRow(final int i, final long startTime) throws IOException {
+      try {
+        RegionInfo regionInfo = connection.getRegionLocator(table.getName())
+          .getRegionLocation(getSplitKey(i), false).getRegion();
+        LOG.debug("deleting region from meta: " + regionInfo);
+
+        Delete delete = MetaTableAccessor
+          .makeDeleteFromRegionInfo(regionInfo, HConstants.LATEST_TIMESTAMP);
+        try (Table t = MetaTableAccessor.getMetaHTable(connection)) {
+          t.delete(delete);
+        }
+      } catch (IOException ie) {
+        // Log and continue
+        LOG.error("cannot find region with start key: " + i);
+      }
+      return true;
+    }
+  }
+
   static class SequentialReadTest extends TableTest {
     SequentialReadTest(Connection con, TestOptions options, Status status) {
       super(con, options, status);
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       Get get = new Get(format(i));
       for (int family = 0; family < opts.families; family++) {
         byte[] familyName = Bytes.toBytes(FAMILY_NAME_BASE + family);
@@ -2157,7 +2333,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(final int i) throws IOException {
+    boolean testRow(final int i, final long startTime) throws IOException {
       byte[] row = generateRow(i);
       Put put = new Put(row);
       for (int family = 0; family < opts.families; family++) {
@@ -2202,6 +2378,32 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
   }
 
+  /*
+  * Insert fake regions into meta table with contiguous split keys.
+  */
+  static class MetaWriteTest extends MetaTest {
+
+    MetaWriteTest(Connection con, TestOptions options, Status status) {
+      super(con, options, status);
+    }
+
+    @Override
+    boolean testRow(final int i, final long startTime) throws IOException {
+      List<RegionInfo> regionInfos = new ArrayList<RegionInfo>();
+      RegionInfo regionInfo = (RegionInfoBuilder.newBuilder(TableName.valueOf(TABLE_NAME))
+        .setStartKey(getSplitKey(i))
+        .setEndKey(getSplitKey(i + 1))
+        .build());
+      regionInfos.add(regionInfo);
+      MetaTableAccessor.addRegionsToMeta(connection, regionInfos, 1);
+
+      // write the serverName columns
+      MetaTableAccessor.updateRegionLocation(connection,
+        regionInfo, ServerName.valueOf("localhost", 60010, rand.nextLong()), i,
+        System.currentTimeMillis());
+      return true;
+    }
+  }
   static class FilteredScanTest extends TableTest {
     protected static final Logger LOG = LoggerFactory.getLogger(FilteredScanTest.class.getName());
 
@@ -2214,7 +2416,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
     }
 
     @Override
-    boolean testRow(int i) throws IOException {
+    boolean testRow(int i, final long startTime) throws IOException {
       byte[] value = generateData(this.rand, getValueLength(this.rand));
       Scan scan = constructScan(value);
       ResultScanner scanner = null;
@@ -2358,7 +2560,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
       " (" + calculateMbps((int)(opts.perClientRunRows * opts.sampleRate), totalElapsedTime,
           getAverageValueLength(opts), opts.families, opts.columns) + ")");
 
-    return new RunResult(totalElapsedTime, t.getLatencyHistogram());
+    return new RunResult(totalElapsedTime, t.numOfReplyOverLatencyThreshold,
+      t.numOfReplyFromReplica, t.getLatencyHistogram());
   }
 
   private static int getAverageValueLength(final TestOptions opts) {
@@ -2424,6 +2627,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
     System.err.println(" traceRate       Enable HTrace spans. Initiate tracing every N rows. " +
       "Default: 0");
     System.err.println(" latency         Set to report operation latencies. Default: False");
+    System.err.println(" latencyThreshold  Set to report number of operations with latency " +
+      "over lantencyThreshold, unit in millisecond, default 0");
     System.err.println(" measureAfter    Start to measure the latency once 'measureAfter'" +
         " rows have been treated. Default: 0");
     System.err.println(" valueSize       Pass value size to use: Default: "
@@ -2606,29 +2811,24 @@ public class PerformanceEvaluation extends Configured implements Tool {
       final String autoFlush = "--autoFlush=";
       if (cmd.startsWith(autoFlush)) {
         opts.autoFlush = Boolean.parseBoolean(cmd.substring(autoFlush.length()));
-        if (!opts.autoFlush && opts.multiPut > 0) {
-          throw new IllegalArgumentException("autoFlush must be true when multiPut is more than 0");
-        }
         continue;
       }
 
       final String onceCon = "--oneCon=";
       if (cmd.startsWith(onceCon)) {
         opts.oneCon = Boolean.parseBoolean(cmd.substring(onceCon.length()));
-        if (opts.oneCon && opts.connCount > 1) {
-          throw new IllegalArgumentException("oneCon is set to true, "
-              + "connCount should not bigger than 1");
-        }
         continue;
       }
 
       final String connCount = "--connCount=";
       if (cmd.startsWith(connCount)) {
         opts.connCount = Integer.parseInt(cmd.substring(connCount.length()));
-        if (opts.oneCon && opts.connCount > 1) {
-          throw new IllegalArgumentException("oneCon is set to true, "
-              + "connCount should not bigger than 1");
-        }
+        continue;
+      }
+
+      final String latencyThreshold = "--latencyThreshold=";
+      if (cmd.startsWith(latencyThreshold)) {
+        opts.latencyThreshold = Integer.parseInt(cmd.substring(latencyThreshold.length()));
         continue;
       }
 
@@ -2647,9 +2847,6 @@ public class PerformanceEvaluation extends Configured implements Tool {
       final String multiPut = "--multiPut=";
       if (cmd.startsWith(multiPut)) {
         opts.multiPut = Integer.parseInt(cmd.substring(multiPut.length()));
-        if (!opts.autoFlush && opts.multiPut > 0) {
-          throw new IllegalArgumentException("autoFlush must be true when multiPut is more than 0");
-        }
         continue;
       }
 
@@ -2711,6 +2908,7 @@ public class PerformanceEvaluation extends Configured implements Tool {
       final String blockSize = "--blockSize=";
       if(cmd.startsWith(blockSize) ) {
         opts.blockSize = Integer.parseInt(cmd.substring(blockSize.length()));
+        continue;
       }
 
       final String valueSize = "--valueSize=";
@@ -2722,18 +2920,12 @@ public class PerformanceEvaluation extends Configured implements Tool {
       final String valueRandom = "--valueRandom";
       if (cmd.startsWith(valueRandom)) {
         opts.valueRandom = true;
-        if (opts.valueZipf) {
-          throw new IllegalStateException("Either valueZipf or valueRandom but not both");
-        }
         continue;
       }
 
       final String valueZipf = "--valueZipf";
       if (cmd.startsWith(valueZipf)) {
         opts.valueZipf = true;
-        if (opts.valueRandom) {
-          throw new IllegalStateException("Either valueZipf or valueRandom but not both");
-        }
         continue;
       }
 
@@ -2799,6 +2991,8 @@ public class PerformanceEvaluation extends Configured implements Tool {
         continue;
       }
 
+      validateParsedOpts(opts);
+
       if (isCommandClass(cmd)) {
         opts.cmdName = cmd;
         try {
@@ -2818,6 +3012,25 @@ public class PerformanceEvaluation extends Configured implements Tool {
       break;
     }
     return opts;
+  }
+
+  /**
+  * Validates opts after all the opts are parsed, so that caller need not to maintain order of opts
+  */
+  private static void validateParsedOpts(TestOptions opts)  {
+
+    if (!opts.autoFlush && opts.multiPut > 0) {
+      throw new IllegalArgumentException("autoFlush must be true when multiPut is more than 0");
+    }
+
+    if (opts.oneCon && opts.connCount > 1) {
+      throw new IllegalArgumentException("oneCon is set to true, "
+          + "connCount should not bigger than 1");
+    }
+
+    if (opts.valueZipf && opts.valueRandom) {
+      throw new IllegalStateException("Either valueZipf or valueRandom but not both");
+    }
   }
 
   static TestOptions calculateRowsAndSize(final TestOptions opts) {

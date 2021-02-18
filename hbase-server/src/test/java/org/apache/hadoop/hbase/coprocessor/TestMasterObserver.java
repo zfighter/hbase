@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -32,14 +32,13 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.MasterSwitchType;
@@ -49,6 +48,7 @@ import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.SnapshotDescription;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.master.RegionPlan;
@@ -111,6 +111,8 @@ public class TestMasterObserver {
     private boolean postModifyNamespaceCalled;
     private boolean preGetNamespaceDescriptorCalled;
     private boolean postGetNamespaceDescriptorCalled;
+    private boolean preListNamespacesCalled;
+    private boolean postListNamespacesCalled;
     private boolean preListNamespaceDescriptorsCalled;
     private boolean postListNamespaceDescriptorsCalled;
     private boolean preAddColumnCalled;
@@ -204,6 +206,8 @@ public class TestMasterObserver {
       postModifyNamespaceCalled = false;
       preGetNamespaceDescriptorCalled = false;
       postGetNamespaceDescriptorCalled = false;
+      preListNamespacesCalled = false;
+      postListNamespacesCalled = false;
       preListNamespaceDescriptorsCalled = false;
       postListNamespaceDescriptorsCalled = false;
       preAddColumnCalled = false;
@@ -473,6 +477,18 @@ public class TestMasterObserver {
     }
 
     @Override
+    public void preListNamespaces(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        List<String> namespaces) {
+      preListNamespacesCalled = true;
+    }
+
+    @Override
+    public void postListNamespaces(ObserverContext<MasterCoprocessorEnvironment> ctx,
+        List<String> namespaces) {
+      postListNamespacesCalled = true;
+    }
+
+    @Override
     public void preListNamespaceDescriptors(ObserverContext<MasterCoprocessorEnvironment> env,
         List<NamespaceDescriptor> descriptors) throws IOException {
       preListNamespaceDescriptorsCalled = true;
@@ -635,13 +651,13 @@ public class TestMasterObserver {
 
     @Override
     public void preUnassign(ObserverContext<MasterCoprocessorEnvironment> env,
-        final RegionInfo regionInfo, final boolean force) throws IOException {
+        final RegionInfo regionInfo) throws IOException {
       preUnassignCalled = true;
     }
 
     @Override
     public void postUnassign(ObserverContext<MasterCoprocessorEnvironment> env,
-        final RegionInfo regionInfo, final boolean force) throws IOException {
+        final RegionInfo regionInfo) throws IOException {
       postUnassignCalled = true;
     }
 
@@ -1253,6 +1269,7 @@ public class TestMasterObserver {
         final ObserverContext<MasterCoprocessorEnvironment> ctx,
         final RegionInfo[] regionsToMerge) throws IOException {
     }
+
   }
 
   private static HBaseTestingUtility UTIL = new HBaseTestingUtility();
@@ -1306,12 +1323,12 @@ public class TestMasterObserver {
     assertFalse("No table created yet", cp.wasCreateTableCalled());
 
     // create a table
-    HTableDescriptor htd = new HTableDescriptor(tableName);
-    htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
+    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(tableName)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(TEST_FAMILY)).build();
     try(Connection connection = ConnectionFactory.createConnection(UTIL.getConfiguration());
         Admin admin = connection.getAdmin()) {
       tableCreationLatch = new CountDownLatch(1);
-      admin.createTable(htd, Arrays.copyOfRange(HBaseTestingUtility.KEYS,
+      admin.createTable(tableDescriptor, Arrays.copyOfRange(HBaseTestingUtility.KEYS,
         1, HBaseTestingUtility.KEYS.length));
 
       assertTrue("Test table should be created", cp.wasCreateTableCalled());
@@ -1321,11 +1338,11 @@ public class TestMasterObserver {
       assertTrue("Table create handler should be called.",
         cp.wasCreateTableActionCalled());
 
-      RegionLocator regionLocator = connection.getRegionLocator(htd.getTableName());
+      RegionLocator regionLocator = connection.getRegionLocator(tableDescriptor.getTableName());
       List<HRegionLocation> regions = regionLocator.getAllRegionLocations();
 
-      admin.mergeRegionsAsync(regions.get(0).getRegionInfo().getEncodedNameAsBytes(),
-        regions.get(1).getRegionInfo().getEncodedNameAsBytes(), true);
+      admin.mergeRegionsAsync(regions.get(0).getRegion().getEncodedNameAsBytes(),
+        regions.get(1).getRegion().getEncodedNameAsBytes(), true).get();
       assertTrue("Coprocessor should have been called on region merge",
         cp.wasMergeRegionsCalled());
 
@@ -1350,8 +1367,9 @@ public class TestMasterObserver {
       assertTrue(admin.isTableDisabled(tableName));
 
       // modify table
-      htd.setMaxFileSize(512 * 1024 * 1024);
-      modifyTableSync(admin, tableName, htd);
+      tableDescriptor = TableDescriptorBuilder.newBuilder(tableDescriptor)
+        .setMaxFileSize(512 * 1024 * 1024).build();
+      modifyTableSync(admin, tableName, tableDescriptor);
       assertTrue("Test table should have been modified",
         cp.wasModifyTableCalled());
 
@@ -1372,7 +1390,7 @@ public class TestMasterObserver {
       // When bypass was supported, we'd turn off bypass and rerun tests. Leaving rerun in place.
       cp.resetStates();
 
-      admin.createTable(htd);
+      admin.createTable(tableDescriptor);
       assertTrue("Test table should be created", cp.wasCreateTableCalled());
       tableCreationLatch.await();
       assertTrue("Table pre create handler called.", cp
@@ -1391,8 +1409,9 @@ public class TestMasterObserver {
         cp.wasDisableTableActionCalled());
 
       // modify table
-      htd.setMaxFileSize(512 * 1024 * 1024);
-      modifyTableSync(admin, tableName, htd);
+      tableDescriptor = TableDescriptorBuilder.newBuilder(tableDescriptor)
+        .setMaxFileSize(512 * 1024 * 1024).build();
+      modifyTableSync(admin, tableName, tableDescriptor);
       assertTrue("Test table should have been modified",
         cp.wasModifyTableCalled());
 
@@ -1434,12 +1453,12 @@ public class TestMasterObserver {
     cp.resetStates();
 
     // create a table
-    HTableDescriptor htd = new HTableDescriptor(tableName);
-    htd.addFamily(new HColumnDescriptor(TEST_FAMILY));
+    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(tableName)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(TEST_FAMILY)).build();
     Admin admin = UTIL.getAdmin();
 
     tableCreationLatch = new CountDownLatch(1);
-    admin.createTable(htd);
+    admin.createTable(tableDescriptor);
     tableCreationLatch.await();
     tableCreationLatch = new CountDownLatch(1);
 
@@ -1495,6 +1514,11 @@ public class TestMasterObserver {
 
     // create a table
     Admin admin = UTIL.getAdmin();
+
+    admin.listNamespaces();
+    assertTrue("preListNamespaces should have been called", cp.preListNamespacesCalled);
+    assertTrue("postListNamespaces should have been called", cp.postListNamespacesCalled);
+
     admin.createNamespace(NamespaceDescriptor.create(testNamespace).build());
     assertTrue("Test namespace should be created", cp.wasCreateNamespaceCalled());
 
@@ -1505,13 +1529,13 @@ public class TestMasterObserver {
     // been removed so the testing code was removed.
   }
 
-  private void modifyTableSync(Admin admin, TableName tableName, HTableDescriptor htd)
-      throws IOException {
-    admin.modifyTable(htd);
-    //wait until modify table finishes
-    for (int t = 0; t < 100; t++) { //10 sec timeout
-      HTableDescriptor td = new HTableDescriptor(admin.getDescriptor(htd.getTableName()));
-      if (td.equals(htd)) {
+  private void modifyTableSync(Admin admin, TableName tableName, TableDescriptor tableDescriptor)
+    throws IOException {
+    admin.modifyTable(tableDescriptor);
+    // wait until modify table finishes
+    for (int t = 0; t < 100; t++) { // 10 sec timeout
+      TableDescriptor td = admin.getDescriptor(tableDescriptor.getTableName());
+      if (td.equals(tableDescriptor)) {
         break;
       }
       Threads.sleep(100);
@@ -1563,7 +1587,7 @@ public class TestMasterObserver {
       assertTrue("Found server", found);
       LOG.info("Found " + destName);
       master.getMasterRpcServices().moveRegion(null, RequestConverter.buildMoveRegionRequest(
-          firstGoodPair.getRegionInfo().getEncodedNameAsBytes(), ServerName.valueOf(destName)));
+          firstGoodPair.getRegion().getEncodedNameAsBytes(), ServerName.valueOf(destName)));
       assertTrue("Coprocessor should have been called on region move",
         cp.wasMoveCalled());
 

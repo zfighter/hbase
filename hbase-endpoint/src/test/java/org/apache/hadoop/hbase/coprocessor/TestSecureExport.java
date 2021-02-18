@@ -19,7 +19,6 @@ package org.apache.hadoop.hbase.coprocessor;
 
 import static org.junit.Assert.assertEquals;
 
-import com.google.protobuf.ServiceException;
 import java.io.File;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -48,14 +47,13 @@ import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.mapreduce.ExportUtils;
 import org.apache.hadoop.hbase.mapreduce.Import;
-import org.apache.hadoop.hbase.protobuf.generated.VisibilityLabelsProtos;
 import org.apache.hadoop.hbase.security.HBaseKerberosUtils;
 import org.apache.hadoop.hbase.security.HadoopSecurityEnabledUserProviderForTesting;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.security.access.AccessControlConstants;
-import org.apache.hadoop.hbase.security.access.AccessControlLists;
 import org.apache.hadoop.hbase.security.access.Permission;
+import org.apache.hadoop.hbase.security.access.PermissionStorage;
 import org.apache.hadoop.hbase.security.access.SecureTestUtil;
 import org.apache.hadoop.hbase.security.access.SecureTestUtil.AccessTestAction;
 import org.apache.hadoop.hbase.security.visibility.Authorizations;
@@ -80,6 +78,10 @@ import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.VisibilityLabelsProtos;
 
 @Category({MediumTests.class})
 public class TestSecureExport {
@@ -204,9 +206,9 @@ public class TestSecureExport {
     SecureTestUtil.verifyConfiguration(UTIL.getConfiguration());
     setUpClusterKdc();
     UTIL.startMiniCluster();
-    UTIL.waitUntilAllRegionsAssigned(AccessControlLists.ACL_TABLE_NAME);
+    UTIL.waitUntilAllRegionsAssigned(PermissionStorage.ACL_TABLE_NAME);
     UTIL.waitUntilAllRegionsAssigned(VisibilityConstants.LABELS_TABLE_NAME);
-    UTIL.waitTableEnabled(AccessControlLists.ACL_TABLE_NAME, 50000);
+    UTIL.waitTableEnabled(PermissionStorage.ACL_TABLE_NAME, 50000);
     UTIL.waitTableEnabled(VisibilityConstants.LABELS_TABLE_NAME, 50000);
     SecureTestUtil.grantGlobal(UTIL, USER_ADMIN,
             Permission.Action.ADMIN,
@@ -214,6 +216,7 @@ public class TestSecureExport {
             Permission.Action.EXEC,
             Permission.Action.READ,
             Permission.Action.WRITE);
+    SecureTestUtil.grantGlobal(UTIL, USER_OWNER, Permission.Action.CREATE);
     addLabels(UTIL.getConfiguration(), Arrays.asList(USER_OWNER),
             Arrays.asList(PRIVATE, CONFIDENTIAL, SECRET, TOPSECRET));
   }
@@ -234,11 +237,11 @@ public class TestSecureExport {
   public void testAccessCase() throws Throwable {
     final String exportTable = name.getMethodName();
     TableDescriptor exportHtd = TableDescriptorBuilder
-            .newBuilder(TableName.valueOf(name.getMethodName()))
+            .newBuilder(TableName.valueOf(exportTable))
             .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILYA))
-            .setOwnerString(USER_OWNER)
             .build();
-    SecureTestUtil.createTable(UTIL, exportHtd, new byte[][]{Bytes.toBytes("s")});
+    User owner = User.createUserForTesting(UTIL.getConfiguration(), USER_OWNER, new String[0]);
+    SecureTestUtil.createTable(UTIL, owner, exportHtd, new byte[][]{Bytes.toBytes("s")});
     SecureTestUtil.grantOnTable(UTIL, USER_RO,
             TableName.valueOf(exportTable), null, null,
             Permission.Action.READ);
@@ -249,8 +252,8 @@ public class TestSecureExport {
     SecureTestUtil.grantOnTable(UTIL, USER_XO,
             TableName.valueOf(exportTable), null, null,
             Permission.Action.EXEC);
-    assertEquals(4, AccessControlLists.getTablePermissions(UTIL.getConfiguration(),
-            TableName.valueOf(exportTable)).size());
+    assertEquals(4, PermissionStorage
+        .getTablePermissions(UTIL.getConfiguration(), TableName.valueOf(exportTable)).size());
     AccessTestAction putAction = () -> {
       Put p = new Put(ROW1);
       p.addColumn(FAMILYA, Bytes.toBytes("qual_0"), NOW, QUAL);
@@ -331,15 +334,16 @@ public class TestSecureExport {
   }
 
   @Test
+  @org.junit.Ignore // See HBASE-23990
   public void testVisibilityLabels() throws IOException, Throwable {
     final String exportTable = name.getMethodName() + "_export";
     final String importTable = name.getMethodName() + "_import";
     final TableDescriptor exportHtd = TableDescriptorBuilder
             .newBuilder(TableName.valueOf(exportTable))
             .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILYA))
-            .setOwnerString(USER_OWNER)
             .build();
-    SecureTestUtil.createTable(UTIL, exportHtd, new byte[][]{Bytes.toBytes("s")});
+    User owner = User.createUserForTesting(UTIL.getConfiguration(), USER_OWNER, new String[0]);
+    SecureTestUtil.createTable(UTIL, owner, exportHtd, new byte[][]{Bytes.toBytes("s")});
     AccessTestAction putAction = () -> {
       Put p1 = new Put(ROW1);
       p1.addColumn(FAMILYA, QUAL, NOW, QUAL);
@@ -395,9 +399,8 @@ public class TestSecureExport {
       final TableDescriptor importHtd = TableDescriptorBuilder
               .newBuilder(TableName.valueOf(importTable))
               .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILYB))
-              .setOwnerString(USER_OWNER)
               .build();
-      SecureTestUtil.createTable(UTIL, importHtd, new byte[][]{Bytes.toBytes("s")});
+      SecureTestUtil.createTable(UTIL, owner, importHtd, new byte[][]{Bytes.toBytes("s")});
       AccessTestAction importAction = () -> {
         String[] args = new String[]{
           "-D" + Import.CF_RENAME_PROP + "=" + FAMILYA_STRING + ":" + FAMILYB_STRING,

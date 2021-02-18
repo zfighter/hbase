@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,14 +27,16 @@ import java.util.List;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.HTestConst;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
@@ -82,15 +84,16 @@ public class TestFilterFromRegionSide {
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
-    HTableDescriptor htd = new HTableDescriptor(TABLE_NAME);
+    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(TABLE_NAME);
+
     for (byte[] family : FAMILIES) {
-      HColumnDescriptor hcd = new HColumnDescriptor(family);
-      htd.addFamily(hcd);
+      builder.setColumnFamily(ColumnFamilyDescriptorBuilder.of(family));
     }
-    HRegionInfo info = new HRegionInfo(htd.getTableName(), null, null, false);
-    REGION = HBaseTestingUtility
-        .createRegionAndWAL(info, TEST_UTIL.getDataTestDir(), TEST_UTIL.getConfiguration(), htd);
-    for(Put put:createPuts(ROWS, FAMILIES, QUALIFIERS, VALUE)){
+    TableDescriptor tableDescriptor = builder.build();
+    RegionInfo info = RegionInfoBuilder.newBuilder(tableDescriptor.getTableName()).build();
+    REGION = HBaseTestingUtility.createRegionAndWAL(info, TEST_UTIL.getDataTestDir(),
+      TEST_UTIL.getConfiguration(), tableDescriptor);
+    for (Put put : createPuts(ROWS, FAMILIES, QUALIFIERS, VALUE)) {
       REGION.put(put);
     }
   }

@@ -21,16 +21,14 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-
 import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.Put;
@@ -40,7 +38,6 @@ import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
-import org.apache.hadoop.hbase.filter.CompareFilter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
@@ -55,6 +52,7 @@ import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLine;
 import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLineParser;
 import org.apache.hbase.thirdparty.org.apache.commons.cli.GnuParser;
@@ -114,13 +112,15 @@ public class TestJoinedScanners {
     byte[][] families = {cf_essential, cf_joined};
 
     final TableName tableName = TableName.valueOf(name.getMethodName());
-    HTableDescriptor desc = new HTableDescriptor(tableName);
+    TableDescriptorBuilder builder =
+      TableDescriptorBuilder.newBuilder(tableName);
     for (byte[] family : families) {
-      HColumnDescriptor hcd = new HColumnDescriptor(family);
-      hcd.setDataBlockEncoding(blockEncoding);
-      desc.addFamily(hcd);
+      ColumnFamilyDescriptor familyDescriptor = ColumnFamilyDescriptorBuilder.newBuilder(family)
+        .setDataBlockEncoding(blockEncoding).build();
+      builder.setColumnFamily(familyDescriptor);
     }
-    TEST_UTIL.getAdmin().createTable(desc);
+    TableDescriptor tableDescriptor = builder.build();
+    TEST_UTIL.getAdmin().createTable(tableDescriptor);
     Table ht = TEST_UTIL.getConnection().getTable(tableName);
 
     long rows_to_insert = 1000;
@@ -173,7 +173,7 @@ public class TestJoinedScanners {
     scan.addColumn(cf_joined, col_name);
 
     SingleColumnValueFilter filter = new SingleColumnValueFilter(
-        cf_essential, col_name, CompareFilter.CompareOp.EQUAL, flag_yes);
+        cf_essential, col_name, CompareOperator.EQUAL, flag_yes);
     filter.setFilterIfMissing(true);
     scan.setFilter(filter);
     scan.setLoadColumnFamiliesOnDemand(!slow);

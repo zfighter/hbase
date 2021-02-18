@@ -260,6 +260,93 @@ For region name, we only accept `byte[]` as the parameter type and it may be a f
 
 Information on non-Java clients and custom protocols is covered in <<external_apis>>
 
+[[client.masterregistry]]
+
+=== Master Registry (new as of 2.3.0)
+Client internally works with a _connection registry_ to fetch the metadata needed by connections.
+This connection registry implementation is responsible for fetching the following metadata.
+
+* Active master address
+* Current meta region(s) locations
+* Cluster ID (unique to this cluster)
+
+This information is needed as a part of various client operations like connection set up, scans,
+gets, etc. Traditionally, the connection registry implementation has been based on ZooKeeper as the
+source of truth and clients fetched the metadata directly from the ZooKeeper quorum. HBase 2.3.0
+introduces a new connection registry implementation based on direct communication with the Masters.
+With this implementation, clients now fetch required metadata via master RPC end points instead of
+maintaining connections to ZooKeeper. This change was done for the following reasons.
+
+* Reduce load on ZooKeeper since that is critical for cluster operation.
+* Holistic client timeout and retry configurations since the new registry brings all the client
+operations under HBase rpc framework.
+* Remove the ZooKeeper client dependency on HBase client library.
+
+This means:
+
+* At least a single active or stand by master is needed for cluster connection setup. Refer to
+<<master.runtime>> for more details.
+* Master can be in a critical path of read/write operations, especially if the client metadata cache
+is empty or stale.
+* There is higher connection load on the masters that before since the clients talk directly to
+HMasters instead of ZooKeeper ensemble`
+
+To reduce hot-spotting on a single master, all the masters (active & stand-by) expose the needed
+service to fetch the connection metadata. This lets the client connect to any master (not just active).
+Both ZooKeeper- and Master-based connection registry implementations are available in 2.3+. For
+2.3 and earlier, the ZooKeeper-based implementation remains the default configuration.
+The Master-based implementation becomes the default in 3.0.0.
+
+Change the connection registry implementation by updating the value configured for
+`hbase.client.registry.impl`. To explicitly enable the ZooKeeper-based registry, use
+
+[source, xml]
+<property>
+    <name>hbase.client.registry.impl</name>
+    <value>org.apache.hadoop.hbase.client.ZKConnectionRegistry</value>
+ </property>
+
+To explicitly enable the Master-based registry, use
+
+[source, xml]
+<property>
+    <name>hbase.client.registry.impl</name>
+    <value>org.apache.hadoop.hbase.client.MasterRegistry</value>
+ </property>
+
+==== MasterRegistry RPC hedging
+
+MasterRegistry implements hedging of connection registry RPCs across active and stand-by masters.
+This lets the client make the same request to multiple servers and which ever responds first is
+returned back to the client immediately. This improves performance, especially when a subset of
+servers are under load. The hedging fan out size is configurable, meaning the number of requests
+that are hedged in a single attempt, using the configuration key
+_hbase.client.master_registry.hedged.fanout_ in the client configuration. It defaults to 2. With
+this default, the RPCs are tried in batches of 2. The hedging policy is still primitive and does not
+adapt to any sort of live rpc performance metrics.
+
+==== Additional Notes
+
+* Clients hedge the requests in a randomized order to avoid hot-spotting a single master.
+* Cluster internal connections (masters &lt;-&gt; regionservers) still use ZooKeeper based connection
+registry.
+* Cluster internal state is still tracked in Zookeeper, hence ZK availability requirements are same
+as before.
+* Inter cluster replication still uses ZooKeeper based connection registry to simplify configuration
+management.
+
+For more implementation details, please refer to the https://github.com/apache/hbase/tree/master/dev-support/design-docs[design doc] and
+https://issues.apache.org/jira/browse/HBASE-18095[HBASE-18095].
+
+'''
+NOTE: (Advanced) In case of any issues with the master based registry, use the following
+configuration to fallback to the ZooKeeper based connection registry implementation.
+[source, xml]
+<property>
+    <name>hbase.client.registry.impl</name>
+    <value>org.apache.hadoop.hbase.client.ZKConnectionRegistry</value>
+ </property>
+
 [[client.filter]]
 == Client Request Filters
 
@@ -410,6 +497,20 @@ See link:https://hbase.apache.org/apidocs/org/apache/hadoop/hbase/filter/BinaryP
 
 See link:https://hbase.apache.org/apidocs/org/apache/hadoop/hbase/filter/BinaryComparator.html[BinaryComparator].
 
+[[client.filter.cvp.bcc]]
+==== BinaryComponentComparator
+
+link:https://hbase.apache.org/apidocs/org/apache/hadoop/hbase/filter/BinaryComponentComparator.html[BinaryComponentComparator] can be used to compare specific value at specific location with in the cell value. The comparison can be done for both ascii and binary data.
+
+[source,java]
+----
+byte[] partialValue = Bytes.toBytes("partial_value");
+    int partialValueOffset =
+    Filter partialValueFilter = new ValueFilter(CompareFilter.CompareOp.GREATER,
+            new BinaryComponentComparator(partialValue,partialValueOffset));
+----
+See link:https://issues.apache.org/jira/browse/HBASE-22969[HBASE-22969] for other use cases and details.
+
 [[client.filter.kvm]]
 === KeyValue Metadata
 
@@ -535,6 +636,8 @@ Note:  Introduced in HBase 0.92
 
 It is generally a better idea to use the startRow/stopRow methods on Scan for row selection, however link:https://hbase.apache.org/apidocs/org/apache/hadoop/hbase/filter/RowFilter.html[RowFilter] can also be used.
 
+You can supplement a scan (both bounded and unbounded) with RowFilter constructed from link:https://hbase.apache.org/apidocs/org/apache/hadoop/hbase/filter/BinaryComponentComparator.html[BinaryComponentComparator] for further filtering out or filtering in rows. See link:https://issues.apache.org/jira/browse/HBASE-22969[HBASE-22969] for use cases and other details.
+
 [[client.filter.utility]]
 === Utility
 
@@ -561,10 +664,23 @@ If the active Master loses its lease in ZooKeeper (or the Master shuts down), th
 [[master.runtime]]
 === Runtime Impact
 
-A common dist-list question involves what happens to an HBase cluster when the Master goes down.
+A common dist-list question involves what happens to an HBase cluster when the Master goes down. This information has changed staring 3.0.0.
+
+==== Up until releases 2.x.y
 Because the HBase client talks directly to the RegionServers, the cluster can still function in a "steady state". Additionally, per <<arch.catalog>>, `hbase:meta` exists as an HBase table and is not resident in the Master.
 However, the Master controls critical functions such as RegionServer failover and completing region splits.
 So while the cluster can still run for a short time without the Master, the Master should be restarted as soon as possible.
+
+==== Staring release 3.0.0
+As mentioned in section <<client.masterregistry>>, the default connection registry for clients is now based on master rpc end points. Hence the requirements for
+masters' uptime are even tighter starting this release.
+
+- At least one active or stand by master is needed for a connection set up, unlike before when all the clients needed was a ZooKeeper ensemble.
+- Master is now in critical path for read/write operations. For example, if the meta region bounces off to a different region server, clients
+need master to fetch the new locations. Earlier this was done by fetching this information directly from ZooKeeper.
+- Masters will now have higher connection load than before. So, the server side configuration might need adjustment depending on the load.
+
+Overall, the master uptime requirements, when this feature is enabled, are even higher for the client operations to go through.
 
 [[master.api]]
 === Interface
@@ -597,9 +713,12 @@ See <<arch.catalog.meta>> for more information on the meta table.
 [[master.wal]]
 === MasterProcWAL
 
+_MasterProcWAL is replaced in hbase-2.3.0 by an alternate Procedure Store implementation; see
+<<in-master-procedure-store-region>>. This section pertains to hbase-2.0.0 through hbase-2.2.x_
+ 
 HMaster records administrative operations and their running states, such as the handling of a crashed server,
-table creation, and other DDLs, into its own WAL file. The WALs are stored under the MasterProcWALs
-directory. The Master WALs are not like RegionServer WALs. Keeping up the Master WAL allows
+table creation, and other DDLs, into a Procedure Store. The Procedure Store WALs are stored under the
+MasterProcWALs directory. The Master WALs are not like RegionServer WALs. Keeping up the Master WAL allows
 us run a state machine that is resilient across Master failures. For example, if a HMaster was in the
 middle of creating a table encounters an issue and fails, the next active HMaster can take up where
 the previous left off and carry the operation to completion. Since hbase-2.0.0, a
@@ -837,7 +956,7 @@ Here are two use cases:
   Setting block caching on such a table is a waste of memory and CPU cycles, more so that it will generate more garbage to pick up by the JVM.
   For more information on monitoring GC, see <<trouble.log.gc>>.
 * Mapping a table: In a typical MapReduce job that takes a table in input, every row will be read only once so there's no need to put them into the block cache.
-  The Scan object has the option of turning this off via the setCaching method (set it to false). You can still keep block caching turned on on this table if you need fast random read access.
+  The Scan object has the option of turning this off via the setCacheBlocks method (set it to false). You can still keep block caching turned on on this table if you need fast random read access.
   An example would be counting the number of rows in a table that serves live traffic, caching every block of that table would create massive churn and would surely evict data that's currently in use.
 
 [[data.blocks.in.fscache]]
@@ -889,8 +1008,9 @@ benefit of NOT provoking GC.
 From HBase 2.0.0 onwards, the notions of L1 and L2 have been deprecated. When BucketCache is turned on, the DATA blocks will always go to BucketCache and INDEX/BLOOM blocks go to on heap LRUBlockCache. `cacheDataInL1` support hase been removed.
 ====
 
-The BucketCache Block Cache can be deployed _off-heap_, _file_ or _mmaped_ file mode.
-
+[[bc.deloy.modes]]
+====== BucketCache Deploy Modes
+The BucketCache Block Cache can be deployed _offheap_, _file_ or _mmaped_ file mode.
 
 You set which via the `hbase.bucketcache.ioengine` setting.
 Setting it to `offheap` will have BucketCache make its allocations off-heap, and an ioengine setting of `file:PATH_TO_FILE` will direct BucketCache to use file caching (Useful in particular if you have some fast I/O attached to the box such as SSDs). From 2.0.0, it is possible to have more than one file backing the BucketCache. This is very useful specially when the Cache size requirement is high. For multiple backing files, configure ioengine as `files:PATH_TO_FILE1,PATH_TO_FILE2,PATH_TO_FILE3`. BucketCache can be configured to use an mmapped file also. Configure ioengine as `mmap:PATH_TO_FILE` for this.
@@ -909,6 +1029,7 @@ See the link:https://hbase.apache.org/devapidocs/org/apache/hadoop/hbase/io/hfil
 To check it enabled, look for the log line describing cache setup; it will detail how BucketCache has been deployed.
 Also see the UI. It will detail the cache tiering and their configuration.
 
+[[bc.example]]
 ====== BucketCache Example Configuration
 This sample provides a configuration for a 4 GB off-heap BucketCache with a 1 GB on-heap cache.
 
@@ -1004,54 +1125,6 @@ For a RegionServer hosting more data than can fit into cache, enabling this feat
 For a RegionServer hosting data that can comfortably fit into cache, or if your workload is sensitive to extra CPU or garbage-collection load, you may receive less benefit.
 
 The compressed BlockCache is disabled by default. To enable it, set `hbase.block.data.cachecompressed` to `true` in _hbase-site.xml_ on all RegionServers.
-
-[[regionserver.offheap]]
-=== RegionServer Offheap Read/Write Path
-
-[[regionserver.offheap.readpath]]
-==== Offheap read-path
-In hbase-2.0.0, link:https://issues.apache.org/jira/browse/HBASE-11425[HBASE-11425] changed the HBase read path so it
-could hold the read-data off-heap avoiding copying of cached data on to the java heap.
-This reduces GC pauses given there is less garbage made and so less to clear. The off-heap read path has a performance
-that is similar/better to that of the on-heap LRU cache.  This feature is available since HBase 2.0.0.
-If the BucketCache is in `file` mode, fetching will always be slower compared to the native on-heap LruBlockCache.
-Refer to below blogs for more details and test results on off heaped read path
-link:https://blogs.apache.org/hbase/entry/offheaping_the_read_path_in[Offheaping the Read Path in Apache HBase: Part 1 of 2]
-and link:https://blogs.apache.org/hbase/entry/offheap-read-path-in-production[Offheap Read-Path in Production - The Alibaba story]
-
-For an end-to-end off-heaped read-path, first of all there should be an off-heap backed <<offheap.blockcache>>(BC). Configure 'hbase.bucketcache.ioengine' to off-heap in
-_hbase-site.xml_. Also specify the total capacity of the BC using `hbase.bucketcache.size` config. Please remember to adjust value of 'HBASE_OFFHEAPSIZE' in
-_hbase-env.sh_. This is how we specify the max possible off-heap memory allocation for the
-RegionServer java process. This should be bigger than the off-heap BC size. Please keep in mind that there is no default for `hbase.bucketcache.ioengine`
-which means the BC is turned OFF by default (See <<direct.memory>>). 
-
-Next thing to tune is the ByteBuffer pool on the RPC server side.
-The buffers from this pool will be used to accumulate the cell bytes and create a result cell block to send back to the client side.
-`hbase.ipc.server.reservoir.enabled` can be used to turn this pool ON or OFF. By default this pool is ON and available. HBase will create off heap ByteBuffers
-and pool them. Please make sure not to turn this OFF if you want end-to-end off-heaping in read path.
-If this pool is turned off, the server will create temp buffers on heap to accumulate the cell bytes and make a result cell block. This can impact the GC on a highly read loaded server.
-The user can tune this pool with respect to how many buffers are in the pool and what should be the size of each ByteBuffer. 
-Use the config `hbase.ipc.server.reservoir.initial.buffer.size` to tune each of the buffer sizes. Default is 64 KB. 
-
-When the read pattern is a random row read load and each of the rows are smaller in size compared to this 64 KB, try reducing this.
-When the result size is larger than one ByteBuffer size, the server will try to grab more than one buffer and make a result cell block out of these. When the pool is running out of buffers, the server will end up creating temporary on-heap buffers. 
-
-The maximum number of ByteBuffers in the pool can be tuned using the config 'hbase.ipc.server.reservoir.initial.max'. Its value defaults to 64 * region server handlers configured (See the config 'hbase.regionserver.handler.count'). The math is such that by default we consider 2 MB as the result cell block size per read result and each handler will be handling a read. For 2 MB size, we need 32 buffers each of size 64 KB (See default buffer size in pool). So per handler 32 ByteBuffers(BB). We allocate twice this size as the max BBs count such that one handler can be creating the response and handing it to the RPC Responder thread and then handling a new request creating a new response cell block (using pooled buffers). Even if the responder could not send back the first TCP reply immediately, our count should allow that we should still have enough buffers in our pool without having to make temporary buffers on the heap. Again for smaller sized random row reads, tune this max count. There are lazily created buffers and the count is the max count to be pooled. 
-
-If you still see GC issues even after making end-to-end read path off-heap, look for issues in the appropriate buffer pool. Check the below RegionServer log with INFO level:
-[source]
-----
-Pool already reached its max capacity : XXX and no free buffers now. Consider increasing the value for 'hbase.ipc.server.reservoir.initial.max' ?
-----
-
-The setting for _HBASE_OFFHEAPSIZE_ in _hbase-env.sh_ should consider this off heap buffer pool at the RPC side also. We need to config this max off heap size for the RegionServer as a bit higher than the sum of this max pool size and the off heap cache size. The TCP layer will also need to create direct bytebuffers for TCP communication. Also the DFS client will need some off-heap to do its workings especially if short-circuit reads are configured. Allocating an extra of 1 - 2 GB for the max direct memory size has worked in tests. 
-
-If you are using co processors and refer the Cells in the read results, DO NOT store reference to these Cells out of the scope of the CP hook methods. Some times the CPs need store info about the cell (Like its row key) for considering in the next CP hook call etc. For such cases, pls clone the required fields of the entire Cell as per the use cases. [ See CellUtil#cloneXXX(Cell) APIs ]
-
-[[regionserver.offheap.writepath]]
-==== Offheap write-path
-
-TODO
 
 [[regionserver_splitting_implementation]]
 === RegionServer Splitting Implementation
@@ -1313,6 +1386,26 @@ It is possible to set _durability_ on each Mutation or on a Table basis. Options
 
 Do not confuse the _ASYNC_WAL_ option on a Mutation or Table with the _AsyncFSWAL_ writer; they are distinct
 options unfortunately closely named
+
+[[arch.custom.wal.dir]]
+==== Custom WAL Directory
+HBASE-17437 added support for specifying a WAL directory outside the HBase root directory or even in a different FileSystem since 1.3.3/2.0+. Some FileSystems (such as Amazon S3) don’t support append or consistent writes, in such scenario WAL directory needs to be configured in a different FileSystem to avoid loss of writes.
+
+Following configurations are added to accomplish this:
+
+. `hbase.wal.dir`
++
+This defines where the root WAL directory is located, could be on a different FileSystem than the root directory. WAL directory can not be set to a subdirectory of the root directory. The default value of this is the root directory if unset.
+
+. `hbase.rootdir.perms`
++
+Configures FileSystem permissions to set on the root directory. This is '700' by default.
+
+. `hbase.wal.dir.perms`
++
+Configures FileSystem permissions to set on the WAL directory FileSystem. This is '700' by default.
+
+NOTE: While migrating to custom WAL dir (outside the HBase root directory or a different FileSystem) existing WAL files must be copied manually to new WAL dir, otherwise it may lead to data loss/inconsistency as HMaster has no information about previous WAL directory.
 
 [[wal.disable]]
 ==== Disabling the WAL
@@ -1676,7 +1769,7 @@ StoreFiles are where your data lives.
 
 ===== HFile Format
 
-The _HFile_ file format is based on the SSTable file described in the link:http://research.google.com/archive/bigtable.html[BigTable [2006]] paper and on Hadoop's link:https://hadoop.apache.org/common/docs/current/api/org/apache/hadoop/io/file/tfile/TFile.html[TFile] (The unit test suite and the compression harness were taken directly from TFile). Schubert Zhang's blog post on link:http://cloudepr.blogspot.com/2009/09/hfile-block-indexed-file-format-to.html[HFile: A Block-Indexed File Format to Store Sorted Key-Value Pairs] makes for a thorough introduction to HBase's HFile.
+The _HFile_ file format is based on the SSTable file described in the link:http://research.google.com/archive/bigtable.html[BigTable [2006]] paper and on Hadoop's link:https://hadoop.apache.org/docs/current/api/org/apache/hadoop/io/file/tfile/TFile.html[TFile] (The unit test suite and the compression harness were taken directly from TFile). Schubert Zhang's blog post on link:http://cloudepr.blogspot.com/2009/09/hfile-block-indexed-file-format-to.html[HFile: A Block-Indexed File Format to Store Sorted Key-Value Pairs] makes for a thorough introduction to HBase's HFile.
 Matteo Bertozzi has also put up a helpful description, link:http://th30z.blogspot.com/2011/02/hbase-io-hfile.html?spref=tw[HBase I/O: HFile].
 
 For more information, see the HFile source code.
@@ -1816,8 +1909,8 @@ Instead, the expired data is filtered out and is not written back to the compact
 
 [[compaction.and.versions]]
 .Compaction and Versions
-When you create a Column Family, you can specify the maximum number of versions to keep, by specifying `HColumnDescriptor.setMaxVersions(int versions)`.
-The default value is `3`.
+When you create a Column Family, you can specify the maximum number of versions to keep, by specifying `ColumnFamilyDescriptorBuilder.setMaxVersions(int versions)`.
+The default value is `1`.
 If more versions than the specified maximum exist, the excess versions are filtered out and not written back to the compacted StoreFile.
 
 .Major Compactions Can Impact Query Results
@@ -2449,6 +2542,60 @@ All the settings that apply to normal compactions (see <<compaction.parameters>>
 The exceptions are the minimum and maximum number of files, which are set to higher values by default because the files in stripes are smaller.
 To control these for stripe compactions, use `hbase.store.stripe.compaction.minFiles` and `hbase.store.stripe.compaction.maxFiles`, rather than `hbase.hstore.compaction.min` and `hbase.hstore.compaction.max`.
 
+[[ops.fifo]]
+===== FIFO Compaction
+
+FIFO compaction policy selects only files which have all cells expired. The column family *MUST* have non-default TTL.
+Essentially, FIFO compactor only collects expired store files.
+
+Because we don't do any real compaction, we do not use CPU and IO (disk and network) and evict hot data from a block cache. 
+As a result, both RW throughput and latency can be improved.
+
+[[ops.fifo.when]]
+===== When To Use FIFO Compaction
+
+Consider using FIFO Compaction when your use case is
+
+* Very high volume raw data which has low TTL and which is the source of another data (after additional processing).
+* Data which can be kept entirely in a a block cache (RAM/SSD). No need for compaction of a raw data at all.
+
+Do not use FIFO compaction when
+
+* Table/ColumnFamily has MIN_VERSION > 0
+* Table/ColumnFamily has TTL = FOREVER (HColumnDescriptor.DEFAULT_TTL)
+
+[[ops.fifo.enable]]
+====== Enabling FIFO Compaction
+
+For Table:
+
+[source,java]
+----
+HTableDescriptor desc = new HTableDescriptor(tableName);
+    desc.setConfiguration(DefaultStoreEngine.DEFAULT_COMPACTION_POLICY_CLASS_KEY,
+      FIFOCompactionPolicy.class.getName());
+----
+
+For Column Family:
+
+[source,java]
+----
+HColumnDescriptor desc = new HColumnDescriptor(family);
+    desc.setConfiguration(DefaultStoreEngine.DEFAULT_COMPACTION_POLICY_CLASS_KEY,
+      FIFOCompactionPolicy.class.getName());
+----
+
+From HBase Shell:
+
+[source,bash]
+----
+create 'x',{NAME=>'y', TTL=>'30'}, {CONFIGURATION => {'hbase.hstore.defaultengine.compactionpolicy.class' => 'org.apache.hadoop.hbase.regionserver.compactions.FIFOCompactionPolicy', 'hbase.hstore.blockingStoreFiles' => 1000}}
+----
+
+Although region splitting is still supported, for optimal performance it should be disabled, either by setting explicitly `DisabledRegionSplitPolicy` or by setting `ConstantSizeRegionSplitPolicy` and very large max region size.
+You will have to increase to a very large number store's blocking file (`hbase.hstore.blockingStoreFiles`) as well.
+There is a sanity check on table/column family configuration in case of FIFO compaction and minimum value for number of blocking file is 1000.
+
 [[arch.bulk.load]]
 == Bulk Loading
 
@@ -2458,8 +2605,8 @@ To control these for stripe compactions, use `hbase.store.stripe.compaction.minF
 HBase includes several methods of loading data into tables.
 The most straightforward method is to either use the `TableOutputFormat` class from a MapReduce job, or use the normal client APIs; however, these are not always the most efficient methods.
 
-The bulk load feature uses a MapReduce job to output table data in HBase's internal data format, and then directly loads the generated StoreFiles into a running cluster.
-Using bulk load will use less CPU and network resources than simply using the HBase API.
+The bulk load feature uses a MapReduce job to output table data in HBase's internal data format, and then directly load the generated StoreFiles into a running cluster.
+Using bulk load will use less CPU and network resources than loading via the HBase API.
 
 [[arch.bulk.load.arch]]
 === Bulk Load Architecture
@@ -2470,7 +2617,7 @@ The HBase bulk load process consists of two main steps.
 ==== Preparing data via a MapReduce job
 
 The first step of a bulk load is to generate HBase data files (StoreFiles) from a MapReduce job using `HFileOutputFormat2`.
-This output format writes out data in HBase's internal storage format so that they can be later loaded very efficiently into the cluster.
+This output format writes out data in HBase's internal storage format so that they can be later loaded efficiently into the cluster.
 
 In order to function efficiently, `HFileOutputFormat2` must be configured such that each output HFile fits within a single region.
 In order to do this, jobs whose output will be bulk loaded into HBase use Hadoop's `TotalOrderPartitioner` class to partition the map output into disjoint ranges of the key space, corresponding to the key ranges of the regions in the table.
@@ -2487,22 +2634,20 @@ It then contacts the appropriate RegionServer which adopts the HFile, moving it 
 If the region boundaries have changed during the course of bulk load preparation, or between the preparation and completion steps, the `completebulkload` utility will automatically split the data files into pieces corresponding to the new boundaries.
 This process is not optimally efficient, so users should take care to minimize the delay between preparing a bulk load and importing it into the cluster, especially if other clients are simultaneously loading data through other means.
 
+[[arch.bulk.load.complete.help]]
 [source,bash]
 ----
-$ hadoop jar hbase-server-VERSION.jar completebulkload [-c /path/to/hbase/config/hbase-site.xml] /user/todd/myoutput mytable
+$ hadoop jar hbase-mapreduce-VERSION.jar completebulkload [-c /path/to/hbase/config/hbase-site.xml] /user/todd/myoutput mytable
 ----
 
 The `-c config-file` option can be used to specify a file containing the appropriate hbase parameters (e.g., hbase-site.xml) if not supplied already on the CLASSPATH (In addition, the CLASSPATH must contain the directory that has the zookeeper configuration file if zookeeper is NOT managed by HBase).
-
-NOTE: If the target table does not already exist in HBase, this tool will create the table automatically.
-
 
 [[arch.bulk.load.also]]
 === See Also
 
 For more information about the referenced utilities, see <<importtsv>> and  <<completebulkload>>.
 
-See link:http://blog.cloudera.com/blog/2013/09/how-to-use-hbase-bulk-loading-and-why/[How-to: Use HBase Bulk Loading, and Why] for a recent blog on current state of bulk loading.
+See link:http://blog.cloudera.com/blog/2013/09/how-to-use-hbase-bulk-loading-and-why/[How-to: Use HBase Bulk Loading, and Why] for an old blog post on loading.
 
 [[arch.bulk.load.adv]]
 === Advanced Usage
@@ -2512,6 +2657,53 @@ To get started doing so, dig into `ImportTsv.java` and check the JavaDoc for HFi
 
 The import step of the bulk load can also be done programmatically.
 See the `LoadIncrementalHFiles` class for more information.
+
+[[arch.bulk.load.complete.strays]]
+==== 'Adopting' Stray Data
+Should an HBase cluster lose account of regions or files during an outage or error, you can use
+the `completebulkload` tool to add back the dropped data. HBase operator tooling such as
+link:https://github.com/apache/hbase-operator-tools/tree/master/hbase-hbck2[HBCK2] or
+the reporting added to the Master's UI under the `HBCK Report` (Since HBase 2.0.6/2.1.6/2.2.1)
+can identify such 'orphan' directories.
+
+Before you begin the 'adoption', ensure the `hbase:meta` table is in a healthy state.
+Run the `CatalogJanitor` by executing the `catalogjanitor_run` command on the HBase shell.
+When finished, check the `HBCK Report` page on the Master UI. Work on fixing any
+inconsistencies, holes, or overlaps found before proceeding. The `hbase:meta` table
+is the authority on where all data is to be found and must be consistent for
+the `completebulkload` tool to work properly.
+
+The `completebulkload` tool takes a directory and a `tablename`.
+The directory has subdirectories named for column families of the targeted `tablename`.
+In these subdirectories are `hfiles` to load. Given this structure, you can pass
+errant region directories (and the table name to which the region directory belongs)
+and the tool will bring the data files back into the fold by moving them under the
+approprate serving directory. If stray files, then you will need to mock up this
+structure before invoking the `completebulkload` tool; you may have to look at the
+file content using the <<hfile.tool>> to see what the column family to use is.
+When the tool completes its run, you will notice that the
+source errant directory has had its storefiles moved/removed. It is now desiccated
+since its data has been drained, and the pointed-to directory can be safely
+removed. It may still have `.regioninfo` files and other
+subdirectories but they are of no relevance now (There may be content still
+under the _recovered_edits_ directory; a TODO is tooling to replay the
+content of _recovered_edits_ if needed; see
+link:https://issues.apache.org/jira/browse/HBASE-22976[Add RecoveredEditsPlayer]).
+If you pass `completebulkload` a directory without store files, it will run and
+note the directory is storefile-free. Just remove such 'empty' directories.
+
+For example, presuming a directory at the top level in HDFS named
+`eb3352fb5c9c9a05feeb2caba101e1cc` has data we need to re-add to the
+HBase `TestTable`:
+
+[source,bash]
+----
+$ ${HBASE_HOME}/bin/hbase --config ~/hbase-conf completebulkload hdfs://server.example.org:9000/eb3352fb5c9c9a05feeb2caba101e1cc TestTable
+----
+
+After it successfully completes, any files that were in  `eb3352fb5c9c9a05feeb2caba101e1cc` have been moved
+under hbase and the  `eb3352fb5c9c9a05feeb2caba101e1cc` directory can be deleted (Check content
+before and after by running `ls -r` on the HDFS directory).
 
 [[arch.bulk.load.replication]]
 === Bulk Loading Replication
@@ -2560,8 +2752,6 @@ See the above HDFS Architecture link for more information.
 
 [[arch.timelineconsistent.reads]]
 == Timeline-consistent High Available Reads
-
-NOTE: The current <<amv2, Assignment Manager V2>> does not work well with region replica, so this feature maybe broken. Use it with caution.
 
 [[casestudies.timelineconsistent.intro]]
 === Introduction
@@ -2675,13 +2865,33 @@ The first mechanism is store file refresher which is introduced in HBase-1.0+. S
 
 For turning this feature on, you should configure `hbase.regionserver.storefile.refresh.period` to a non-zero value. See Configuration section below.
 
-==== Asnyc WAL replication
-The second mechanism for propagation of writes to secondaries is done via “Async WAL Replication” feature and is only available in HBase-1.1+. This works similarly to HBase’s multi-datacenter replication, but instead the data from a region is replicated to the secondary regions. Each secondary replica always receives and observes the writes in the same order that the primary region committed them. In some sense, this design can be thought of as “in-cluster replication”, where instead of replicating to a different datacenter, the data goes to secondary regions to keep secondary region’s in-memory state up to date. The data files are shared between the primary region and the other replicas, so that there is no extra storage overhead. However, the secondary regions will have recent non-flushed data in their memstores, which increases the memory overhead. The primary region writes flush, compaction, and bulk load events to its WAL as well, which are also replicated through wal replication to secondaries. When they observe the flush/compaction or bulk load event, the secondary regions replay the event to pick up the new files and drop the old ones.
+[[async.wal.replication]]
+==== Async WAL replication
+The second mechanism for propagation of writes to secondaries is done via the
+“Async WAL Replication” feature. It is only available in HBase-1.1+. This works
+similarly to HBase’s multi-datacenter replication, but instead the data from a
+region is replicated to the secondary regions. Each secondary replica always
+receives and observes the writes in the same order that the primary region
+committed them. In some sense, this design can be thought of as “in-cluster
+replication”, where instead of replicating to a different datacenter, the data
+goes to secondary regions to keep secondary region’s in-memory state up to date.
+The data files are shared between the primary region and the other replicas, so
+that there is no extra storage overhead. However, the secondary regions will
+have recent non-flushed data in their memstores, which increases the memory
+overhead. The primary region writes flush, compaction, and bulk load events
+to its WAL as well, which are also replicated through wal replication to
+secondaries. When they observe the flush/compaction or bulk load event, the
+secondary regions replay the event to pick up the new files and drop the old
+ones.
 
 Committing writes in the same order as in primary ensures that the secondaries won’t diverge from the primary regions data, but since the log replication is asynchronous, the data might still be stale in secondary regions. Since this feature works as a replication endpoint, the performance and latency characteristics is expected to be similar to inter-cluster replication.
 
-Async WAL Replication is *disabled* by default. You can enable this feature by setting `hbase.region.replica.replication.enabled` to `true`.
-Asyn WAL Replication feature will add a new replication peer named `region_replica_replication` as a replication peer when you create a table with region replication > 1 for the first time. Once enabled, if you want to disable this feature, you need to do two actions:
+Async WAL Replication is *disabled* by default. You can enable this feature by
+setting `hbase.region.replica.replication.enabled` to `true`.  The Async WAL
+Replication feature will add a new replication peer named
+`region_replica_replication` as a replication peer when you create a table with
+region replication > 1 for the first time. Once enabled, if you want to disable
+this feature, you need to do two actions in the following order:
 * Set configuration property `hbase.region.replica.replication.enabled` to false in `hbase-site.xml` (see Configuration section below)
 * Disable the replication peer named `region_replica_replication` in the cluster using hbase shell or `Admin` class:
 [source,bourne]
@@ -2689,12 +2899,52 @@ Asyn WAL Replication feature will add a new replication peer named `region_repli
 	hbase> disable_peer 'region_replica_replication'
 ----
 
+Async WAL Replication and the `hbase:meta` table is a little more involved and gets its own section below; see <<async.wal.replication.meta>>
+
 === Store File TTL
 In both of the write propagation approaches mentioned above, store files of the primary will be opened in secondaries independent of the primary region. So for files that the primary compacted away, the secondaries might still be referring to these files for reading. Both features are using HFileLinks to refer to files, but there is no protection (yet) for guaranteeing that the file will not be deleted prematurely. Thus, as a guard, you should set the configuration property `hbase.master.hfilecleaner.ttl` to a larger value, such as 1 hour to guarantee that you will not receive IOExceptions for requests going to replicas.
 
+[[async.wal.replication.meta]]
 === Region replication for META table’s region
-Currently, Async WAL Replication is not done for the META table’s WAL. The meta table’s secondary replicas still refreshes themselves from the persistent store files. Hence the `hbase.regionserver.meta.storefile.refresh.period` needs to be set to a certain non-zero value for refreshing the meta store files. Note that this configuration is configured differently than
-`hbase.regionserver.storefile.refresh.period`.
+Async WAL Replication does not work for the META table’s WAL.
+The meta table’s secondary replicas refresh themselves from the persistent store
+files every `hbase.regionserver.meta.storefile.refresh.period`, (a non-zero value).
+Note how the META replication period is distinct from the user-space
+`hbase.regionserver.storefile.refresh.period` value.
+
+==== Async WAL Replication for META table as of hbase-2.4.0+ ====
+Async WAL replication for META is added as a new feature in 2.4.0. It is still under
+active development. Use with caution. Set
+`hbase.region.replica.replication.catalog.enabled` to enable async WAL Replication
+for META region replicas. It is off by default.
+
+Regarding META replicas count, up to hbase-2.4.0, you would set the special
+property 'hbase.meta.replica.count'. Now you can alter the META table as you
+would a user-space table (if `hbase.meta.replica.count` is set, it will take
+precedent over what is set for replica count in the META table updating META
+replica count to match).
+
+===== Load Balancing META table load =====
+
+hbase-2.4.0 also adds a *new* client-side `LoadBalance` mode. When enabled
+client-side, clients will try to read META replicas first before falling back on
+the primary. Before this, the replica lookup mode -- now named `HedgedRead` in
+hbase-2.4.0 -- had clients read the primary and if no response after a
+configurable amount of time had elapsed, it would start up reads against the
+replicas.
+
+The new 'LoadBalance' mode helps alleviate hotspotting on the META
+table distributing META read load.
+
+To enable the meta replica locator's load balance mode, please set the following
+configuration at on the *client-side* (only): set 'hbase.locator.meta.replicas.mode'
+to "LoadBalance". Valid options for this configuration are `None`, `HedgedRead`, and
+`LoadBalance`. Option parse is case insensitive.  The default mode is `None` (which falls
+through to `HedgedRead`, the current default).  Do NOT put this configuration in any
+hbase server-side's configuration, Master or RegionServer (Master could make decisions
+based off stale state -- to be avoided).
+
+`LoadBalance` also is a new feature. Use with caution.
 
 === Memory accounting
 The secondary region replicas refer to the data files of the primary region replica, but they have their own memstores (in HBase-1.1+) and uses block cache as well. However, one distinction is that the secondary region replicas cannot flush the data when there is memory pressure for their memstores. They can only free up memstore memory when the primary region does a flush and this flush is replicated to the secondary. Since in a region server hosting primary replicas for some regions and secondaries for some others, the secondaries might cause extra flushes to the primary regions in the same host. In extreme situations, there can be no memory left for adding new writes coming from the primary via wal replication. For unblocking this situation (and since secondary cannot flush by itself), the secondary is allowed to do a “store file refresh” by doing a file system list operation to pick up new files from primary, and possibly dropping its memstore. This refresh will only be performed if the memstore size of the biggest secondary region replica is at least `hbase.region.replica.storefile.refresh.memstore.multiplier` (default 4) times bigger than the biggest memstore of a primary replica. One caveat is that if this is performed, the secondary can observe partial row updates across column families (since column families are flushed independently). The default should be good to not do this operation frequently. You can set this value to a large number to disable this feature if desired, but be warned that it might cause the replication to block forever.
@@ -2728,7 +2978,7 @@ Instead you can change the number of region replicas per table to increase or de
     <name>hbase.regionserver.meta.storefile.refresh.period</name>
     <value>300000</value>
     <description>
-      The period (in milliseconds) for refreshing the store files for the hbase:meta tables secondary regions. 0 means this feature is disabled. Secondary regions sees new files (from flushes and compactions) from primary once the secondary region refreshes the list of files in the region (there is no notification mechanism). But too frequent refreshes might cause extra Namenode pressure. If the files cannot be refreshed for longer than HFile TTL (hbase.master.hfilecleaner.ttl) the requests are rejected. Configuring HFile TTL to a larger value is also recommended with this setting. This should be a non-zero number if meta replicas are enabled (via hbase.meta.replica.count set to greater than 1).
+      The period (in milliseconds) for refreshing the store files for the hbase:meta tables secondary regions. 0 means this feature is disabled. Secondary regions sees new files (from flushes and compactions) from primary once the secondary region refreshes the list of files in the region (there is no notification mechanism). But too frequent refreshes might cause extra Namenode pressure. If the files cannot be refreshed for longer than HFile TTL (hbase.master.hfilecleaner.ttl) the requests are rejected. Configuring HFile TTL to a larger value is also recommended with this setting. This should be a non-zero number if meta replicas are enabled.
     </description>
 </property>
 
@@ -2760,15 +3010,6 @@ Instead you can change the number of region replicas per table to increase or de
     <description>
       The period (in milliseconds) to keep store files in the archive folder before deleting them from the file system.</description>
 </property>
-
-<property>
-    <name>hbase.meta.replica.count</name>
-    <value>3</value>
-    <description>
-      Region replication count for the meta regions. Defaults to 1.
-    </description>
-</property>
-
 
 <property>
     <name>hbase.region.replica.storefile.refresh.memstore.multiplier</name>

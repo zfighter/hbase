@@ -30,7 +30,6 @@ import java.util.List;
 import java.util.Map.Entry;
 import java.util.TreeMap;
 import java.util.TreeSet;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -50,11 +49,11 @@ import org.apache.hadoop.hbase.backup.HBackupFileSystem;
 import org.apache.hadoop.hbase.backup.RestoreRequest;
 import org.apache.hadoop.hbase.backup.impl.BackupManifest;
 import org.apache.hadoop.hbase.backup.impl.BackupManifest.BackupImage;
+import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.TableDescriptor;
-import org.apache.hadoop.hbase.regionserver.HRegion;
-import org.apache.hadoop.hbase.tool.LoadIncrementalHFiles;
+import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
@@ -125,37 +124,39 @@ public final class BackupUtils {
    */
   public static void copyTableRegionInfo(Connection conn, BackupInfo backupInfo, Configuration conf)
           throws IOException {
-    Path rootDir = FSUtils.getRootDir(conf);
+    Path rootDir = CommonFSUtils.getRootDir(conf);
     FileSystem fs = rootDir.getFileSystem(conf);
 
     // for each table in the table set, copy out the table info and region
     // info files in the correct directory structure
-    for (TableName table : backupInfo.getTables()) {
-      if (!MetaTableAccessor.tableExists(conn, table)) {
-        LOG.warn("Table " + table + " does not exists, skipping it.");
-        continue;
-      }
-      TableDescriptor orig = FSTableDescriptors.getTableDescriptorFromFs(fs, rootDir, table);
+    try (Admin admin = conn.getAdmin()) {
+      for (TableName table : backupInfo.getTables()) {
+        if (!admin.tableExists(table)) {
+          LOG.warn("Table " + table + " does not exists, skipping it.");
+          continue;
+        }
+        TableDescriptor orig = FSTableDescriptors.getTableDescriptorFromFs(fs, rootDir, table);
 
-      // write a copy of descriptor to the target directory
-      Path target = new Path(backupInfo.getTableBackupDir(table));
-      FileSystem targetFs = target.getFileSystem(conf);
-      FSTableDescriptors descriptors =
-          new FSTableDescriptors(conf, targetFs, FSUtils.getRootDir(conf));
-      descriptors.createTableDescriptorForTableDirectory(target, orig, false);
-      LOG.debug("Attempting to copy table info for:" + table + " target: " + target
-          + " descriptor: " + orig);
-      LOG.debug("Finished copying tableinfo.");
-      List<RegionInfo> regions = MetaTableAccessor.getTableRegions(conn, table);
-      // For each region, write the region info to disk
-      LOG.debug("Starting to write region info for table " + table);
-      for (RegionInfo regionInfo : regions) {
-        Path regionDir =
-            HRegion.getRegionDir(new Path(backupInfo.getTableBackupDir(table)), regionInfo);
-        regionDir = new Path(backupInfo.getTableBackupDir(table), regionDir.getName());
-        writeRegioninfoOnFilesystem(conf, targetFs, regionDir, regionInfo);
+        // write a copy of descriptor to the target directory
+        Path target = new Path(backupInfo.getTableBackupDir(table));
+        FileSystem targetFs = target.getFileSystem(conf);
+        FSTableDescriptors descriptors =
+          new FSTableDescriptors(targetFs, CommonFSUtils.getRootDir(conf));
+        descriptors.createTableDescriptorForTableDirectory(target, orig, false);
+        LOG.debug("Attempting to copy table info for:" + table + " target: " + target +
+          " descriptor: " + orig);
+        LOG.debug("Finished copying tableinfo.");
+        List<RegionInfo> regions = MetaTableAccessor.getTableRegions(conn, table);
+        // For each region, write the region info to disk
+        LOG.debug("Starting to write region info for table " + table);
+        for (RegionInfo regionInfo : regions) {
+          Path regionDir = FSUtils
+            .getRegionDirFromTableDir(new Path(backupInfo.getTableBackupDir(table)), regionInfo);
+          regionDir = new Path(backupInfo.getTableBackupDir(table), regionDir.getName());
+          writeRegioninfoOnFilesystem(conf, targetFs, regionDir, regionInfo);
+        }
+        LOG.debug("Finished writing region info for table " + table);
       }
-      LOG.debug("Finished writing region info for table " + table);
     }
   }
 
@@ -167,7 +168,7 @@ public final class BackupUtils {
     final byte[] content = RegionInfo.toDelimitedByteArray(regionInfo);
     Path regionInfoFile = new Path(regionInfoDir, "." + HConstants.REGIONINFO_QUALIFIER_STR);
     // First check to get the permissions
-    FsPermission perms = FSUtils.getFilePermissions(fs, conf, HConstants.DATA_FILE_UMASK_KEY);
+    FsPermission perms = CommonFSUtils.getFilePermissions(fs, conf, HConstants.DATA_FILE_UMASK_KEY);
     // Write the RegionInfo file content
     FSDataOutputStream out = FSUtils.create(conf, fs, regionInfoFile, perms, null);
     try {
@@ -228,7 +229,7 @@ public final class BackupUtils {
    */
   public static long getFilesLength(FileSystem fs, Path dir) throws IOException {
     long totalLength = 0;
-    FileStatus[] files = FSUtils.listStatus(fs, dir);
+    FileStatus[] files = CommonFSUtils.listStatus(fs, dir);
     if (files != null) {
       for (FileStatus fileStatus : files) {
         if (fileStatus.isDirectory()) {
@@ -369,9 +370,9 @@ public final class BackupUtils {
       String n = p.getName();
       int idx = n.lastIndexOf(LOGNAME_SEPARATOR);
       String s = URLDecoder.decode(n.substring(0, idx), "UTF8");
-      return ServerName.parseHostname(s) + ":" + ServerName.parsePort(s);
+      return ServerName.valueOf(s).getAddress().toString();
     } catch (Exception e) {
-      LOG.warn("Skip log file (can't parse): " + p);
+      LOG.warn("Skip log file (can't parse): {}", p);
       return null;
     }
   }
@@ -537,7 +538,7 @@ public final class BackupUtils {
   }
 
   /**
-   * Return the 'path' component of a Path. In Hadoop, Path is an URI. This method returns the
+   * Return the 'path' component of a Path. In Hadoop, Path is a URI. This method returns the
    * 'path' component of a Path's URI: e.g. If a Path is
    * <code>hdfs://example.org:9000/hbase_trunk/TestTable/compaction.dir</code>, this method returns
    * <code>/hbase_trunk/TestTable/compaction.dir</code>. This method is useful if you want to print
@@ -722,7 +723,7 @@ public final class BackupUtils {
     return result == 0;
   }
 
-  public static LoadIncrementalHFiles createLoader(Configuration config) throws IOException {
+  public static BulkLoadHFiles createLoader(Configuration config) {
     // set configuration for restore:
     // LoadIncrementalHFile needs more time
     // <name>hbase.rpc.timeout</name> <value>600000</value>
@@ -732,15 +733,9 @@ public final class BackupUtils {
 
     // By default, it is 32 and loader will fail if # of files in any region exceed this
     // limit. Bad for snapshot restore.
-    conf.setInt(LoadIncrementalHFiles.MAX_FILES_PER_REGION_PER_FAMILY, Integer.MAX_VALUE);
-    conf.set(LoadIncrementalHFiles.IGNORE_UNMATCHED_CF_CONF_KEY, "yes");
-    LoadIncrementalHFiles loader;
-    try {
-      loader = new LoadIncrementalHFiles(conf);
-    } catch (Exception e) {
-      throw new IOException(e);
-    }
-    return loader;
+    conf.setInt(BulkLoadHFiles.MAX_FILES_PER_REGION_PER_FAMILY, Integer.MAX_VALUE);
+    conf.set(BulkLoadHFiles.IGNORE_UNMATCHED_CF_CONF_KEY, "yes");
+    return BulkLoadHFiles.create(conf);
   }
 
   public static String findMostRecentBackupId(String[] backupIds) {

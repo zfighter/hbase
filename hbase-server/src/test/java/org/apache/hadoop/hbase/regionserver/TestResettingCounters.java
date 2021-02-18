@@ -24,11 +24,20 @@ import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.*;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Increment;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -50,7 +59,6 @@ public class TestResettingCounters {
 
   @Test
   public void testResettingCounters() throws Exception {
-
     HBaseTestingUtility htu = new HBaseTestingUtility();
     Configuration conf = htu.getConfiguration();
     FileSystem fs = FileSystem.get(conf);
@@ -67,10 +75,14 @@ public class TestResettingCounters {
     byte [][] rows = new byte [numRows][];
     for (int i=0; i<numRows; i++) rows[i] = Bytes.toBytes("r" + i);
 
-    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(table));
-    for (byte [] family : families) htd.addFamily(new HColumnDescriptor(family));
-
-    HRegionInfo hri = new HRegionInfo(htd.getTableName(), null, null, false);
+    TableDescriptorBuilder builder =
+      TableDescriptorBuilder.newBuilder(TableName.valueOf(table));
+    for (byte[] family : families) {
+      builder.setColumnFamily(
+        ColumnFamilyDescriptorBuilder.of(family));
+    }
+    TableDescriptor tableDescriptor = builder.build();
+    RegionInfo hri = RegionInfoBuilder.newBuilder(tableDescriptor.getTableName()).build();
     String testDir = htu.getDataTestDir() + "/TestResettingCounters/";
     Path path = new Path(testDir);
     if (fs.exists(path)) {
@@ -78,7 +90,7 @@ public class TestResettingCounters {
         throw new IOException("Failed delete of " + path);
       }
     }
-    HRegion region = HBaseTestingUtility.createRegionAndWAL(hri, path, conf, htd);
+    HRegion region = HBaseTestingUtility.createRegionAndWAL(hri, path, conf, tableDescriptor);
     try {
       Increment odd = new Increment(rows[0]);
       odd.setDurability(Durability.SKIP_WAL);
@@ -102,7 +114,7 @@ public class TestResettingCounters {
       // increment all qualifiers, should have value=6 for all
       Result result = region.increment(all, HConstants.NO_NONCE, HConstants.NO_NONCE);
       assertEquals(numQualifiers, result.size());
-      Cell [] kvs = result.rawCells();
+      Cell[] kvs = result.rawCells();
       for (int i=0;i<kvs.length;i++) {
         System.out.println(kvs[i].toString());
         assertTrue(CellUtil.matchingQualifier(kvs[i], qualifiers[i]));

@@ -21,6 +21,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -32,7 +33,7 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
@@ -114,24 +115,28 @@ public class TestReplicationTrackerZKImpl {
     assertEquals(0, rt.getListOfRegionServers().size());
 
     // 1 region server
-    ZKUtil.createWithParents(zkw,
-      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname1.example.org:1234"));
-    assertEquals(1, rt.getListOfRegionServers().size());
+    ZKUtil.createWithParents(zkw, ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode,
+      "hostname1.example.org,1234,1611218678009"));
+    List<ServerName> rss = rt.getListOfRegionServers();
+    assertEquals(rss.toString(), 1, rss.size());
 
     // 2 region servers
-    ZKUtil.createWithParents(zkw,
-      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname2.example.org:1234"));
-    assertEquals(2, rt.getListOfRegionServers().size());
+    ZKUtil.createWithParents(zkw, ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode,
+      "hostname2.example.org,1234,1611218678009"));
+    rss = rt.getListOfRegionServers();
+    assertEquals(rss.toString(), 2, rss.size());
 
     // 1 region server
-    ZKUtil.deleteNode(zkw,
-      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname2.example.org:1234"));
-    assertEquals(1, rt.getListOfRegionServers().size());
+    ZKUtil.deleteNode(zkw, ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode,
+      "hostname2.example.org,1234,1611218678009"));
+    rss = rt.getListOfRegionServers();
+    assertEquals(1, rss.size());
 
     // 0 region server
-    ZKUtil.deleteNode(zkw,
-      ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, "hostname1.example.org:1234"));
-    assertEquals(0, rt.getListOfRegionServers().size());
+    ZKUtil.deleteNode(zkw, ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode,
+      "hostname1.example.org,1234,1611218678009"));
+    rss = rt.getListOfRegionServers();
+    assertEquals(rss.toString(), 0, rss.size());
   }
 
   @Test
@@ -208,7 +213,7 @@ public class TestReplicationTrackerZKImpl {
     }
 
     @Override
-    public ClusterConnection getConnection() {
+    public Connection getConnection() {
       return null;
     }
 
@@ -244,12 +249,6 @@ public class TestReplicationTrackerZKImpl {
     }
 
     @Override
-    public ClusterConnection getClusterConnection() {
-      // TODO Auto-generated method stub
-      return null;
-    }
-
-    @Override
     public FileSystem getFileSystem() {
       return null;
     }
@@ -261,6 +260,11 @@ public class TestReplicationTrackerZKImpl {
 
     @Override
     public Connection createConnection(Configuration conf) throws IOException {
+      return null;
+    }
+
+    @Override
+    public AsyncClusterConnection getAsyncClusterConnection() {
       return null;
     }
   }

@@ -21,7 +21,6 @@ package org.apache.hadoop.hbase.io.hfile;
 import java.util.Iterator;
 
 import org.apache.yetus.audience.InterfaceAudience;
-import org.apache.hadoop.hbase.io.hfile.Cacheable.MemoryType;
 
 /**
  * Block cache interface. Anything that implements the {@link Cacheable}
@@ -55,6 +54,21 @@ public interface BlockCache extends Iterable<CachedBlock> {
    */
   Cacheable getBlock(BlockCacheKey cacheKey, boolean caching, boolean repeat,
     boolean updateCacheMetrics);
+
+  /**
+   * Fetch block from cache.
+   * @param cacheKey Block to fetch.
+   * @param caching Whether this request has caching enabled (used for stats)
+   * @param repeat Whether this is a repeat lookup for the same block
+   *        (used to avoid double counting cache misses when doing double-check locking)
+   * @param updateCacheMetrics Whether to update cache metrics or not
+   * @param blockType BlockType
+   * @return Block or null if block is not in 2 cache.
+   */
+  default Cacheable getBlock(BlockCacheKey cacheKey, boolean caching, boolean repeat,
+      boolean updateCacheMetrics, BlockType blockType) {
+    return getBlock(cacheKey, caching, repeat, updateCacheMetrics);
+  }
 
   /**
    * Evict block from cache.
@@ -133,16 +147,4 @@ public interface BlockCache extends Iterable<CachedBlock> {
    * @return The list of sub blockcaches that make up this one; returns null if no sub caches.
    */
   BlockCache [] getBlockCaches();
-
-  /**
-   * Called when the scanner using the block decides to return the block once its usage
-   * is over.
-   * This API should be called after the block is used, failing to do so may have adverse effects
-   * by preventing the blocks from being evicted because of which it will prevent new hot blocks
-   * from getting added to the block cache.  The implementation of the BlockCache will decide
-   * on what to be done with the block based on the memory type of the block's {@link MemoryType}.
-   * @param cacheKey the cache key of the block
-   * @param block the hfileblock to be returned
-   */
-  default void returnBlock(BlockCacheKey cacheKey, Cacheable block){}
 }

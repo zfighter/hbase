@@ -35,7 +35,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -43,7 +42,6 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.Stoppable;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -71,6 +69,8 @@ import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
 import org.apache.hadoop.hbase.security.AccessDeniedException;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.access.AccessChecker;
+import org.apache.hadoop.hbase.security.access.SnapshotScannerHDFSAclCleaner;
+import org.apache.hadoop.hbase.security.access.SnapshotScannerHDFSAclHelper;
 import org.apache.hadoop.hbase.snapshot.ClientSnapshotDescriptionUtils;
 import org.apache.hadoop.hbase.snapshot.HBaseSnapshotException;
 import org.apache.hadoop.hbase.snapshot.RestoreSnapshotException;
@@ -82,21 +82,23 @@ import org.apache.hadoop.hbase.snapshot.SnapshotManifest;
 import org.apache.hadoop.hbase.snapshot.SnapshotReferenceUtil;
 import org.apache.hadoop.hbase.snapshot.TablePartiallyOpenException;
 import org.apache.hadoop.hbase.snapshot.UnknownSnapshotException;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
-import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.NonceKey;
+import org.apache.hadoop.hbase.util.TableDescriptorChecker;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.NameStringPair;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.ProcedureDescription;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription.Type;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
  * This class manages the procedure of taking and restoring snapshots. There is only one
@@ -143,10 +145,10 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
   public static final String ONLINE_SNAPSHOT_CONTROLLER_DESCRIPTION = "online-snapshot";
 
   /** Conf key for # of threads used by the SnapshotManager thread pool */
-  private static final String SNAPSHOT_POOL_THREADS_KEY = "hbase.snapshot.master.threads";
+  public static final String SNAPSHOT_POOL_THREADS_KEY = "hbase.snapshot.master.threads";
 
   /** number of current operations running on the master */
-  private static final int SNAPSHOT_POOL_THREADS_DEFAULT = 1;
+  public static final int SNAPSHOT_POOL_THREADS_DEFAULT = 1;
 
   private boolean stopped;
   private MasterServices master;  // Needed by TableEventHandlers
@@ -193,7 +195,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
    * @param coordinator procedure coordinator instance.  exposed for testing.
    * @param pool HBase ExecutorServcie instance, exposed for testing.
    */
-  @VisibleForTesting
+  @InterfaceAudience.Private
   SnapshotManager(final MasterServices master, ProcedureCoordinator coordinator,
       ExecutorService pool, int sentinelCleanInterval)
       throws IOException, UnsupportedOperationException {
@@ -632,7 +634,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       builder.setVersion(SnapshotDescriptionUtils.SNAPSHOT_LAYOUT_VERSION);
     }
     RpcServer.getRequestUser().ifPresent(user -> {
-      if (User.isHBaseSecurityEnabled(master.getConfiguration())) {
+      if (AccessChecker.isAuthorizationSupported(master.getConfiguration())) {
         builder.setOwner(user.getShortName());
       }
     });
@@ -650,16 +652,26 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
     TableName snapshotTable = TableName.valueOf(snapshot.getTable());
     if (master.getTableStateManager().isTableState(snapshotTable,
         TableState.State.ENABLED)) {
-      LOG.debug("Table enabled, starting distributed snapshot.");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Table enabled, starting distributed snapshots for {}",
+          ClientSnapshotDescriptionUtils.toString(snapshot));
+      }
       snapshotEnabledTable(snapshot);
-      LOG.debug("Started snapshot: " + ClientSnapshotDescriptionUtils.toString(snapshot));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Started snapshot: {}", ClientSnapshotDescriptionUtils.toString(snapshot));
+      }
     }
     // For disabled table, snapshot is created by the master
     else if (master.getTableStateManager().isTableState(snapshotTable,
         TableState.State.DISABLED)) {
-      LOG.debug("Table is disabled, running snapshot entirely on master.");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Table is disabled, running snapshot entirely on master for {}",
+          ClientSnapshotDescriptionUtils.toString(snapshot));
+      }
       snapshotDisabledTable(snapshot);
-      LOG.debug("Started snapshot: " + ClientSnapshotDescriptionUtils.toString(snapshot));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Started snapshot: {}", ClientSnapshotDescriptionUtils.toString(snapshot));
+      }
     } else {
       LOG.error("Can't snapshot table '" + snapshot.getTable()
           + "', isn't open or closed, we don't know what to do!");
@@ -826,6 +838,9 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
     TableDescriptor snapshotTableDesc = manifest.getTableDescriptor();
     TableName tableName = TableName.valueOf(reqSnapshot.getTable());
 
+    // sanity check the new table descriptor
+    TableDescriptorChecker.sanityCheck(master.getConfiguration(), snapshotTableDesc);
+
     // stop tracking "abandoned" handlers
     cleanupSentinels();
 
@@ -834,7 +849,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
 
     // Execute the restore/clone operation
     long procId;
-    if (MetaTableAccessor.tableExists(master.getConnection(), tableName)) {
+    if (master.getTableDescriptors().exists(tableName)) {
       procId = restoreSnapshot(reqSnapshot, tableName, snapshot, snapshotTableDesc, nonceKey,
         restoreAcl);
     } else {
@@ -1119,6 +1134,10 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       // Inject snapshot cleaners, if snapshot.enable is true
       hfileCleaners.add(SnapshotHFileCleaner.class.getName());
       hfileCleaners.add(HFileLinkCleaner.class.getName());
+      // If sync acl to HDFS feature is enabled, then inject the cleaner
+      if (SnapshotScannerHDFSAclHelper.isAclSyncToHdfsEnabled(conf)) {
+        hfileCleaners.add(SnapshotScannerHDFSAclCleaner.class.getName());
+      }
 
       // Set cleaners conf
       conf.setStrings(HFileCleaner.MASTER_HFILE_CLEANER_PLUGINS,
@@ -1148,7 +1167,7 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
       LOG.info("Snapshot feature is not enabled, missing log and hfile cleaners.");
       Path snapshotDir = SnapshotDescriptionUtils.getSnapshotsDir(mfs.getRootDir());
       if (fs.exists(snapshotDir)) {
-        FileStatus[] snapshots = FSUtils.listStatus(fs, snapshotDir,
+        FileStatus[] snapshots = CommonFSUtils.listStatus(fs, snapshotDir,
           new SnapshotDescriptionUtils.CompletedSnaphotDirectoriesFilter(fs));
         if (snapshots != null) {
           LOG.error("Snapshots are present, but cleaners are not enabled.");
@@ -1169,8 +1188,9 @@ public class SnapshotManager extends MasterProcedureManager implements Stoppable
     // get the configuration for the coordinator
     Configuration conf = master.getConfiguration();
     long wakeFrequency = conf.getInt(SNAPSHOT_WAKE_MILLIS_KEY, SNAPSHOT_WAKE_MILLIS_DEFAULT);
-    long timeoutMillis = Math.max(conf.getLong(SnapshotDescriptionUtils.SNAPSHOT_TIMEOUT_MILLIS_KEY,
-                    SnapshotDescriptionUtils.SNAPSHOT_TIMEOUT_MILLIS_DEFAULT),
+    long timeoutMillis = Math.max(
+            conf.getLong(SnapshotDescriptionUtils.MASTER_SNAPSHOT_TIMEOUT_MILLIS,
+                    SnapshotDescriptionUtils.DEFAULT_MAX_WAIT_TIME),
             conf.getLong(SnapshotDescriptionUtils.MASTER_SNAPSHOT_TIMEOUT_MILLIS,
                     SnapshotDescriptionUtils.DEFAULT_MAX_WAIT_TIME));
     int opThreads = conf.getInt(SNAPSHOT_POOL_THREADS_KEY, SNAPSHOT_POOL_THREADS_DEFAULT);

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,7 +18,6 @@
 package org.apache.hadoop.hbase.snapshot;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
@@ -27,7 +26,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -57,7 +57,11 @@ import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsSnapshotDoneRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsSnapshotDoneResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
 /**
@@ -136,7 +140,6 @@ public class TestFlushSnapshotFromClient {
 
   /**
    * Test simple flush snapshotting a table that is online
-   * @throws Exception
    */
   @Test
   public void testFlushTableSnapshot() throws Exception {
@@ -169,7 +172,6 @@ public class TestFlushSnapshotFromClient {
 
    /**
    * Test snapshotting a table that is online without flushing
-   * @throws Exception
    */
   @Test
   public void testSkipFlushTableSnapshot() throws Exception {
@@ -209,7 +211,6 @@ public class TestFlushSnapshotFromClient {
 
   /**
    * Test simple flush snapshotting a table that is online
-   * @throws Exception
    */
   @Test
   public void testFlushTableSnapshotWithProcedure() throws Exception {
@@ -273,6 +274,38 @@ public class TestFlushSnapshotFromClient {
     }
   }
 
+  /**
+   * Helper method for testing async snapshot operations. Just waits for the given snapshot to
+   * complete on the server by repeatedly checking the master.
+   * @param master the master running the snapshot
+   * @param snapshot the snapshot to check
+   * @param timeoutNanos the timeout in nano between checks to see if the snapshot is done
+   */
+  private static void waitForSnapshotToComplete(HMaster master,
+      SnapshotProtos.SnapshotDescription snapshot, long timeoutNanos) throws Exception {
+    final IsSnapshotDoneRequest request =
+      IsSnapshotDoneRequest.newBuilder().setSnapshot(snapshot).build();
+    long start = System.nanoTime();
+    while (System.nanoTime() - start < timeoutNanos) {
+      try {
+        IsSnapshotDoneResponse done = master.getMasterRpcServices().isSnapshotDone(null, request);
+        if (done.getDone()) {
+          return;
+        }
+      } catch (ServiceException e) {
+        // ignore UnknownSnapshotException, this is possible as for AsyncAdmin, the method will
+        // return immediately after sending out the request, no matter whether the master has
+        // processed the request or not.
+        if (!(e.getCause() instanceof UnknownSnapshotException)) {
+          throw e;
+        }
+      }
+
+      Thread.sleep(200);
+    }
+    throw new TimeoutException("Timeout waiting for snapshot " + snapshot + " to complete");
+  }
+
   @Test
   public void testAsyncFlushSnapshot() throws Exception {
     SnapshotProtos.SnapshotDescription snapshot = SnapshotProtos.SnapshotDescription.newBuilder()
@@ -285,7 +318,7 @@ public class TestFlushSnapshotFromClient {
 
     // constantly loop, looking for the snapshot to complete
     HMaster master = UTIL.getMiniHBaseCluster().getMaster();
-    SnapshotTestingUtils.waitForSnapshotToComplete(master, snapshot, 200);
+    waitForSnapshotToComplete(master, snapshot, TimeUnit.MINUTES.toNanos(1));
     LOG.info(" === Async Snapshot Completed ===");
     UTIL.getHBaseCluster().getMaster().getMasterFileSystem().logFileSystemState(LOG);
 
@@ -405,111 +438,6 @@ public class TestFlushSnapshotFromClient {
       snapshotName, rootDir, fs, true);
   }
 
-  /**
-   * Demonstrate that we reject snapshot requests if there is a snapshot already running on the
-   * same table currently running and that concurrent snapshots on different tables can both
-   * succeed concurretly.
-   */
-  @Test
-  public void testConcurrentSnapshottingAttempts() throws IOException, InterruptedException {
-    final TableName TABLE2_NAME = TableName.valueOf(TABLE_NAME + "2");
-
-    int ssNum = 20;
-    // make sure we don't fail on listing snapshots
-    SnapshotTestingUtils.assertNoSnapshots(admin);
-    // create second testing table
-    SnapshotTestingUtils.createTable(UTIL, TABLE2_NAME, TEST_FAM);
-    // load the table so we have some data
-    SnapshotTestingUtils.loadData(UTIL, TABLE_NAME, DEFAULT_NUM_ROWS, TEST_FAM);
-    SnapshotTestingUtils.loadData(UTIL, TABLE2_NAME, DEFAULT_NUM_ROWS, TEST_FAM);
-
-    final CountDownLatch toBeSubmitted = new CountDownLatch(ssNum);
-    // We'll have one of these per thread
-    class SSRunnable implements Runnable {
-      SnapshotDescription ss;
-      SSRunnable(SnapshotDescription ss) {
-        this.ss = ss;
-      }
-
-      @Override
-      public void run() {
-        try {
-          LOG.info("Submitting snapshot request: " + ClientSnapshotDescriptionUtils
-              .toString(ProtobufUtil.createHBaseProtosSnapshotDesc(ss)));
-          admin.snapshotAsync(ss);
-        } catch (Exception e) {
-          LOG.info("Exception during snapshot request: " + ClientSnapshotDescriptionUtils.toString(
-            ProtobufUtil.createHBaseProtosSnapshotDesc(ss))
-              + ".  This is ok, we expect some", e);
-        }
-        LOG.info("Submitted snapshot request: " + ClientSnapshotDescriptionUtils
-            .toString(ProtobufUtil.createHBaseProtosSnapshotDesc(ss)));
-        toBeSubmitted.countDown();
-      }
-    }
-
-    // build descriptions
-    SnapshotDescription[] descs = new SnapshotDescription[ssNum];
-    for (int i = 0; i < ssNum; i++) {
-      if(i % 2 ==0) {
-        descs[i] = new SnapshotDescription("ss" + i, TABLE_NAME, SnapshotType.FLUSH);
-      } else {
-        descs[i] = new SnapshotDescription("ss" + i, TABLE2_NAME, SnapshotType.FLUSH);
-      }
-    }
-
-    // kick each off its own thread
-    for (int i=0 ; i < ssNum; i++) {
-      new Thread(new SSRunnable(descs[i])).start();
-    }
-
-    // wait until all have been submitted
-    toBeSubmitted.await();
-
-    // loop until all are done.
-    while (true) {
-      int doneCount = 0;
-      for (SnapshotDescription ss : descs) {
-        try {
-          if (admin.isSnapshotFinished(ss)) {
-            doneCount++;
-          }
-        } catch (Exception e) {
-          LOG.warn("Got an exception when checking for snapshot " + ss.getName(), e);
-          doneCount++;
-        }
-      }
-      if (doneCount == descs.length) {
-        break;
-      }
-      Thread.sleep(100);
-    }
-
-    // dump for debugging
-    UTIL.getHBaseCluster().getMaster().getMasterFileSystem().logFileSystemState(LOG);
-
-    List<SnapshotDescription> taken = admin.listSnapshots();
-    int takenSize = taken.size();
-    LOG.info("Taken " + takenSize + " snapshots:  " + taken);
-    assertTrue("We expect at least 1 request to be rejected because of we concurrently" +
-        " issued many requests", takenSize < ssNum && takenSize > 0);
-
-    // Verify that there's at least one snapshot per table
-    int t1SnapshotsCount = 0;
-    int t2SnapshotsCount = 0;
-    for (SnapshotDescription ss : taken) {
-      if (ss.getTableName().equals(TABLE_NAME)) {
-        t1SnapshotsCount++;
-      } else if (ss.getTableName().equals(TABLE2_NAME)) {
-        t2SnapshotsCount++;
-      }
-    }
-    assertTrue("We expect at least 1 snapshot of table1 ", t1SnapshotsCount > 0);
-    assertTrue("We expect at least 1 snapshot of table2 ", t2SnapshotsCount > 0);
-
-    UTIL.deleteTable(TABLE2_NAME);
-  }
-
   private void waitRegionsAfterMerge(final long numRegionsAfterMerge)
       throws IOException, InterruptedException {
     // Verify that there's one region less
@@ -523,7 +451,6 @@ public class TestFlushSnapshotFromClient {
     }
     SnapshotTestingUtils.waitForTableToBeOnline(UTIL, TABLE_NAME);
   }
-
 
   protected void verifyRowCount(final HBaseTestingUtility util, final TableName tableName,
       long expectedRows) throws IOException {

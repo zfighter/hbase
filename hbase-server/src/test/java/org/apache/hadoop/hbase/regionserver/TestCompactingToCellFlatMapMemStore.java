@@ -29,7 +29,7 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.MemoryCompactionPolicy;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
@@ -45,7 +45,7 @@ import org.slf4j.LoggerFactory;
 /**
  * compacted memstore test case
  */
-@Category({RegionServerTests.class, MediumTests.class})
+@Category({RegionServerTests.class, LargeTests.class})
 @RunWith(Parameterized.class)
 public class TestCompactingToCellFlatMapMemStore extends TestCompactingMemStore {
 
@@ -282,8 +282,7 @@ public class TestCompactingToCellFlatMapMemStore extends TestCompactingMemStore 
     mss = memstore.getFlushableSize();
     MemStoreSnapshot snapshot = memstore.snapshot(); // push keys to snapshot
     // simulate flusher
-    region.decrMemStoreSize(mss.getDataSize(), mss.getHeapSize(), mss.getOffHeapSize(),
-      mss.getCellsCount());
+    region.decrMemStoreSize(mss);
     ImmutableSegment s = memstore.getSnapshot();
     assertEquals(4, s.getCellsCount());
     assertEquals(0, regionServicesForStores.getMemStoreSize());
@@ -837,7 +836,9 @@ public class TestCompactingToCellFlatMapMemStore extends TestCompactingMemStore 
    * testForceCopyOfBigCellIntoImmutableSegment checks that the
    * ImmutableMemStoreLAB's forceCopyOfBigCellInto does what it's supposed to do.
    */
-  @Test
+  @org.junit.Ignore @Test // Flakey. Disabled by HBASE-24128. HBASE-24129 is for reenable.
+  // TestCompactingToCellFlatMapMemStore.testForceCopyOfBigCellIntoImmutableSegment:902 i=1
+  //   expected:<8389924> but was:<8389992>
   public void testForceCopyOfBigCellIntoImmutableSegment() throws IOException {
 
     if (toCellChunkMap == false) {

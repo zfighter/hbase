@@ -16,7 +16,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.rest.model;
 
 import java.io.IOException;
@@ -69,16 +68,18 @@ import org.apache.hadoop.hbase.filter.SubstringComparator;
 import org.apache.hadoop.hbase.filter.TimestampsFilter;
 import org.apache.hadoop.hbase.filter.ValueFilter;
 import org.apache.hadoop.hbase.filter.WhileMatchFilter;
-import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.rest.ProtobufMessageHandler;
-import org.apache.hadoop.hbase.rest.protobuf.generated.ScannerMessage.Scanner;
 import org.apache.hadoop.hbase.security.visibility.Authorizations;
-import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.hadoop.hbase.util.Bytes;
+
+import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.shaded.rest.protobuf.generated.ScannerMessage.Scanner;
+
+import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
+import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
-import com.google.protobuf.ByteString;
 
 /**
  * A representation of Scanner parameters.
@@ -117,6 +118,7 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
   private int caching = -1;
   private List<String> labels = new ArrayList<>();
   private boolean cacheBlocks = true;
+  private int limit = -1;
 
   /**
    * Implement lazily-instantiated singleton as per recipe
@@ -282,7 +284,7 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
           if (qualifier != null) {
             this.qualifier = Bytes.toString(Base64.getEncoder().encode(qualifier));
           }
-          this.op = dcf.getOperator().toString();
+          this.op = dcf.getCompareOperator().toString();
           this.comparator = new ByteArrayComparableModel(dcf.getComparator());
           this.dropDependentColumn = dcf.dropDependentColumn();
         } break;
@@ -324,7 +326,7 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
         case QualifierFilter:
         case RowFilter:
         case ValueFilter:
-          this.op = ((CompareFilter)filter).getOperator().toString();
+          this.op = ((CompareFilter)filter).getCompareOperator().toString();
           this.comparator =
             new ByteArrayComparableModel(
               ((CompareFilter)filter).getComparator());
@@ -340,7 +342,7 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
           if (qualifier != null) {
             this.qualifier = Bytes.toString(Base64.getEncoder().encode(qualifier));
           }
-          this.op = scvf.getOperator().toString();
+          this.op = scvf.getCompareOperator().toString();
           this.comparator =
             new ByteArrayComparableModel(scvf.getComparator());
           if (scvf.getFilterIfMissing()) {
@@ -541,6 +543,9 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
     if (maxVersions > 0) {
       model.setMaxVersions(maxVersions);
     }
+    if (scan.getLimit() > 0) {
+      model.setLimit(scan.getLimit());
+    }
     Filter filter = scan.getFilter();
     if (filter != null) {
       model.setFilter(stringifyFilter(filter));
@@ -686,6 +691,14 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
   }
 
   /**
+   * @return the limit specification
+   */
+  @XmlAttribute
+  public int getLimit() {
+    return limit;
+  }
+
+  /**
    * @return true if HFile blocks should be cached on the servers for this scan, false otherwise
    */
   @XmlAttribute
@@ -768,6 +781,13 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
   }
 
   /**
+   * @param limit the number of rows can fetch of each scanner at lifetime
+   */
+  public void setLimit(int limit) {
+    this.limit = limit;
+  }
+
+  /**
    * @param maxVersions maximum number of versions to return
    */
   public void setMaxVersions(int maxVersions) {
@@ -799,13 +819,13 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
   public byte[] createProtobufOutput() {
     Scanner.Builder builder = Scanner.newBuilder();
     if (!Bytes.equals(startRow, HConstants.EMPTY_START_ROW)) {
-      builder.setStartRow(ByteStringer.wrap(startRow));
+      builder.setStartRow(UnsafeByteOperations.unsafeWrap(startRow));
     }
     if (!Bytes.equals(endRow, HConstants.EMPTY_START_ROW)) {
-      builder.setEndRow(ByteStringer.wrap(endRow));
+      builder.setEndRow(UnsafeByteOperations.unsafeWrap(endRow));
     }
     for (byte[] column: columns) {
-      builder.addColumns(ByteStringer.wrap(column));
+      builder.addColumns(UnsafeByteOperations.unsafeWrap(column));
     }
     if (startTime != 0) {
       builder.setStartTime(startTime);
@@ -816,6 +836,9 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
     builder.setBatch(getBatch());
     if (caching > 0) {
       builder.setCaching(caching);
+    }
+    if (limit > 0){
+      builder.setLimit(limit);
     }
     builder.setMaxVersions(maxVersions);
     if (filter != null) {
@@ -848,6 +871,9 @@ public class ScannerModel implements ProtobufMessageHandler, Serializable {
     }
     if (builder.hasCaching()) {
       caching = builder.getCaching();
+    }
+    if (builder.hasLimit()) {
+      limit = builder.getLimit();
     }
     if (builder.hasStartTime()) {
       startTime = builder.getStartTime();

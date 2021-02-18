@@ -25,6 +25,7 @@ import static org.mockito.Mockito.mock;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -35,13 +36,14 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.Stoppable;
-import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.client.DummyConnectionRegistry;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.master.cleaner.BaseHFileCleanerDelegate;
-import org.apache.hadoop.hbase.master.cleaner.CleanerChore;
+import org.apache.hadoop.hbase.master.cleaner.DirScanPool;
 import org.apache.hadoop.hbase.master.cleaner.HFileCleaner;
 import org.apache.hadoop.hbase.regionserver.CompactedHFilesDischarger;
 import org.apache.hadoop.hbase.regionserver.HRegion;
@@ -50,7 +52,7 @@ import org.apache.hadoop.hbase.regionserver.RegionServerServices;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileArchiveUtil;
 import org.apache.hadoop.hbase.util.StoppableImplementation;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
@@ -80,14 +82,26 @@ public class TestZooKeeperTableArchiveClient {
       HBaseClassTestRule.forClass(TestZooKeeperTableArchiveClient.class);
 
   private static final Logger LOG = LoggerFactory.getLogger(TestZooKeeperTableArchiveClient.class);
-  private static final HBaseTestingUtility UTIL = HBaseTestingUtility.createLocalHTU();
+  private static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
   private static final String STRING_TABLE_NAME = "test";
   private static final byte[] TEST_FAM = Bytes.toBytes("fam");
   private static final byte[] TABLE_NAME = Bytes.toBytes(STRING_TABLE_NAME);
   private static ZKTableArchiveClient archivingClient;
   private final List<Path> toCleanup = new ArrayList<>();
-  private static ClusterConnection CONNECTION;
+  private static Connection CONNECTION;
   private static RegionServerServices rss;
+  private static DirScanPool POOL;
+
+  public static final class MockRegistry extends DummyConnectionRegistry {
+
+    public MockRegistry(Configuration conf) {
+    }
+
+    @Override
+    public CompletableFuture<String> getClusterId() {
+      return CompletableFuture.completedFuture("clusterId");
+    }
+  }
 
   /**
    * Setup the config for the cluster
@@ -96,13 +110,16 @@ public class TestZooKeeperTableArchiveClient {
   public static void setupCluster() throws Exception {
     setupConf(UTIL.getConfiguration());
     UTIL.startMiniZKCluster();
-    CONNECTION = (ClusterConnection)ConnectionFactory.createConnection(UTIL.getConfiguration());
+    UTIL.getConfiguration().setClass(MockRegistry.REGISTRY_IMPL_CONF_KEY, MockRegistry.class,
+      DummyConnectionRegistry.class);
+    CONNECTION = ConnectionFactory.createConnection(UTIL.getConfiguration());
     archivingClient = new ZKTableArchiveClient(UTIL.getConfiguration(), CONNECTION);
     // make hfile archiving node so we can archive files
     ZKWatcher watcher = UTIL.getZooKeeperWatcher();
     String archivingZNode = ZKTableArchiveClient.getArchiveZNode(UTIL.getConfiguration(), watcher);
     ZKUtil.createWithParents(watcher, archivingZNode);
     rss = mock(RegionServerServices.class);
+    POOL = new DirScanPool(UTIL.getConfiguration());
   }
 
   private static void setupConf(Configuration conf) {
@@ -117,7 +134,7 @@ public class TestZooKeeperTableArchiveClient {
       // cleanup each of the files/directories registered
       for (Path file : toCleanup) {
       // remove the table and archive directories
-        FSUtils.delete(fs, file, true);
+        CommonFSUtils.delete(fs, file, true);
       }
     } catch (IOException e) {
       LOG.warn("Failure to delete archive directory", e);
@@ -130,11 +147,12 @@ public class TestZooKeeperTableArchiveClient {
 
   @AfterClass
   public static void cleanupTest() throws Exception {
-    try {
+    if (CONNECTION != null) {
       CONNECTION.close();
-      UTIL.shutdownMiniZKCluster();
-    } catch (Exception e) {
-      LOG.warn("problem shutting down cluster", e);
+    }
+    UTIL.shutdownMiniZKCluster();
+    if (POOL != null) {
+      POOL.shutdownNow();
     }
   }
 
@@ -176,7 +194,6 @@ public class TestZooKeeperTableArchiveClient {
     Configuration conf = UTIL.getConfiguration();
     // setup the delegate
     Stoppable stop = new StoppableImplementation();
-    CleanerChore.initChorePool(conf);
     HFileCleaner cleaner = setupAndCreateCleaner(conf, fs, archiveDir, stop);
     List<BaseHFileCleanerDelegate> cleaners = turnOnArchiving(STRING_TABLE_NAME, cleaner);
     final LongTermArchivingHFileCleaner delegate = (LongTermArchivingHFileCleaner) cleaners.get(0);
@@ -194,7 +211,7 @@ public class TestZooKeeperTableArchiveClient {
     // get the current hfiles in the archive directory
     List<Path> files = getAllFiles(fs, archiveDir);
     if (files == null) {
-      FSUtils.logFileSystemState(fs, UTIL.getDataTestDir(), LOG);
+      CommonFSUtils.logFileSystemState(fs, UTIL.getDataTestDir(), LOG);
       throw new RuntimeException("Didn't archive any files!");
     }
     CountDownLatch finished = setupCleanerWatching(delegate, cleaners, files.size());
@@ -231,7 +248,6 @@ public class TestZooKeeperTableArchiveClient {
     // setup the delegate
     Stoppable stop = new StoppableImplementation();
     final ChoreService choreService = new ChoreService("TEST_SERVER_NAME");
-    CleanerChore.initChorePool(conf);
     HFileCleaner cleaner = setupAndCreateCleaner(conf, fs, archiveDir, stop);
     List<BaseHFileCleanerDelegate> cleaners = turnOnArchiving(STRING_TABLE_NAME, cleaner);
     final LongTermArchivingHFileCleaner delegate = (LongTermArchivingHFileCleaner) cleaners.get(0);
@@ -259,7 +275,7 @@ public class TestZooKeeperTableArchiveClient {
     // Should  be archived
     List<Path> files = getAllFiles(fs, archiveDir);
     if (files == null) {
-      FSUtils.logFileSystemState(fs, archiveDir, LOG);
+      CommonFSUtils.logFileSystemState(fs, archiveDir, LOG);
       throw new RuntimeException("Didn't load archive any files!");
     }
 
@@ -269,8 +285,11 @@ public class TestZooKeeperTableArchiveClient {
     for (Path file : files) {
       String tableName = file.getParent().getParent().getParent().getName();
       // check to which table this file belongs
-      if (tableName.equals(otherTable)) initialCountForOtherTable++;
-      else if (tableName.equals(STRING_TABLE_NAME)) initialCountForPrimary++;
+      if (tableName.equals(otherTable)) {
+        initialCountForOtherTable++;
+      } else if (tableName.equals(STRING_TABLE_NAME)) {
+        initialCountForPrimary++;
+      }
     }
 
     assertTrue("Didn't archive files for:" + STRING_TABLE_NAME, initialCountForPrimary > 0);
@@ -293,11 +312,13 @@ public class TestZooKeeperTableArchiveClient {
       String tableName = file.getParent().getParent().getParent().getName();
       // ensure we don't have files from the non-archived table
       assertFalse("Have a file from the non-archived table: " + file, tableName.equals(otherTable));
-      if (tableName.equals(STRING_TABLE_NAME)) archivedForPrimary++;
+      if (tableName.equals(STRING_TABLE_NAME)) {
+        archivedForPrimary++;
+      }
     }
 
-    assertEquals("Not all archived files for the primary table were retained.", initialCountForPrimary,
-      archivedForPrimary);
+    assertEquals("Not all archived files for the primary table were retained.",
+        initialCountForPrimary, archivedForPrimary);
 
     // but we still have the archive directory
     assertTrue("Archive directory was deleted via archiver", fs.exists(archiveDir));
@@ -317,7 +338,7 @@ public class TestZooKeeperTableArchiveClient {
 
   private Path getTableDir(String tableName) throws IOException {
     Path testDataDir = UTIL.getDataTestDir();
-    FSUtils.setRootDir(UTIL.getConfiguration(), testDataDir);
+    CommonFSUtils.setRootDir(UTIL.getConfiguration(), testDataDir);
     return new Path(testDataDir, tableName);
   }
 
@@ -325,7 +346,7 @@ public class TestZooKeeperTableArchiveClient {
       Stoppable stop) {
     conf.setStrings(HFileCleaner.MASTER_HFILE_CLEANER_PLUGINS,
       LongTermArchivingHFileCleaner.class.getCanonicalName());
-    return new HFileCleaner(1000, stop, conf, fs, archiveDir);
+    return new HFileCleaner(1000, stop, conf, fs, archiveDir, POOL);
   }
 
   /**
@@ -336,6 +357,7 @@ public class TestZooKeeperTableArchiveClient {
    * @throws IOException on failure
    * @throws KeeperException on failure
    */
+  @SuppressWarnings("checkstyle:EmptyBlock")
   private List<BaseHFileCleanerDelegate> turnOnArchiving(String tableName, HFileCleaner cleaner)
       throws IOException, KeeperException {
     // turn on hfile retention
@@ -374,10 +396,13 @@ public class TestZooKeeperTableArchiveClient {
 
         @SuppressWarnings("unchecked")
         Iterable<FileStatus> ret = (Iterable<FileStatus>) invocation.callRealMethod();
-        if (counter[0] >= expected) finished.countDown();
+        if (counter[0] >= expected) {
+          finished.countDown();
+        }
+
         return ret;
       }
-    }).when(delegateSpy).getDeletableFiles(Mockito.anyListOf(FileStatus.class));
+    }).when(delegateSpy).getDeletableFiles(Mockito.anyList());
     cleaners.set(0, delegateSpy);
 
     return finished;
@@ -389,7 +414,7 @@ public class TestZooKeeperTableArchiveClient {
    * @return all files under the directory
    */
   private List<Path> getAllFiles(FileSystem fs, Path dir) throws IOException {
-    FileStatus[] files = FSUtils.listStatus(fs, dir, null);
+    FileStatus[] files = CommonFSUtils.listStatus(fs, dir, null);
     if (files == null) {
       LOG.warn("No files under:" + dir);
       return null;
@@ -399,7 +424,11 @@ public class TestZooKeeperTableArchiveClient {
     for (FileStatus file : files) {
       if (file.isDirectory()) {
         List<Path> subFiles = getAllFiles(fs, file.getPath());
-        if (subFiles != null) allFiles.addAll(subFiles);
+
+        if (subFiles != null) {
+          allFiles.addAll(subFiles);
+        }
+
         continue;
       }
       allFiles.add(file.getPath());
@@ -426,7 +455,7 @@ public class TestZooKeeperTableArchiveClient {
    * Create a new hfile in the passed region
    * @param region region to operate on
    * @param columnFamily family for which to add data
-   * @throws IOException
+   * @throws IOException if doing the put or flush fails
    */
   private void createHFileInRegion(HRegion region, byte[] columnFamily) throws IOException {
     // put one row in the region
@@ -438,7 +467,7 @@ public class TestZooKeeperTableArchiveClient {
   }
 
   /**
-   * @param cleaner
+   * @param cleaner the cleaner to use
    */
   private void runCleaner(HFileCleaner cleaner, CountDownLatch finished, Stoppable stop)
       throws InterruptedException {

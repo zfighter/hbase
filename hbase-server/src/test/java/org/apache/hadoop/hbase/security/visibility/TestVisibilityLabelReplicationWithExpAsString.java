@@ -31,16 +31,17 @@ import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.codec.KeyValueCodecWithTags;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
@@ -115,7 +116,6 @@ public class TestVisibilityLabelReplicationWithExpAsString extends TestVisibilit
     TEST_UTIL.startMiniZKCluster();
     MiniZooKeeperCluster miniZK = TEST_UTIL.getZkCluster();
     zkw1 = new ZKWatcher(conf, "cluster1", null, true);
-    admin = TEST_UTIL.getAdmin();
 
     // Base conf2 on conf1 so it gets the right zk cluster.
     conf1 = HBaseConfiguration.create(conf);
@@ -136,19 +136,20 @@ public class TestVisibilityLabelReplicationWithExpAsString extends TestVisibilit
     TEST_UTIL.waitTableEnabled(LABELS_TABLE_NAME.getName(), 50000);
     TEST_UTIL1.startMiniCluster(1);
 
-    ReplicationPeerConfig rpc = new ReplicationPeerConfig();
-    rpc.setClusterKey(TEST_UTIL1.getClusterKey());
+    admin = TEST_UTIL.getAdmin();
+    ReplicationPeerConfig rpc = ReplicationPeerConfig.newBuilder()
+      .setClusterKey(TEST_UTIL1.getClusterKey())
+      .build();
     admin.addReplicationPeer("2", rpc);
 
-    HTableDescriptor table = new HTableDescriptor(TABLE_NAME);
-    HColumnDescriptor desc = new HColumnDescriptor(fam);
-    desc.setScope(HConstants.REPLICATION_SCOPE_GLOBAL);
-    table.addFamily(desc);
+    TableDescriptor tableDescriptor =
+      TableDescriptorBuilder.newBuilder(TABLE_NAME).setColumnFamily(ColumnFamilyDescriptorBuilder
+        .newBuilder(fam).setScope(HConstants.REPLICATION_SCOPE_GLOBAL).build()).build();
     try (Admin hBaseAdmin = TEST_UTIL.getAdmin()) {
-      hBaseAdmin.createTable(table);
+      hBaseAdmin.createTable(tableDescriptor);
     }
     try (Admin hBaseAdmin1 = TEST_UTIL1.getAdmin()){
-      hBaseAdmin1.createTable(table);
+      hBaseAdmin1.createTable(tableDescriptor);
     }
     addLabels();
     setAuths(conf);

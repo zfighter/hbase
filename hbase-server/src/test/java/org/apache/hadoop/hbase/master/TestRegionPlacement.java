@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -34,23 +34,25 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.CatalogFamilyFormat;
+import org.apache.hadoop.hbase.ClientMetaTableAccessor;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.favored.FavoredNodeAssignmentHelper;
 import org.apache.hadoop.hbase.favored.FavoredNodeLoadBalancer;
 import org.apache.hadoop.hbase.favored.FavoredNodesPlan;
@@ -301,7 +303,7 @@ public class TestRegionPlacement {
    * @param plan The assignment plan
    * @param p1 The first switch position
    * @param p2 The second switch position
-   * @return
+   * @return the shuffled assignment plan
    */
   private FavoredNodesPlan shuffleAssignmentPlan(FavoredNodesPlan plan,
       FavoredNodesPlan.Position p1, FavoredNodesPlan.Position p2) throws IOException {
@@ -358,8 +360,8 @@ public class TestRegionPlacement {
 
   /**
    * Verify the meta has updated to the latest assignment plan
-   * @param plan
-   * @throws IOException
+   * @param expectedPlan the region assignment plan
+   * @throws IOException if an IO problem is encountered
    */
   private void verifyMETAUpdated(FavoredNodesPlan expectedPlan)
   throws IOException {
@@ -450,7 +452,7 @@ public class TestRegionPlacement {
 
             assertNotNull(addrFromRS);
             assertNotNull(addrFromPlan);
-            assertTrue("Region server " + rs.getServerName().getHostAndPort()
+            assertTrue("Region server " + rs.getServerName().getAddress()
                 + " has the " + positions[j] +
                 " for region " + region.getRegionInfo().getRegionNameAsString() + " is " +
                 addrFromRS + " which is inconsistent with the plan "
@@ -473,12 +475,12 @@ public class TestRegionPlacement {
     final AtomicInteger regionOnPrimaryNum = new AtomicInteger(0);
     final AtomicInteger totalRegionNum = new AtomicInteger(0);
     LOG.info("The start of region placement verification");
-    MetaTableAccessor.Visitor visitor = new MetaTableAccessor.Visitor() {
+    ClientMetaTableAccessor.Visitor visitor = new ClientMetaTableAccessor.Visitor() {
       @Override
       public boolean visit(Result result) throws IOException {
         try {
           @SuppressWarnings("deprecation")
-          RegionInfo info = MetaTableAccessor.getRegionInfo(result);
+          RegionInfo info = CatalogFamilyFormat.getRegionInfo(result);
           if(info.getTable().getNamespaceAsString()
               .equals(NamespaceDescriptor.SYSTEM_NAMESPACE_NAME_STR)) {
             return true;
@@ -549,9 +551,9 @@ public class TestRegionPlacement {
       splitKeys[i - 1] = new byte[] { splitKey, splitKey, splitKey };
     }
 
-    HTableDescriptor desc = new HTableDescriptor(tableName);
-    desc.addFamily(new HColumnDescriptor(HConstants.CATALOG_FAMILY));
-    admin.createTable(desc, splitKeys);
+    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(tableName)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(HConstants.CATALOG_FAMILY)).build();
+    admin.createTable(tableDescriptor, splitKeys);
 
     try (RegionLocator r = CONNECTION.getRegionLocator(tableName)) {
       List<HRegionLocation> regions = r.getAllRegionLocations();

@@ -17,14 +17,18 @@
  */
 package org.apache.hadoop.hbase.client;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import org.apache.hadoop.hbase.*;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.TimestampsFilter;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
@@ -203,7 +207,7 @@ public class TestTimestampsFilter {
 
     Get g = new Get(Bytes.toBytes("row"));
     g.setFilter(filter);
-    g.setMaxVersions();
+    g.readAllVersions();
     g.addColumn(FAMILY, Bytes.toBytes("column2"));
     g.addColumn(FAMILY, Bytes.toBytes("column4"));
 
@@ -334,7 +338,7 @@ public class TestTimestampsFilter {
     Get get = new Get(row);
     get.addColumn(cf, column);
     get.setFilter(filter);
-    get.setMaxVersions();
+    get.readAllVersions();
     Result result = ht.get(get);
 
     return result.rawCells();
@@ -350,9 +354,9 @@ public class TestTimestampsFilter {
     byte startRow[] = Bytes.toBytes("row:" + startRowIdx);
     byte endRow[] = Bytes.toBytes("row:" + endRowIdx + 1); // exclusive
     Filter filter = new TimestampsFilter(versions);
-    Scan scan = new Scan(startRow, endRow);
+    Scan scan = new Scan().withStartRow(startRow).withStopRow(endRow);
     scan.setFilter(filter);
-    scan.setMaxVersions();
+    scan.readAllVersions();
     ResultScanner scanner = ht.getScanner(scan);
     return scanner.next(endRowIdx - startRowIdx + 1);
   }

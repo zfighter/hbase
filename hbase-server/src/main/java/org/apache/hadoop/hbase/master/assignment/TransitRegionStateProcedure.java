@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -36,11 +36,10 @@ import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
 import org.apache.hadoop.hbase.procedure2.ProcedureSuspendedException;
 import org.apache.hadoop.hbase.procedure2.ProcedureUtil;
 import org.apache.hadoop.hbase.procedure2.ProcedureYieldException;
+import org.apache.hadoop.hbase.util.RetryCounter;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.RegionStateTransitionState;
@@ -115,14 +114,14 @@ public class TransitRegionStateProcedure
 
   private boolean forceNewPlan;
 
-  private int attempt;
+  private RetryCounter retryCounter;
 
   private RegionRemoteProcedureBase remoteProc;
 
   public TransitRegionStateProcedure() {
   }
 
-  private void setInitalAndLastState() {
+  private void setInitialAndLastState() {
     switch (type) {
       case ASSIGN:
         initialState = RegionStateTransitionState.REGION_STATE_TRANSITION_GET_ASSIGN_CANDIDATE;
@@ -142,14 +141,18 @@ public class TransitRegionStateProcedure
     }
   }
 
-  @VisibleForTesting
   protected TransitRegionStateProcedure(MasterProcedureEnv env, RegionInfo hri,
       ServerName assignCandidate, boolean forceNewPlan, TransitionType type) {
     super(env, hri);
     this.assignCandidate = assignCandidate;
     this.forceNewPlan = forceNewPlan;
     this.type = type;
-    setInitalAndLastState();
+    setInitialAndLastState();
+
+    // when do reopen TRSP, let the rs know the targetServer so it can keep some info on close
+    if (type == TransitionType.REOPEN) {
+      this.assignCandidate = getRegionStateNode(env).getRegionLocation();
+    }
   }
 
   @Override
@@ -171,11 +174,11 @@ public class TransitRegionStateProcedure
 
   private void queueAssign(MasterProcedureEnv env, RegionStateNode regionNode)
       throws ProcedureSuspendedException {
-    // Here the assumption is that, the region must be in CLOSED state, so the region location
-    // will be null. And if we fail to open the region and retry here, the forceNewPlan will be
-    // true, and also we will set the region location to null.
     boolean retain = false;
-    if (!forceNewPlan) {
+    if (forceNewPlan) {
+      // set the region location to null if forceNewPlan is true
+      regionNode.setRegionLocation(null);
+    } else {
       if (assignCandidate != null) {
         retain = assignCandidate.equals(regionNode.getLastHost());
         regionNode.setRegionLocation(assignCandidate);
@@ -210,7 +213,7 @@ public class TransitRegionStateProcedure
   private Flow confirmOpened(MasterProcedureEnv env, RegionStateNode regionNode)
       throws IOException {
     if (regionNode.isInState(State.OPEN)) {
-      attempt = 0;
+      retryCounter = null;
       if (lastState == RegionStateTransitionState.REGION_STATE_TRANSITION_CONFIRM_OPENED) {
         // we are the last state, finish
         regionNode.unsetProcedure(this);
@@ -226,20 +229,33 @@ public class TransitRegionStateProcedure
       return Flow.HAS_MORE_STATE;
     }
 
-    if (incrementAndCheckMaxAttempts(env, regionNode)) {
+    int retries = env.getAssignmentManager().getRegionStates().addToFailedOpen(regionNode)
+        .incrementAndGetRetries();
+    int maxAttempts = env.getAssignmentManager().getAssignMaxAttempts();
+    LOG.info("Retry={} of max={}; {}; {}", retries, maxAttempts, this, regionNode.toShortString());
+
+    if (retries >= maxAttempts) {
       env.getAssignmentManager().regionFailedOpen(regionNode, true);
       setFailure(getClass().getSimpleName(), new RetriesExhaustedException(
         "Max attempts " + env.getAssignmentManager().getAssignMaxAttempts() + " exceeded"));
       regionNode.unsetProcedure(this);
       return Flow.NO_MORE_STATE;
     }
+
     env.getAssignmentManager().regionFailedOpen(regionNode, false);
     // we failed to assign the region, force a new plan
     forceNewPlan = true;
     regionNode.setRegionLocation(null);
     setNextState(RegionStateTransitionState.REGION_STATE_TRANSITION_GET_ASSIGN_CANDIDATE);
-    // Here we do not throw exception because we want to the region to be online ASAP
-    return Flow.HAS_MORE_STATE;
+
+    if (retries > env.getAssignmentManager().getAssignRetryImmediatelyMaxAttempts()) {
+      // Throw exception to backoff and retry when failed open too many times
+      throw new HBaseIOException("Failed confirm OPEN of " + regionNode +
+          " (remote log may yield more detail on why).");
+    } else {
+      // Here we do not throw exception because we want to the region to be online ASAP
+      return Flow.HAS_MORE_STATE;
+    }
   }
 
   private void closeRegion(MasterProcedureEnv env, RegionStateNode regionNode) throws IOException {
@@ -259,7 +275,7 @@ public class TransitRegionStateProcedure
   private Flow confirmClosed(MasterProcedureEnv env, RegionStateNode regionNode)
       throws IOException {
     if (regionNode.isInState(State.CLOSED)) {
-      attempt = 0;
+      retryCounter = null;
       if (lastState == RegionStateTransitionState.REGION_STATE_TRANSITION_CONFIRM_CLOSED) {
         // we are the last state, finish
         regionNode.unsetProcedure(this);
@@ -288,7 +304,7 @@ public class TransitRegionStateProcedure
       regionNode.unsetProcedure(this);
       return Flow.NO_MORE_STATE;
     }
-    attempt = 0;
+    retryCounter = null;
     setNextState(RegionStateTransitionState.REGION_STATE_TRANSITION_GET_ASSIGN_CANDIDATE);
     return Flow.HAS_MORE_STATE;
   }
@@ -319,6 +335,20 @@ public class TransitRegionStateProcedure
     try {
       switch (state) {
         case REGION_STATE_TRANSITION_GET_ASSIGN_CANDIDATE:
+          // Need to do some sanity check for replica region, if the region does not exist at
+          // master, do not try to assign the replica region, log error and return.
+          if (!RegionReplicaUtil.isDefaultReplica(regionNode.getRegionInfo())) {
+            RegionInfo defaultRI =
+              RegionReplicaUtil.getRegionInfoForDefaultReplica(regionNode.getRegionInfo());
+            if (env.getMasterServices().getAssignmentManager().getRegionStates().
+              getRegionStateNode(defaultRI) == null) {
+              LOG.error(
+                "Cannot assign replica region {} because its primary region {} does not exist.",
+                regionNode.getRegionInfo(), defaultRI);
+              regionNode.unsetProcedure(this);
+              return Flow.NO_MORE_STATE;
+            }
+          }
           queueAssign(env, regionNode);
           return Flow.HAS_MORE_STATE;
         case REGION_STATE_TRANSITION_OPEN:
@@ -335,7 +365,10 @@ public class TransitRegionStateProcedure
           throw new UnsupportedOperationException("unhandled state=" + state);
       }
     } catch (IOException e) {
-      long backoff = ProcedureUtil.getBackoffTimeMs(this.attempt++);
+      if (retryCounter == null) {
+        retryCounter = ProcedureUtil.createRetryCounter(env.getMasterConfiguration());
+      }
+      long backoff = retryCounter.getBackoffTimeAndIncrementAttempts();
       LOG.warn(
         "Failed transition, suspend {}secs {}; {}; waiting on rectified condition fixed " +
           "by other Procedure or operator intervention",
@@ -381,13 +414,14 @@ public class TransitRegionStateProcedure
 
   // Should be called with RegionStateNode locked
   public void serverCrashed(MasterProcedureEnv env, RegionStateNode regionNode,
-      ServerName serverName) throws IOException {
+      ServerName serverName, boolean forceNewPlan) throws IOException {
+    this.forceNewPlan = forceNewPlan;
     if (remoteProc != null) {
       // this means we are waiting for the sub procedure, so wake it up
       remoteProc.serverCrashed(env, regionNode, serverName);
     } else {
       // we are in RUNNING state, just update the region state, and we will process it later.
-      env.getAssignmentManager().regionClosed(regionNode, false);
+      env.getAssignmentManager().regionClosedAbnormally(regionNode);
     }
   }
 
@@ -400,12 +434,13 @@ public class TransitRegionStateProcedure
     this.remoteProc = null;
   }
 
-  private boolean incrementAndCheckMaxAttempts(MasterProcedureEnv env, RegionStateNode regionNode) {
-    int retries = env.getAssignmentManager().getRegionStates().addToFailedOpen(regionNode)
-      .incrementAndGetRetries();
-    int max = env.getAssignmentManager().getAssignMaxAttempts();
-    LOG.info("Retry={} of max={}; {}; {}", retries, max, this, regionNode.toShortString());
-    return retries >= max;
+  // will be called after we finish loading the meta entry for this region.
+  // used to change the state of the region node if we have a sub procedure, as we may not persist
+  // the state to meta yet. See the code in RegionRemoteProcedureBase.execute for more details.
+  void stateLoaded(AssignmentManager am, RegionStateNode regionNode) {
+    if (remoteProc != null) {
+      remoteProc.stateLoaded(am, regionNode);
+    }
   }
 
   @Override
@@ -477,7 +512,7 @@ public class TransitRegionStateProcedure
     RegionStateTransitionStateData data =
       serializer.deserialize(RegionStateTransitionStateData.class);
     type = convert(data.getType());
-    setInitalAndLastState();
+    setInitialAndLastState();
     forceNewPlan = data.getForceNewPlan();
     if (data.hasAssignCandidate()) {
       assignCandidate = ProtobufUtil.toServerName(data.getAssignCandidate());
@@ -528,8 +563,13 @@ public class TransitRegionStateProcedure
   // anything. See the comment in executeFromState to find out why we need this assumption.
   public static TransitRegionStateProcedure assign(MasterProcedureEnv env, RegionInfo region,
       @Nullable ServerName targetServer) {
-    return setOwner(env,
-      new TransitRegionStateProcedure(env, region, targetServer, false, TransitionType.ASSIGN));
+    return assign(env, region, false, targetServer);
+  }
+
+  public static TransitRegionStateProcedure assign(MasterProcedureEnv env, RegionInfo region,
+      boolean forceNewPlan, @Nullable ServerName targetServer) {
+    return setOwner(env, new TransitRegionStateProcedure(env, region, targetServer, forceNewPlan,
+        TransitionType.ASSIGN));
   }
 
   public static TransitRegionStateProcedure unassign(MasterProcedureEnv env, RegionInfo region) {

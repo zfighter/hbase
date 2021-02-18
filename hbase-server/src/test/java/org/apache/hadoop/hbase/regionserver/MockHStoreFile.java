@@ -32,6 +32,7 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HDFSBlocksDistribution;
 import org.apache.hadoop.hbase.io.hfile.CacheConfig;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.DNS;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.yetus.audience.InterfaceAudience;
 
@@ -61,8 +62,8 @@ public class MockHStoreFile extends HStoreFile {
     this.sequenceid = sequenceid;
     this.isMajor = false;
     hdfsBlocksDistribution = new HDFSBlocksDistribution();
-    hdfsBlocksDistribution.addHostsAndBlockWeight(
-      new String[] { RSRpcServices.getHostname(testUtil.getConfiguration(), false) }, 1);
+    hdfsBlocksDistribution.addHostsAndBlockWeight(new String[]
+      { DNS.getHostname(testUtil.getConfiguration(), DNS.ServerType.REGIONSERVER) }, 1);
     modificationTime = EnvironmentEdgeManager.currentTime();
   }
 
@@ -131,11 +132,6 @@ public class MockHStoreFile extends HStoreFile {
   @Override
   public boolean isCompactedAway() {
     return compactedAway;
-  }
-
-  @Override
-  public long getModificationTimeStamp() {
-    return getModificationTimestamp();
   }
 
   @Override

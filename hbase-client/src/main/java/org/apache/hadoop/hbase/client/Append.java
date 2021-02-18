@@ -23,6 +23,8 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.UUID;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellBuilder;
+import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.security.access.Permission;
@@ -66,7 +68,7 @@ public class Append extends Mutation {
    * @return this
    */
   public Append setTimeRange(long minStamp, long maxStamp) {
-    tr = new TimeRange(minStamp, maxStamp);
+    tr = TimeRange.between(minStamp, maxStamp);
     return this;
   }
 
@@ -152,20 +154,6 @@ public class Append extends Mutation {
    * @param qualifier column qualifier
    * @param value value to append to specified column
    * @return this
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #addColumn(byte[], byte[], byte[])} instead
-   */
-  @Deprecated
-  public Append add(byte [] family, byte [] qualifier, byte [] value) {
-    return this.addColumn(family, qualifier, value);
-  }
-
-  /**
-   * Add the specified column and value to this Append operation.
-   * @param family family name
-   * @param qualifier column qualifier
-   * @param value value to append to specified column
-   * @return this
    */
   public Append addColumn(byte[] family, byte[] qualifier, byte[] value) {
     KeyValue kv = new KeyValue(this.row, family, qualifier, this.ts, KeyValue.Type.Put, value);
@@ -174,10 +162,9 @@ public class Append extends Mutation {
 
   /**
    * Add column and value to this Append operation.
-   * @param cell
    * @return This instance
    */
-  @SuppressWarnings("unchecked")
+  @Override
   public Append add(final Cell cell) {
     try {
       super.add(cell);
@@ -209,17 +196,6 @@ public class Append extends Mutation {
     return (Append) super.setDurability(d);
   }
 
-  /**
-   * Method for setting the Append's familyMap
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link Append#Append(byte[], long, NavigableMap)} instead
-   */
-  @Deprecated
-  @Override
-  public Append setFamilyCellMap(NavigableMap<byte[], List<Cell>> map) {
-    return (Append) super.setFamilyCellMap(map);
-  }
-
   @Override
   public Append setClusterIds(List<UUID> clusterIds) {
     return (Append) super.setClusterIds(clusterIds);
@@ -248,5 +224,10 @@ public class Append extends Mutation {
   @Override
   public Append setTTL(long ttl) {
     return (Append) super.setTTL(ttl);
+  }
+
+  @Override
+  public CellBuilder getCellBuilder(CellBuilderType type) {
+    return getCellBuilder(type, Cell.Type.Put);
   }
 }

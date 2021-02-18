@@ -25,6 +25,7 @@ org.apache.hadoop.util.StringUtils;
 TaskMonitor taskMonitor = TaskMonitor.get();
 String filter = "general";
 String format = "html";
+String parent = "";
 </%args>
 
 <%if format.equals("json")%>
@@ -79,7 +80,7 @@ String format = "html";
     <%args>
         String filter;
     </%args>
-    <a href="?format=json&filter=<% filter %>">View as JSON</a>
+    <a href="<% parent %>?format=json&filter=<% filter %>">View as JSON</a>
 </%def>
 
 <%def renderTasks>
@@ -104,6 +105,7 @@ String format = "html";
                       <th>Description</th>
                       <th>State</th>
                       <th>Status</th>
+                      <th>Completion Time</th>
                 </tr>
                 <%for MonitoredTask task : tasks %>
                     <tr class="<& stateCss; state = task.getState() &>">
@@ -115,6 +117,13 @@ String format = "html";
                       <td><% task.getStatus() %>
                           (since <% StringUtils.formatTimeDiff(now, task.getStatusTime()) %>
                           ago)</td>
+                      <td>
+                        <%if task.getCompletionTimestamp() < 0 %>
+                          <% task.getState() %>
+                        <%else>
+                          <% new Date(task.getCompletionTimestamp()) %> (since <% StringUtils.formatTimeDiff(now, task.getCompletionTimestamp()) %> ago)
+                        </%if>
+                      </td>
                     </tr>
                 </%for>
             </table>

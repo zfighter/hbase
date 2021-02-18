@@ -59,7 +59,7 @@ import org.apache.hadoop.hbase.util.Bytes;
  * {@link #setTimestamp(long) setTimestamp}.
  * <p>
  * To limit the number of versions of each column to be returned, execute
- * {@link #setMaxVersions(int) setMaxVersions}.
+ * {@link #readVersions(int) readVersions}.
  * <p>
  * To add a filter, call {@link #setFilter(Filter) setFilter}.
  */
@@ -74,7 +74,6 @@ public class Get extends Query implements Row {
   private int storeOffset = 0;
   private TimeRange tr = TimeRange.allTime();
   private boolean checkExistenceOnly = false;
-  private boolean closestRowBefore = false;
   private Map<byte [], NavigableSet<byte []>> familyMap = new TreeMap<>(Bytes.BYTES_COMPARATOR);
 
   /**
@@ -161,26 +160,6 @@ public class Get extends Query implements Row {
   }
 
   /**
-   * This will always return the default value which is false as client cannot set the value to this
-   * property any more.
-   * @deprecated since 2.0.0 and will be removed in 3.0.0
-   */
-  @Deprecated
-  public boolean isClosestRowBefore() {
-    return closestRowBefore;
-  }
-
-  /**
-   * This is not used any more and does nothing. Use reverse scan instead.
-   * @deprecated since 2.0.0 and will be removed in 3.0.0
-   */
-  @Deprecated
-  public Get setClosestRowBefore(boolean closestRowBefore) {
-    // do Nothing
-    return this;
-  }
-
-  /**
    * Get all columns from the specified family.
    * <p>
    * Overrides previous calls to addColumn for this family.
@@ -219,24 +198,11 @@ public class Get extends Query implements Row {
    * [minStamp, maxStamp).
    * @param minStamp minimum timestamp value, inclusive
    * @param maxStamp maximum timestamp value, exclusive
-   * @throws IOException
    * @return this for invocation chaining
    */
   public Get setTimeRange(long minStamp, long maxStamp) throws IOException {
-    tr = new TimeRange(minStamp, maxStamp);
+    tr = TimeRange.between(minStamp, maxStamp);
     return this;
-  }
-
-  /**
-   * Get versions of columns with the specified timestamp.
-   * @param timestamp version timestamp
-   * @return this for invocation chaining
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link #setTimestamp(long)} instead
-   */
-  @Deprecated
-  public Get setTimeStamp(long timestamp) throws IOException {
-    return this.setTimestamp(timestamp);
   }
 
   /**
@@ -246,42 +212,18 @@ public class Get extends Query implements Row {
    */
   public Get setTimestamp(long timestamp) {
     try {
-      tr = new TimeRange(timestamp, timestamp + 1);
+      tr = TimeRange.at(timestamp);
     } catch(Exception e) {
       // This should never happen, unless integer overflow or something extremely wrong...
       LOG.error("TimeRange failed, likely caused by integer overflow. ", e);
       throw e;
     }
-
     return this;
   }
 
-  @Override public Get setColumnFamilyTimeRange(byte[] cf, long minStamp, long maxStamp) {
+  @Override
+  public Get setColumnFamilyTimeRange(byte[] cf, long minStamp, long maxStamp) {
     return (Get) super.setColumnFamilyTimeRange(cf, minStamp, maxStamp);
-  }
-
-  /**
-   * Get all available versions.
-   * @return this for invocation chaining
-   * @deprecated It is easy to misunderstand with column family's max versions, so use
-   *             {@link #readAllVersions()} instead.
-   */
-  @Deprecated
-  public Get setMaxVersions() {
-    return readAllVersions();
-  }
-
-  /**
-   * Get up to the specified number of versions of each column.
-   * @param maxVersions maximum versions for each column
-   * @throws IOException if invalid number of versions
-   * @return this for invocation chaining
-   * @deprecated It is easy to misunderstand with column family's max versions, so use
-   *             {@link #readVersions(int)} instead.
-   */
-  @Deprecated
-  public Get setMaxVersions(int maxVersions) throws IOException {
-    return readVersions(maxVersions);
   }
 
   /**
@@ -515,13 +457,6 @@ public class Get extends Query implements Row {
     return map;
   }
 
-  //Row
-  @Override
-  public int compareTo(Row other) {
-    // TODO: This is wrong.  Can't have two gets the same just because on same row.
-    return Bytes.compareTo(this.getRow(), other.getRow());
-  }
-
   @Override
   public int hashCode() {
     // TODO: This is wrong.  Can't have two gets the same just because on same row.  But it
@@ -539,7 +474,7 @@ public class Get extends Query implements Row {
     }
     Row other = (Row) obj;
     // TODO: This is wrong.  Can't have two gets the same just because on same row.
-    return compareTo(other) == 0;
+    return Row.COMPARATOR.compare(this, other) == 0;
   }
 
   @Override

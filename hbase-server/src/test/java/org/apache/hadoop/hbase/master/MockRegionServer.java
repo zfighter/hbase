@@ -41,7 +41,7 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.ZooKeeperConnectionException;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
@@ -59,7 +59,7 @@ import org.apache.hadoop.hbase.quotas.RegionSizeStore;
 import org.apache.hadoop.hbase.regionserver.FlushRequester;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HeapMemoryManager;
-import org.apache.hadoop.hbase.regionserver.Leases;
+import org.apache.hadoop.hbase.regionserver.LeaseManager;
 import org.apache.hadoop.hbase.regionserver.MetricsRegionServer;
 import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionServerAccounting;
@@ -69,11 +69,15 @@ import org.apache.hadoop.hbase.regionserver.SecureBulkLoadManager;
 import org.apache.hadoop.hbase.regionserver.ServerNonceManager;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionRequester;
 import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
+import org.apache.hadoop.hbase.security.access.AccessChecker;
+import org.apache.hadoop.hbase.security.access.ZKPermissionWatcher;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
 
 import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
+import org.apache.hbase.thirdparty.com.google.protobuf.Service;
 import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
@@ -82,6 +86,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearCompac
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearCompactionQueuesResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegionBlockCacheRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegionBlockCacheResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearSlowLogResponseRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearSlowLogResponses;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CloseRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CloseRegionResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionRequest;
@@ -151,8 +157,8 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   private final Random random = new Random();
 
   /**
-   * Map of regions to map of rows and {@link Result}.  Used as data source when
-   * {@link #get(RpcController, GetRequest)} is called. Because we have a byte
+   * Map of regions to map of rows and {@link Result}. Used as data source when
+   * {@link #get(RpcController, ClientProtos.GetRequest)} is called. Because we have a byte
    * key, need to use TreeMap and provide a Comparator.  Use
    * {@link #setGetResult(byte[], byte[], Result)} filling this map.
    */
@@ -203,10 +209,11 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   /**
-   * Use this method filling the backing data source used by {@link #get(RpcController, GetRequest)}
-   * @param regionName
-   * @param row
-   * @param r
+   * Use this method filling the backing data source used by
+   * {@link #get(RpcController, ClientProtos.GetRequest)}
+   * @param regionName the region name to assign
+   * @param row the row key
+   * @param r the single row result
    */
   void setGetResult(final byte [] regionName, final byte [] row, final Result r) {
     Map<byte [], Result> value = this.gets.get(regionName);
@@ -302,7 +309,7 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   @Override
-  public ClusterConnection getConnection() {
+  public Connection getConnection() {
     return null;
   }
 
@@ -525,7 +532,7 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   @Override
-  public Leases getLeases() {
+  public LeaseManager getLeaseManager() {
     return null;
   }
 
@@ -583,7 +590,7 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   @Override
-  public boolean registerService(com.google.protobuf.Service service) {
+  public boolean registerService(Service service) {
     return false;
   }
 
@@ -615,11 +622,6 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   @Override
   public double getCompactionPressure() {
     return 0;
-  }
-
-  @Override
-  public ClusterConnection getClusterConnection() {
-    return null;
   }
 
   @Override
@@ -676,6 +678,18 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   }
 
   @Override
+  public ClearSlowLogResponses clearSlowLogsResponses(RpcController controller,
+      ClearSlowLogResponseRequest request) throws ServiceException {
+    return null;
+  }
+
+  @Override
+  public HBaseProtos.LogEntry getLogEntries(RpcController controller,
+      HBaseProtos.LogRequest request) throws ServiceException {
+    return null;
+  }
+
+  @Override
   public GetSpaceQuotaSnapshotsResponse getSpaceQuotaSnapshots(
       RpcController controller, GetSpaceQuotaSnapshotsRequest request)
       throws ServiceException {
@@ -720,5 +734,20 @@ class MockRegionServer implements AdminProtos.AdminService.BlockingInterface,
   @Override
   public Optional<MobFileCache> getMobFileCache() {
     return Optional.empty();
+  }
+
+  @Override
+  public AccessChecker getAccessChecker() {
+    return null;
+  }
+
+  @Override
+  public ZKPermissionWatcher getZKPermissionWatcher() {
+    return null;
+  }
+
+  @Override
+  public AsyncClusterConnection getAsyncClusterConnection() {
+    return null;
   }
 }

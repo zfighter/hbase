@@ -24,6 +24,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.DelayQueue;
 import java.util.concurrent.Delayed;
@@ -40,8 +41,6 @@ import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A very simple read only zookeeper implementation without watcher support.
@@ -116,7 +115,6 @@ public final class ReadOnlyZKClient implements Closeable {
 
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
-  @VisibleForTesting
   ZooKeeper zookeeper;
 
   private int pendingRequests = 0;
@@ -284,6 +282,22 @@ public final class ReadOnlyZKClient implements Closeable {
     return future;
   }
 
+  public CompletableFuture<List<String>> list(String path) {
+    if (closed.get()) {
+      return FutureUtils.failedFuture(new DoNotRetryIOException("Client already closed"));
+    }
+    CompletableFuture<List<String>> future = new CompletableFuture<>();
+    tasks.add(new ZKTask<List<String>>(path, future, "list") {
+
+      @Override
+      protected void doExec(ZooKeeper zk) {
+        zk.getChildren(path, false, (rc, path, ctx, children) -> onComplete(zk, rc, children, true),
+          null);
+      }
+    });
+    return future;
+  }
+
   private void closeZk() {
     if (zookeeper != null) {
       try {
@@ -348,7 +362,6 @@ public final class ReadOnlyZKClient implements Closeable {
     }
   }
 
-  @VisibleForTesting
   public String getConnectString() {
     return connectString;
   }

@@ -24,16 +24,16 @@ import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.List;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
+import org.apache.hadoop.hbase.security.SecurityConstants;
 import org.apache.hadoop.hbase.testclassification.IntegrationTests;
 import org.apache.hadoop.hbase.util.AbstractHBaseTool;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper;
 import org.apache.hadoop.hbase.zookeeper.ZKUtil;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
@@ -104,7 +104,7 @@ public class IntegrationTestZKAndFSPermissions extends AbstractHBaseTool {
   @Override
   protected void processOptions(CommandLine cmd) {
     isForce = cmd.hasOption(FORCE_CHECK_ARG);
-    masterPrincipal = getShortUserName(conf.get("hbase.master.kerberos.principal"));
+    masterPrincipal = getShortUserName(conf.get(SecurityConstants.MASTER_KRB_PRINCIPAL));
     superUser = cmd.getOptionValue(SUPERUSER_ARG, conf.get("hbase.superuser"));
     masterPrincipal = cmd.getOptionValue(PRINCIPAL_ARG, masterPrincipal);
     fsPerms = cmd.getOptionValue(FS_PERMS, "700");
@@ -216,7 +216,7 @@ public class IntegrationTestZKAndFSPermissions extends AbstractHBaseTool {
   }
 
   private void testFSPerms() throws IOException {
-    Path rootDir = FSUtils.getRootDir(conf);
+    Path rootDir = CommonFSUtils.getRootDir(conf);
 
     LOG.info("");
     LOG.info("***********************************************************************************");

@@ -17,14 +17,15 @@
  */
 package org.apache.hadoop.hbase.client;
 
-import static org.apache.hadoop.hbase.client.AsyncProcess.START_LOG_ERRORS_AFTER_COUNT_KEY;
+import static org.apache.hadoop.hbase.client.AsyncConnectionConfiguration.START_LOG_ERRORS_AFTER_COUNT_KEY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import java.util.Collection;
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ForkJoinPool;
@@ -37,10 +38,12 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
+import org.apache.hadoop.hbase.replication.ReplicationPeerConfigBuilder;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -64,6 +67,7 @@ public class TestAsyncReplicationAdminApiWithClusters extends TestAsyncAdminBase
   private static HBaseTestingUtility TEST_UTIL2;
   private static Configuration conf2;
   private static AsyncAdmin admin2;
+  private static AsyncConnection connection;
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
@@ -78,12 +82,19 @@ public class TestAsyncReplicationAdminApiWithClusters extends TestAsyncAdminBase
     conf2.set(HConstants.ZOOKEEPER_ZNODE_PARENT, "/2");
     TEST_UTIL2 = new HBaseTestingUtility(conf2);
     TEST_UTIL2.startMiniCluster();
-    admin2 =
-        ConnectionFactory.createAsyncConnection(TEST_UTIL2.getConfiguration()).get().getAdmin();
 
-    ReplicationPeerConfig rpc = new ReplicationPeerConfig();
-    rpc.setClusterKey(TEST_UTIL2.getClusterKey());
+    connection =
+      ConnectionFactory.createAsyncConnection(TEST_UTIL2.getConfiguration()).get();
+    admin2 = connection.getAdmin();
+
+    ReplicationPeerConfig rpc = ReplicationPeerConfig.newBuilder()
+      .setClusterKey(TEST_UTIL2.getClusterKey()).build();
     ASYNC_CONN.getAdmin().addReplicationPeer(ID_SECOND, rpc).join();
+  }
+
+  @AfterClass
+  public static void clearUp() throws IOException {
+    connection.close();
   }
 
   @Override
@@ -221,30 +232,30 @@ public class TestAsyncReplicationAdminApiWithClusters extends TestAsyncAdminBase
     assertFalse("Table should not exists in the peer cluster",
       admin2.tableExists(tableName2).get());
 
-    Map<TableName, ? extends Collection<String>> tableCfs = new HashMap<>();
+    Map<TableName, List<String>> tableCfs = new HashMap<>();
     tableCfs.put(tableName, null);
-    ReplicationPeerConfig rpc = admin.getReplicationPeerConfig(ID_SECOND).get();
-    rpc.setReplicateAllUserTables(false);
-    rpc.setTableCFsMap(tableCfs);
+    ReplicationPeerConfigBuilder rpcBuilder = ReplicationPeerConfig
+      .newBuilder(admin.getReplicationPeerConfig(ID_SECOND).get())
+      .setReplicateAllUserTables(false)
+      .setTableCFsMap(tableCfs);
     try {
       // Only add tableName to replication peer config
-      admin.updateReplicationPeerConfig(ID_SECOND, rpc).join();
+      admin.updateReplicationPeerConfig(ID_SECOND, rpcBuilder.build()).join();
       admin.enableTableReplication(tableName2).join();
       assertFalse("Table should not be created if user has set table cfs explicitly for the "
           + "peer and this is not part of that collection", admin2.tableExists(tableName2).get());
 
       // Add tableName2 to replication peer config, too
       tableCfs.put(tableName2, null);
-      rpc.setTableCFsMap(tableCfs);
-      admin.updateReplicationPeerConfig(ID_SECOND, rpc).join();
+      rpcBuilder.setTableCFsMap(tableCfs);
+      admin.updateReplicationPeerConfig(ID_SECOND, rpcBuilder.build()).join();
       admin.enableTableReplication(tableName2).join();
       assertTrue(
         "Table should be created if user has explicitly added table into table cfs collection",
         admin2.tableExists(tableName2).get());
     } finally {
-      rpc.setTableCFsMap(null);
-      rpc.setReplicateAllUserTables(true);
-      admin.updateReplicationPeerConfig(ID_SECOND, rpc).join();
+      rpcBuilder.setTableCFsMap(null).setReplicateAllUserTables(true).build();
+      admin.updateReplicationPeerConfig(ID_SECOND, rpcBuilder.build()).join();
     }
   }
 }

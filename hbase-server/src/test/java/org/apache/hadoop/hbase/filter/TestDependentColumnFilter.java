@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -30,14 +30,15 @@ import org.apache.hadoop.hbase.CellComparatorImpl;
 import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.Filter.ReturnCode;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
@@ -84,16 +85,16 @@ public class TestDependentColumnFilter {
   public void setUp() throws Exception {
     testVals = makeTestVals();
 
-    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(this.getClass().getSimpleName()));
-    HColumnDescriptor hcd0 = new HColumnDescriptor(FAMILIES[0]);
-    hcd0.setMaxVersions(3);
-    htd.addFamily(hcd0);
-    HColumnDescriptor hcd1 = new HColumnDescriptor(FAMILIES[1]);
-    hcd1.setMaxVersions(3);
-    htd.addFamily(hcd1);
-    HRegionInfo info = new HRegionInfo(htd.getTableName(), null, null, false);
+    TableDescriptor tableDescriptor =
+      TableDescriptorBuilder.newBuilder(TableName.valueOf(this.getClass().getSimpleName()))
+        .setColumnFamily(
+          ColumnFamilyDescriptorBuilder.newBuilder(FAMILIES[0]).setMaxVersions(3).build())
+        .setColumnFamily(
+          ColumnFamilyDescriptorBuilder.newBuilder(FAMILIES[1]).setMaxVersions(3).build())
+        .build();
+    RegionInfo info = RegionInfoBuilder.newBuilder(tableDescriptor.getTableName()).build();
     this.region = HBaseTestingUtility.createRegionAndWAL(info, TEST_UTIL.getDataTestDir(),
-        TEST_UTIL.getConfiguration(), htd);
+        TEST_UTIL.getConfiguration(), tableDescriptor);
     addData();
   }
 
@@ -183,7 +184,7 @@ public class TestDependentColumnFilter {
 
     Scan scan = new Scan();
     scan.setFilter(filter);
-    scan.setMaxVersions(Integer.MAX_VALUE);
+    scan.readVersions(Integer.MAX_VALUE);
 
     verifyScan(scan, 2, 8);
 
@@ -191,7 +192,7 @@ public class TestDependentColumnFilter {
     filter = new DependentColumnFilter(FAMILIES[0], QUALIFIER, true);
     scan = new Scan();
     scan.setFilter(filter);
-    scan.setMaxVersions(Integer.MAX_VALUE);
+    scan.readVersions(Integer.MAX_VALUE);
 
     verifyScan(scan, 2, 3);
 
@@ -200,7 +201,7 @@ public class TestDependentColumnFilter {
     CompareOperator.EQUAL, new BinaryComparator(MATCH_VAL));
     scan = new Scan();
     scan.setFilter(filter);
-    scan.setMaxVersions(Integer.MAX_VALUE);
+    scan.readVersions(Integer.MAX_VALUE);
 
     /*
      * expecting to get the following 3 cells
@@ -217,7 +218,7 @@ public class TestDependentColumnFilter {
     CompareOperator.EQUAL, new BinaryComparator(MATCH_VAL));
     scan = new Scan();
     scan.setFilter(filter);
-    scan.setMaxVersions(Integer.MAX_VALUE);
+    scan.readVersions(Integer.MAX_VALUE);
 
     /*
      * expecting to get the following 1 cell

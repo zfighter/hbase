@@ -21,7 +21,6 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.fail;
 
 import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.StartMiniClusterOption;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
@@ -54,7 +53,7 @@ public class TestReplicationDisableInactivePeer extends TestReplicationBase {
    */
   @Test
   public void testDisableInactivePeer() throws Exception {
-    utility2.shutdownMiniHBaseCluster();
+    UTIL2.shutdownMiniHBaseCluster();
 
     byte[] rowkey = Bytes.toBytes("disable inactive peer");
     Put put = new Put(rowkey);
@@ -65,9 +64,8 @@ public class TestReplicationDisableInactivePeer extends TestReplicationBase {
     Thread.sleep(SLEEP_TIME * NB_RETRIES);
 
     // disable and start the peer
-    admin.disablePeer("2");
-    StartMiniClusterOption option = StartMiniClusterOption.builder().numRegionServers(2).build();
-    utility2.startMiniHBaseCluster(option);
+    hbaseAdmin.disableReplicationPeer("2");
+    restartTargetHBaseCluster(2);
     Get get = new Get(rowkey);
     for (int i = 0; i < NB_RETRIES; i++) {
       Result res = htable2.get(get);
@@ -80,7 +78,7 @@ public class TestReplicationDisableInactivePeer extends TestReplicationBase {
     }
 
     // Test enable replication
-    admin.enablePeer("2");
+    hbaseAdmin.enableReplicationPeer("2");
     // wait since the sleep interval would be long
     Thread.sleep(SLEEP_TIME * NB_RETRIES);
     for (int i = 0; i < NB_RETRIES; i++) {

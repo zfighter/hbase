@@ -31,6 +31,10 @@
 
 -->
 <module name="Checker">
+  <!-- Filter out Checkstyle warnings that have been suppressed with the @SuppressWarnings
+  annotation -->
+  <module name="SuppressWarningsFilter"/>
+
   <module name="FileTabCharacter"/>
   <module name="TreeWalker">
 
@@ -118,17 +122,21 @@
       <property name="lineWrappingIndentation" value="2"/>
     </module>
 
-    <!-- Size Violation Checks
-    http://checkstyle.sourceforge.net/config_sizes.html -->
-    <module name="LineLength">
-      <property name="max" value="100"/>
-      <property name="ignorePattern" value="^package.*|^import.*|a href|href|http://|https://|ftp://|org.apache.thrift.|com.google.protobuf.|hbase.protobuf.generated"/>
-    </module>
     <module name="MethodLength"/>
 
     <!-- Whitespace Checks
     http://checkstyle.sourceforge.net/config_whitespace.html -->
     <module name="MethodParamPad"/>
     <module name="ParenPad"/>
+
+    <!-- Make the @SuppressWarnings annotations available to Checkstyle -->
+    <module name="SuppressWarningsHolder"/>
+  </module>
+
+  <!-- Size Violation Checks
+  http://checkstyle.sourceforge.net/config_sizes.html -->
+  <module name="LineLength">
+    <property name="max" value="100"/>
+    <property name="ignorePattern" value="^package.*|^import.*|a href|href|http://|https://|ftp://|org.apache.thrift.|com.google.protobuf.|hbase.protobuf.generated"/>
   </module>
 </module>

@@ -63,6 +63,9 @@ public class TestRpcClientLeaks {
 
   public static class MyRpcClientImpl extends BlockingRpcClient {
 
+    // Exceptions thrown only when this is set to false.
+    private static boolean throwException = false;
+
     public MyRpcClientImpl(Configuration conf) {
       super(conf);
     }
@@ -78,11 +81,17 @@ public class TestRpcClientLeaks {
         @Override
         protected synchronized void setupConnection() throws IOException {
           super.setupConnection();
-          SAVED_SOCKETS.add(socket);
-          throw new IOException(
-            "Sample exception for verifying socket closure in case of exceptions.");
+          if (throwException) {
+            SAVED_SOCKETS.add(socket);
+            throw new IOException(
+                "Sample exception for verifying socket closure in case of exceptions.");
+          }
         }
       };
+    }
+
+    public static void enableThrowExceptions() {
+      throwException = true;
     }
   }
 
@@ -110,6 +119,7 @@ public class TestRpcClientLeaks {
     conf.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 2);
     try (Connection connection = ConnectionFactory.createConnection(conf);
       Table table = connection.getTable(TableName.valueOf(name.getMethodName()))) {
+      MyRpcClientImpl.enableThrowExceptions();
       table.get(new Get(Bytes.toBytes("asd")));
       fail("Should fail because the injected error");
     } catch (RetriesExhaustedException e) {

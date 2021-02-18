@@ -28,10 +28,12 @@ import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosTicket;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HBaseCommonTestingUtility;
 import org.apache.hadoop.hbase.http.TestHttpServer.EchoServlet;
 import org.apache.hadoop.hbase.http.resource.JerseyResource;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.util.SimpleKdcServerUtil;
 import org.apache.hadoop.security.authentication.util.KerberosName;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
@@ -69,7 +71,6 @@ import org.slf4j.LoggerFactory;
  */
 @Category({MiscTests.class, SmallTests.class})
 public class TestSpnegoHttpServer extends HttpServerFunctionalTest {
-
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestSpnegoHttpServer.class);
@@ -86,15 +87,14 @@ public class TestSpnegoHttpServer extends HttpServerFunctionalTest {
 
   @BeforeClass
   public static void setupServer() throws Exception {
+    Configuration conf = new Configuration();
+    HBaseCommonTestingUtility htu = new HBaseCommonTestingUtility(conf);
+
     final String serverPrincipal = "HTTP/" + KDC_SERVER_HOST;
-    final File target = new File(System.getProperty("user.dir"), "target");
-    assertTrue(target.exists());
 
-    kdc = buildMiniKdc();
-    kdc.start();
-
-    File keytabDir = new File(target, TestSpnegoHttpServer.class.getSimpleName()
-        + "_keytabs");
+    kdc = SimpleKdcServerUtil.getRunningSimpleKdcServer(new File(htu.getDataTestDir().toString()),
+      HBaseCommonTestingUtility::randomFreePort);
+    File keytabDir = new File(htu.getDataTestDir("keytabs").toString());
     if (keytabDir.exists()) {
       deleteRecursively(keytabDir);
     }
@@ -106,10 +106,10 @@ public class TestSpnegoHttpServer extends HttpServerFunctionalTest {
     setupUser(kdc, clientKeytab, CLIENT_PRINCIPAL);
     setupUser(kdc, infoServerKeytab, serverPrincipal);
 
-    Configuration conf = buildSpnegoConfiguration(serverPrincipal, infoServerKeytab);
+    buildSpnegoConfiguration(conf, serverPrincipal, infoServerKeytab);
 
     server = createTestServerWithSecurity(conf);
-    server.addServlet("echo", "/echo", EchoServlet.class);
+    server.addUnprivilegedServlet("echo", "/echo", EchoServlet.class);
     server.addJerseyResourcePackage(JerseyResource.class.getPackage().getName(), "/jersey/*");
     server.start();
     baseUrl = getServerURL(server);
@@ -141,33 +141,8 @@ public class TestSpnegoHttpServer extends HttpServerFunctionalTest {
     kdc.exportPrincipal(principal, keytab);
   }
 
-  private static SimpleKdcServer buildMiniKdc() throws Exception {
-    SimpleKdcServer kdc = new SimpleKdcServer();
-
-    final File target = new File(System.getProperty("user.dir"), "target");
-    File kdcDir = new File(target, TestSpnegoHttpServer.class.getSimpleName());
-    if (kdcDir.exists()) {
-      deleteRecursively(kdcDir);
-    }
-    kdcDir.mkdirs();
-    kdc.setWorkDir(kdcDir);
-
-    kdc.setKdcHost(KDC_SERVER_HOST);
-    int kdcPort = getFreePort();
-    kdc.setAllowTcp(true);
-    kdc.setAllowUdp(false);
-    kdc.setKdcTcpPort(kdcPort);
-
-    LOG.info("Starting KDC server at " + KDC_SERVER_HOST + ":" + kdcPort);
-
-    kdc.init();
-
-    return kdc;
-  }
-
-  private static Configuration buildSpnegoConfiguration(String serverPrincipal, File
-      serverKeytab) {
-    Configuration conf = new Configuration();
+  private static Configuration buildSpnegoConfiguration(Configuration conf, String serverPrincipal,
+      File serverKeytab) {
     KerberosName.setRules("DEFAULT");
 
     conf.setInt(HttpServer.HTTP_MAX_THREADS, TestHttpServer.MAX_THREADS);
@@ -208,35 +183,35 @@ public class TestSpnegoHttpServer extends HttpServerFunctionalTest {
     final String principalName = clientPrincipals.iterator().next().getName();
 
     // Run this code, logged in as the subject (the client)
-    HttpResponse resp = Subject.doAs(clientSubject,
-        new PrivilegedExceptionAction<HttpResponse>() {
-      @Override
-      public HttpResponse run() throws Exception {
-        // Logs in with Kerberos via GSS
-        GSSManager gssManager = GSSManager.getInstance();
-        // jGSS Kerberos login constant
-        Oid oid = new Oid("1.2.840.113554.1.2.2");
-        GSSName gssClient = gssManager.createName(principalName, GSSName.NT_USER_NAME);
-        GSSCredential credential = gssManager.createCredential(gssClient,
-            GSSCredential.DEFAULT_LIFETIME, oid, GSSCredential.INITIATE_ONLY);
+    HttpResponse resp = Subject.doAs(clientSubject, new PrivilegedExceptionAction<HttpResponse>() {
+        @Override
+        public HttpResponse run() throws Exception {
+          // Logs in with Kerberos via GSS
+          GSSManager gssManager = GSSManager.getInstance();
+          // jGSS Kerberos login constant
+          Oid oid = new Oid("1.2.840.113554.1.2.2");
+          GSSName gssClient = gssManager.createName(principalName, GSSName.NT_USER_NAME);
+          GSSCredential credential = gssManager.createCredential(gssClient,
+              GSSCredential.DEFAULT_LIFETIME, oid, GSSCredential.INITIATE_ONLY);
 
-        HttpClientContext context = HttpClientContext.create();
-        Lookup<AuthSchemeProvider> authRegistry = RegistryBuilder.<AuthSchemeProvider>create()
-            .register(AuthSchemes.SPNEGO, new SPNegoSchemeFactory(true, true))
-            .build();
+          HttpClientContext context = HttpClientContext.create();
+          Lookup<AuthSchemeProvider> authRegistry = RegistryBuilder.<AuthSchemeProvider>create()
+              .register(AuthSchemes.SPNEGO, new SPNegoSchemeFactory(true, true))
+              .build();
 
-        HttpClient client = HttpClients.custom().setDefaultAuthSchemeRegistry(authRegistry).build();
-        BasicCredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-        credentialsProvider.setCredentials(AuthScope.ANY, new KerberosCredentials(credential));
+          HttpClient client = HttpClients.custom().setDefaultAuthSchemeRegistry(authRegistry)
+                  .build();
+          BasicCredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+          credentialsProvider.setCredentials(AuthScope.ANY, new KerberosCredentials(credential));
 
-        URL url = new URL(getServerURL(server), "/echo?a=b");
-        context.setTargetHost(new HttpHost(url.getHost(), url.getPort()));
-        context.setCredentialsProvider(credentialsProvider);
-        context.setAuthSchemeRegistry(authRegistry);
+          URL url = new URL(getServerURL(server), "/echo?a=b");
+          context.setTargetHost(new HttpHost(url.getHost(), url.getPort()));
+          context.setCredentialsProvider(credentialsProvider);
+          context.setAuthSchemeRegistry(authRegistry);
 
-        HttpGet get = new HttpGet(url.toURI());
-        return client.execute(get, context);
-      }
+          HttpGet get = new HttpGet(url.toURI());
+          return client.execute(get, context);
+        }
     });
 
     assertNotNull(resp);
@@ -253,7 +228,7 @@ public class TestSpnegoHttpServer extends HttpServerFunctionalTest {
     // Intentionally skip keytab and principal
 
     HttpServer customServer = createTestServerWithSecurity(conf);
-    customServer.addServlet("echo", "/echo", EchoServlet.class);
+    customServer.addUnprivilegedServlet("echo", "/echo", EchoServlet.class);
     customServer.addJerseyResourcePackage(JerseyResource.class.getPackage().getName(), "/jersey/*");
     customServer.start();
   }

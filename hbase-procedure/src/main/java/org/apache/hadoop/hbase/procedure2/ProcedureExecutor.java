@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.procedure2;
 
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayDeque;
@@ -55,7 +56,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
@@ -216,6 +216,15 @@ public class ProcedureExecutor<TEnvironment> {
    * (Should be ok).
    */
   private TimeoutExecutorThread<TEnvironment> timeoutExecutor;
+
+  /**
+   * WorkerMonitor check for stuck workers and new worker thread when necessary, for example if
+   * there is no worker to assign meta, it will new worker thread for it, so it is very important.
+   * TimeoutExecutor execute many tasks like DeadServerMetricRegionChore RegionInTransitionChore
+   * and so on, some tasks may execute for a long time so will block other tasks like
+   * WorkerMonitor, so use a dedicated thread for executing WorkerMonitor.
+   */
+  private TimeoutExecutorThread<TEnvironment> workerMonitorExecutor;
 
   private int corePoolSize;
   private int maxPoolSize;
@@ -433,23 +442,21 @@ public class ProcedureExecutor<TEnvironment> {
         }
       }
 
-      // add the nonce to the map
       if (nonceKey != null) {
-        nonceKeysToProcIdsMap.put(nonceKey, procId);
+        nonceKeysToProcIdsMap.put(nonceKey, procId); // add the nonce to the map
       }
     }
 
-    // 2. Initialize the stacks
-    // In the old implementation, for procedures in FAILED state, we will push it into the
-    // ProcedureScheduler directly to execute the rollback. But this does not work after we
-    // introduce the restore lock stage.
-    // For now, when we acquire a xlock, we will remove the queue from runQueue in scheduler, and
-    // then when a procedure which has lock access, for example, a sub procedure of the procedure
-    // which has the xlock, is pushed into the scheduler, we will add the queue back to let the
-    // workers poll from it. The assumption here is that, the procedure which has the xlock should
-    // have been polled out already, so when loading we can not add the procedure to scheduler first
-    // and then call acquireLock, since the procedure is still in the queue, and since we will
-    // remove the queue from runQueue, then no one can poll it out, then there is a dead lock
+    // 2. Initialize the stacks: In the old implementation, for procedures in FAILED state, we will
+    // push it into the ProcedureScheduler directly to execute the rollback. But this does not work
+    // after we introduce the restore lock stage. For now, when we acquire a xlock, we will remove
+    // the queue from runQueue in scheduler, and then when a procedure which has lock access, for
+    // example, a sub procedure of the procedure which has the xlock, is pushed into the scheduler,
+    // we will add the queue back to let the workers poll from it. The assumption here is that, the
+    // procedure which has the xlock should have been polled out already, so when loading we can not
+    // add the procedure to scheduler first and then call acquireLock, since the procedure is still
+    // in the queue, and since we will remove the queue from runQueue, then no one can poll it out,
+    // then there is a dead lock
     List<Procedure<TEnvironment>> runnableList = new ArrayList<>(runnableCount);
     List<Procedure<TEnvironment>> failedList = new ArrayList<>(failedCount);
     List<Procedure<TEnvironment>> waitingList = new ArrayList<>(waitingCount);
@@ -464,9 +471,7 @@ public class ProcedureExecutor<TEnvironment> {
       @SuppressWarnings("unchecked")
       Procedure<TEnvironment> proc = procIter.next();
       assert !(proc.isFinished() && !proc.hasParent()) : "unexpected completed proc=" + proc;
-
       LOG.debug("Loading {}", proc);
-
       Long rootProcId = getRootProcedureId(proc);
       // The orphan procedures will be passed to handleCorrupted, so add an assert here
       assert rootProcId != null;
@@ -508,14 +513,12 @@ public class ProcedureExecutor<TEnvironment> {
     // 3. Check the waiting procedures to see if some of them can be added to runnable.
     waitingList.forEach(proc -> {
       if (!proc.hasChildren()) {
-        // Normally, WAITING procedures should be waken by its children.
-        // But, there is a case that, all the children are successful and before
-        // they can wake up their parent procedure, the master was killed.
-        // So, during recovering the procedures from ProcedureWal, its children
-        // are not loaded because of their SUCCESS state.
-        // So we need to continue to run this WAITING procedure. But before
-        // executing, we need to set its state to RUNNABLE, otherwise, a exception
-        // will throw:
+        // Normally, WAITING procedures should be waken by its children. But, there is a case that,
+        // all the children are successful and before they can wake up their parent procedure, the
+        // master was killed. So, during recovering the procedures from ProcedureWal, its children
+        // are not loaded because of their SUCCESS state. So we need to continue to run this WAITING
+        // procedure. But before executing, we need to set its state to RUNNABLE, otherwise, a
+        // exception will throw:
         // Preconditions.checkArgument(procedure.getState() == ProcedureState.RUNNABLE,
         // "NOT RUNNABLE! " + procedure.toString());
         proc.setState(ProcedureState.RUNNABLE);
@@ -566,7 +569,8 @@ public class ProcedureExecutor<TEnvironment> {
         corePoolSize, maxPoolSize);
 
     this.threadGroup = new ThreadGroup("PEWorkerGroup");
-    this.timeoutExecutor = new TimeoutExecutorThread<>(this, threadGroup);
+    this.timeoutExecutor = new TimeoutExecutorThread<>(this, threadGroup, "ProcExecTimeout");
+    this.workerMonitorExecutor = new TimeoutExecutorThread<>(this, threadGroup, "WorkerMonitor");
 
     // Create the workers
     workerId.set(0);
@@ -610,12 +614,13 @@ public class ProcedureExecutor<TEnvironment> {
     // Start the executors. Here we must have the lastProcId set.
     LOG.trace("Start workers {}", workerThreads.size());
     timeoutExecutor.start();
+    workerMonitorExecutor.start();
     for (WorkerThread worker: workerThreads) {
       worker.start();
     }
 
     // Internal chores
-    timeoutExecutor.add(new WorkerMonitor());
+    workerMonitorExecutor.add(new WorkerMonitor());
 
     // Add completed cleaner chore
     addChore(new CompletedProcedureCleaner<>(conf, store, procExecutionLock, completed,
@@ -630,14 +635,16 @@ public class ProcedureExecutor<TEnvironment> {
     LOG.info("Stopping");
     scheduler.stop();
     timeoutExecutor.sendStopSignal();
+    workerMonitorExecutor.sendStopSignal();
   }
 
-  @VisibleForTesting
   public void join() {
     assert !isRunning() : "expected not running";
 
     // stop the timeout executor
     timeoutExecutor.awaitTermination();
+    // stop the work monitor executor
+    workerMonitorExecutor.awaitTermination();
 
     // stop the worker threads
     for (WorkerThread worker: workerThreads) {
@@ -724,7 +731,10 @@ public class ProcedureExecutor<TEnvironment> {
    * Add a chore procedure to the executor
    * @param chore the chore to add
    */
-  public void addChore(ProcedureInMemoryChore<TEnvironment> chore) {
+  public void addChore(@Nullable ProcedureInMemoryChore<TEnvironment> chore) {
+    if (chore == null) {
+      return;
+    }
     chore.setState(ProcedureState.WAITING_TIMEOUT);
     timeoutExecutor.add(chore);
   }
@@ -734,7 +744,10 @@ public class ProcedureExecutor<TEnvironment> {
    * @param chore the chore to remove
    * @return whether the chore is removed, or it will be removed later
    */
-  public boolean removeChore(ProcedureInMemoryChore<TEnvironment> chore) {
+  public boolean removeChore(@Nullable ProcedureInMemoryChore<TEnvironment> chore) {
+    if (chore == null) {
+      return true;
+    }
     chore.setState(ProcedureState.SUCCESS);
     return timeoutExecutor.remove(chore);
   }
@@ -743,9 +756,9 @@ public class ProcedureExecutor<TEnvironment> {
   //  Nonce Procedure helpers
   // ==========================================================================
   /**
-   * Create a NoneKey from the specified nonceGroup and nonce.
-   * @param nonceGroup
-   * @param nonce
+   * Create a NonceKey from the specified nonceGroup and nonce.
+   * @param nonceGroup the group to use for the {@link NonceKey}
+   * @param nonce the nonce to use in the {@link NonceKey}
    * @return the generated NonceKey
    */
   public NonceKey createNonceKey(final long nonceGroup, final long nonce) {
@@ -764,7 +777,9 @@ public class ProcedureExecutor<TEnvironment> {
    * @return the procId associated with the nonce, if any otherwise an invalid procId.
    */
   public long registerNonce(final NonceKey nonceKey) {
-    if (nonceKey == null) return -1;
+    if (nonceKey == null) {
+      return -1;
+    }
 
     // check if we have already a Reserved ID for the nonce
     Long oldProcId = nonceKeysToProcIdsMap.get(nonceKey);
@@ -773,7 +788,9 @@ public class ProcedureExecutor<TEnvironment> {
       // and the procedure submitted with the specified nonce will use this ID.
       final long newProcId = nextProcId();
       oldProcId = nonceKeysToProcIdsMap.putIfAbsent(nonceKey, newProcId);
-      if (oldProcId == null) return -1;
+      if (oldProcId == null) {
+        return -1;
+      }
     }
 
     // we found a registered nonce, but the procedure may not have been submitted yet.
@@ -795,10 +812,14 @@ public class ProcedureExecutor<TEnvironment> {
    * @param nonceKey A unique identifier for this operation from the client or process.
    */
   public void unregisterNonceIfProcedureWasNotSubmitted(final NonceKey nonceKey) {
-    if (nonceKey == null) return;
+    if (nonceKey == null) {
+      return;
+    }
 
     final Long procId = nonceKeysToProcIdsMap.get(nonceKey);
-    if (procId == null) return;
+    if (procId == null) {
+      return;
+    }
 
     // if the procedure was not submitted, remove the nonce
     if (!(procedures.containsKey(procId) || completed.containsKey(procId))) {
@@ -826,10 +847,12 @@ public class ProcedureExecutor<TEnvironment> {
       return;
     }
 
-    Procedure<TEnvironment> proc =
-      new FailedProcedure<>(procId.longValue(), procName, procOwner, nonceKey, exception);
+    completed.computeIfAbsent(procId, (key) -> {
+      Procedure<TEnvironment> proc = new FailedProcedure<>(procId.longValue(),
+          procName, procOwner, nonceKey, exception);
 
-    completed.putIfAbsent(procId, new CompletedProcedureRetainer<>(proc));
+      return new CompletedProcedureRetainer<>(proc);
+    });
   }
 
   // ==========================================================================
@@ -956,7 +979,7 @@ public class ProcedureExecutor<TEnvironment> {
       while (current != null) {
         LOG.debug("Bypassing {}", current);
         current.bypass(getEnvironment());
-        store.update(procedure);
+        store.update(current);
         long parentID = current.getParentProcId();
         current = getProcedure(parentID);
       }
@@ -1295,8 +1318,9 @@ public class ProcedureExecutor<TEnvironment> {
     if (procId < 0) {
       while (!lastProcId.compareAndSet(procId, 0)) {
         procId = lastProcId.get();
-        if (procId >= 0)
+        if (procId >= 0) {
           break;
+        }
       }
       while (procedures.containsKey(procId)) {
         procId = lastProcId.incrementAndGet();
@@ -1306,12 +1330,10 @@ public class ProcedureExecutor<TEnvironment> {
     return procId;
   }
 
-  @VisibleForTesting
   protected long getLastProcId() {
     return lastProcId.get();
   }
 
-  @VisibleForTesting
   public Set<Long> getActiveProcIds() {
     return procedures.keySet();
   }
@@ -1817,7 +1839,8 @@ public class ProcedureExecutor<TEnvironment> {
       // children have completed, move parent to front of the queue.
       store.update(parent);
       scheduler.addFront(parent);
-      LOG.info("Finished subprocedure(s) of " + parent + "; resume parent processing.");
+      LOG.info("Finished subprocedure pid={}, resume processing ppid={}",
+        procedure.getProcId(), parent.getProcId());
       return;
     }
   }
@@ -1905,17 +1928,14 @@ public class ProcedureExecutor<TEnvironment> {
     return rollbackStack.get(rootProcId);
   }
 
-  @VisibleForTesting
   ProcedureScheduler getProcedureScheduler() {
     return scheduler;
   }
 
-  @VisibleForTesting
   int getCompletedSize() {
     return completed.size();
   }
 
-  @VisibleForTesting
   public IdLock getProcExecutionLock() {
     return procExecutionLock;
   }
@@ -2003,7 +2023,6 @@ public class ProcedureExecutor<TEnvironment> {
   // A worker thread which can be added when core workers are stuck. Will timeout after
   // keepAliveTime if there is no procedure to run.
   private final class KeepAliveWorkerThread extends WorkerThread {
-
     public KeepAliveWorkerThread(ThreadGroup group) {
       super(group, "KeepAlivePEWorker-");
     }

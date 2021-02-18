@@ -60,39 +60,38 @@ import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.util.Shell;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
-import org.eclipse.jetty.http.HttpVersion;
-import org.eclipse.jetty.server.Handler;
-import org.eclipse.jetty.server.HttpConfiguration;
-import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.RequestLog;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.SslConnectionFactory;
-import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.server.handler.HandlerCollection;
-import org.eclipse.jetty.server.handler.RequestLogHandler;
-import org.eclipse.jetty.servlet.DefaultServlet;
-import org.eclipse.jetty.servlet.FilterHolder;
-import org.eclipse.jetty.servlet.FilterMapping;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.eclipse.jetty.util.MultiException;
-import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.eclipse.jetty.webapp.WebAppContext;
-import org.glassfish.jersey.server.ResourceConfig;
-import org.glassfish.jersey.servlet.ServletContainer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.http.HttpVersion;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.Handler;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConfiguration;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConnectionFactory;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.RequestLog;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SecureRequestCustomizer;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.Server;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.ServerConnector;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SslConnectionFactory;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.ContextHandlerCollection;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.HandlerCollection;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.handler.RequestLogHandler;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.DefaultServlet;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.FilterHolder;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.FilterMapping;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletContextHandler;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletHolder;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.util.MultiException;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.util.ssl.SslContextFactory;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.util.thread.QueuedThreadPool;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.webapp.WebAppContext;
+import org.apache.hbase.thirdparty.org.glassfish.jersey.server.ResourceConfig;
+import org.apache.hbase.thirdparty.org.glassfish.jersey.servlet.ServletContainer;
 
 /**
  * Create a Jetty embedded server to answer http requests. The primary goal
@@ -127,10 +126,21 @@ public class HttpServer implements FilterContainer {
   static final String HTTP_SPNEGO_AUTHENTICATION_KRB_NAME_SUFFIX = "kerberos.name.rules";
   public static final String HTTP_SPNEGO_AUTHENTICATION_KRB_NAME_KEY =
       HTTP_SPNEGO_AUTHENTICATION_PREFIX + HTTP_SPNEGO_AUTHENTICATION_KRB_NAME_SUFFIX;
+  static final String HTTP_SPNEGO_AUTHENTICATION_PROXYUSER_ENABLE_SUFFIX = "kerberos.proxyuser.enable";
+  public static final String HTTP_SPNEGO_AUTHENTICATION_PROXYUSER_ENABLE_KEY =
+      HTTP_SPNEGO_AUTHENTICATION_PREFIX + HTTP_SPNEGO_AUTHENTICATION_PROXYUSER_ENABLE_SUFFIX;
+  public static final boolean  HTTP_SPNEGO_AUTHENTICATION_PROXYUSER_ENABLE_DEFAULT = false;
   static final String HTTP_AUTHENTICATION_SIGNATURE_SECRET_FILE_SUFFIX =
       "signature.secret.file";
   public static final String HTTP_AUTHENTICATION_SIGNATURE_SECRET_FILE_KEY =
       HTTP_AUTHENTICATION_PREFIX + HTTP_AUTHENTICATION_SIGNATURE_SECRET_FILE_SUFFIX;
+  public static final String HTTP_SPNEGO_AUTHENTICATION_ADMIN_USERS_KEY =
+      HTTP_SPNEGO_AUTHENTICATION_PREFIX + "admin.users";
+  public static final String HTTP_SPNEGO_AUTHENTICATION_ADMIN_GROUPS_KEY =
+      HTTP_SPNEGO_AUTHENTICATION_PREFIX + "admin.groups";
+  public static final String HTTP_PRIVILEGED_CONF_KEY =
+      "hbase.security.authentication.ui.config.protected";
+  public static final boolean HTTP_PRIVILEGED_CONF_DEFAULT = false;
 
   // The ServletContext attribute where the daemon Configuration
   // gets stored.
@@ -138,6 +148,7 @@ public class HttpServer implements FilterContainer {
   public static final String ADMINS_ACL = "admins.acl";
   public static final String BIND_ADDRESS = "bind.address";
   public static final String SPNEGO_FILTER = "SpnegoFilter";
+  public static final String SPNEGO_PROXYUSER_FILTER = "SpnegoProxyUserFilter";
   public static final String NO_CACHE_FILTER = "NoCacheFilter";
   public static final String APP_DIR = "webapps";
 
@@ -147,7 +158,7 @@ public class HttpServer implements FilterContainer {
   protected String appDir;
   protected String logDir;
 
-  private static class ListenerInfo {
+  private static final class ListenerInfo {
     /**
      * Boolean flag to determine whether the HTTP server should clean up the
      * listener in stop().
@@ -162,7 +173,6 @@ public class HttpServer implements FilterContainer {
 
   private final List<ListenerInfo> listeners = Lists.newArrayList();
 
-  @VisibleForTesting
   public List<ServerConnector> getServerConnectors() {
     return listeners.stream().map(info -> info.listener).collect(Collectors.toList());
   }
@@ -171,6 +181,7 @@ public class HttpServer implements FilterContainer {
   protected final boolean findPort;
   protected final Map<ServletContextHandler, Boolean> defaultContexts = new HashMap<>();
   protected final List<String> filterNames = new ArrayList<>();
+  protected final boolean authenticationEnabled;
   static final String STATE_DESCRIPTION_ALIVE = " - alive";
   static final String STATE_DESCRIPTION_NOT_LIVE = " - not live";
 
@@ -206,10 +217,22 @@ public class HttpServer implements FilterContainer {
     private String kerberosNameRulesKey;
     private String signatureSecretFileKey;
 
+    /**
+     * @see #setAppDir(String)
+     * @deprecated Since 0.99.0. Use builder pattern via {@link #setAppDir(String)} instead.
+     */
     @Deprecated
     private String name;
+    /**
+     * @see #addEndpoint(URI)
+     * @deprecated Since 0.99.0. Use builder pattern via {@link #addEndpoint(URI)} instead.
+     */
     @Deprecated
     private String bindAddress;
+    /**
+     * @see #addEndpoint(URI)
+     * @deprecated Since 0.99.0. Use builder pattern via {@link #addEndpoint(URI)} instead.
+     */
     @Deprecated
     private int port = -1;
 
@@ -267,7 +290,8 @@ public class HttpServer implements FilterContainer {
     }
 
     /**
-     * Use setAppDir() instead.
+     * @see #setAppDir(String)
+     * @deprecated Since 0.99.0. Use {@link #setAppDir(String)} instead.
      */
     @Deprecated
     public Builder setName(String name){
@@ -276,7 +300,8 @@ public class HttpServer implements FilterContainer {
     }
 
     /**
-     * Use addEndpoint() instead.
+     * @see #addEndpoint(URI)
+     * @deprecated Since 0.99.0. Use {@link #addEndpoint(URI)} instead.
      */
     @Deprecated
     public Builder setBindAddress(String bindAddress){
@@ -285,7 +310,8 @@ public class HttpServer implements FilterContainer {
     }
 
     /**
-     * Use addEndpoint() instead.
+     * @see #addEndpoint(URI)
+     * @deprecated Since 0.99.0. Use {@link #addEndpoint(URI)} instead.
      */
     @Deprecated
     public Builder setPort(int port) {
@@ -339,14 +365,14 @@ public class HttpServer implements FilterContainer {
     }
 
     public Builder setAppDir(String appDir) {
-        this.appDir = appDir;
-        return this;
-      }
+      this.appDir = appDir;
+      return this;
+    }
 
     public Builder setLogDir(String logDir) {
-        this.logDir = logDir;
-        return this;
-      }
+      this.logDir = logDir;
+      return this;
+    }
 
     public HttpServer build() throws IOException {
 
@@ -360,7 +386,8 @@ public class HttpServer implements FilterContainer {
         try {
           endpoints.add(0, new URI("http", "", bindAddress, port, "", "", ""));
         } catch (URISyntaxException e) {
-          throw new HadoopIllegalArgumentException("Invalid endpoint: "+ e); }
+          throw new HadoopIllegalArgumentException("Invalid endpoint: "+ e);
+        }
       }
 
       if (endpoints.isEmpty()) {
@@ -377,11 +404,6 @@ public class HttpServer implements FilterContainer {
 
       HttpServer server = new HttpServer(this);
 
-      if (this.securityEnabled) {
-        server.initSpnego(conf, hostName, usernameConfKey, keytabConfKey, kerberosNameRulesKey,
-            signatureSecretFileKey);
-      }
-
       for (URI ep : endpoints) {
         ServerConnector listener = null;
         String scheme = ep.getScheme();
@@ -390,6 +412,7 @@ public class HttpServer implements FilterContainer {
         httpConfig.setHeaderCacheSize(DEFAULT_MAX_HEADER_SIZE);
         httpConfig.setResponseHeaderSize(DEFAULT_MAX_HEADER_SIZE);
         httpConfig.setRequestHeaderSize(DEFAULT_MAX_HEADER_SIZE);
+        httpConfig.setSendServerVersion(false);
 
         if ("http".equals(scheme)) {
           listener = new ServerConnector(server.webServer, new HttpConnectionFactory(httpConfig));
@@ -441,10 +464,13 @@ public class HttpServer implements FilterContainer {
 
   }
 
-  /** Same as this(name, bindAddress, port, findPort, null); */
+  /**
+   * @see #HttpServer(String, String, int, boolean, Configuration)
+   * @deprecated Since 0.99.0
+   */
   @Deprecated
-  public HttpServer(String name, String bindAddress, int port, boolean findPort
-      ) throws IOException {
+  public HttpServer(String name, String bindAddress, int port, boolean findPort)
+          throws IOException {
     this(name, bindAddress, port, findPort, new Configuration());
   }
 
@@ -461,6 +487,7 @@ public class HttpServer implements FilterContainer {
    * @param conf Configuration
    * @param pathSpecs Path specifications that this httpserver will be serving.
    *        These will be added to any filters.
+   * @deprecated Since 0.99.0
    */
   @Deprecated
   public HttpServer(String name, String bindAddress, int port,
@@ -476,6 +503,7 @@ public class HttpServer implements FilterContainer {
    * @param findPort whether the server should start at the given port and
    *        increment by 1 until it finds a free port.
    * @param conf Configuration
+   * @deprecated Since 0.99.0
    */
   @Deprecated
   public HttpServer(String name, String bindAddress, int port,
@@ -483,6 +511,20 @@ public class HttpServer implements FilterContainer {
     this(name, bindAddress, port, findPort, conf, null, null);
   }
 
+  /**
+   * Creates a status server on the given port. The JSP scripts are taken
+   * from src/webapp&lt;name&gt;.
+   *
+   * @param name the name of the server
+   * @param bindAddress the address for this server
+   * @param port the port to use on the server
+   * @param findPort whether the server should start at the given port and increment by 1 until it
+   *                 finds a free port
+   * @param conf the configuration to use
+   * @param adminsAcl {@link AccessControlList} of the admins
+   * @throws IOException when creating the server fails
+   * @deprecated Since 0.99.0
+   */
   @Deprecated
   public HttpServer(String name, String bindAddress, int port,
       boolean findPort, Configuration conf, AccessControlList adminsAcl)
@@ -502,6 +544,7 @@ public class HttpServer implements FilterContainer {
    * @param adminsAcl {@link AccessControlList} of the admins
    * @param pathSpecs Path specifications that this httpserver will be serving.
    *        These will be added to any filters.
+   * @deprecated Since 0.99.0
    */
   @Deprecated
   public HttpServer(String name, String bindAddress, int port,
@@ -530,11 +573,12 @@ public class HttpServer implements FilterContainer {
     this.adminsAcl = b.adminsAcl;
     this.webAppContext = createWebAppContext(b.name, b.conf, adminsAcl, appDir);
     this.findPort = b.findPort;
-    initializeWebServer(b.name, b.hostName, b.conf, b.pathSpecs);
+    this.authenticationEnabled = b.securityEnabled;
+    initializeWebServer(b.name, b.hostName, b.conf, b.pathSpecs, b);
   }
 
   private void initializeWebServer(String name, String hostName,
-      Configuration conf, String[] pathSpecs)
+      Configuration conf, String[] pathSpecs, HttpServer.Builder b)
       throws FileNotFoundException, IOException {
 
     Preconditions.checkNotNull(webAppContext);
@@ -557,13 +601,29 @@ public class HttpServer implements FilterContainer {
 
     webServer.setHandler(handlerCollection);
 
+    webAppContext.setAttribute(ADMINS_ACL, adminsAcl);
+
+    // Default apps need to be set first, so that all filters are applied to them.
+    // Because they're added to defaultContexts, we need them there before we start
+    // adding filters
     addDefaultApps(contexts, appDir, conf);
 
     addGlobalFilter("safety", QuotingInputFilter.class.getName(), null);
-    Map<String, String> params = new HashMap<>();
-    params.put("xframeoptions", conf.get("hbase.http.filter.xframeoptions.mode", "DENY"));
+
     addGlobalFilter("clickjackingprevention",
-            ClickjackingPreventionFilter.class.getName(), params);
+        ClickjackingPreventionFilter.class.getName(),
+        ClickjackingPreventionFilter.getDefaultParameters(conf));
+
+    addGlobalFilter("securityheaders",
+        SecurityHeadersFilter.class.getName(),
+        SecurityHeadersFilter.getDefaultParameters(conf));
+
+    // But security needs to be enabled prior to adding the other servlets
+    if (authenticationEnabled) {
+      initSpnego(conf, hostName, b.usernameConfKey, b.keytabConfKey, b.kerberosNameRulesKey,
+          b.signatureSecretFileKey);
+    }
+
     final FilterInitializer[] initializers = getFilterInitializers(conf);
     if (initializers != null) {
       conf = new Configuration(conf);
@@ -573,7 +633,7 @@ public class HttpServer implements FilterContainer {
       }
     }
 
-    addDefaultServlets(contexts);
+    addDefaultServlets(contexts, conf);
 
     if (pathSpecs != null) {
       for (String path : pathSpecs) {
@@ -628,14 +688,13 @@ public class HttpServer implements FilterContainer {
   /**
    * Add default apps.
    * @param appDir The application directory
-   * @throws IOException
    */
   protected void addDefaultApps(ContextHandlerCollection parent,
-      final String appDir, Configuration conf) throws IOException {
+      final String appDir, Configuration conf) {
     // set up the context for "/logs/" if "hadoop.log.dir" property is defined.
     String logDir = this.logDir;
     if (logDir == null) {
-        logDir = System.getProperty("hadoop.log.dir");
+      logDir = System.getProperty("hadoop.log.dir");
     }
     if (logDir != null) {
       ServletContextHandler logContext = new ServletContextHandler(parent, "/logs");
@@ -651,7 +710,6 @@ public class HttpServer implements FilterContainer {
       }
       logContext.setDisplayName("logs");
       setContextAttributes(logContext, conf);
-      addNoCacheFilter(webAppContext);
       defaultContexts.put(logContext, true);
     }
     // set up the context for "/static/*"
@@ -671,24 +729,31 @@ public class HttpServer implements FilterContainer {
   /**
    * Add default servlets.
    */
-  protected void addDefaultServlets(ContextHandlerCollection contexts) throws IOException {
+  protected void addDefaultServlets(
+      ContextHandlerCollection contexts, Configuration conf) throws IOException {
     // set up default servlets
-    addServlet("stacks", "/stacks", StackServlet.class);
-    addServlet("logLevel", "/logLevel", LogLevel.Servlet.class);
+    addPrivilegedServlet("stacks", "/stacks", StackServlet.class);
+    addPrivilegedServlet("logLevel", "/logLevel", LogLevel.Servlet.class);
     // Hadoop3 has moved completely to metrics2, and  dropped support for Metrics v1's
     // MetricsServlet (see HADOOP-12504).  We'll using reflection to load if against hadoop2.
     // Remove when we drop support for hbase on hadoop2.x.
     try {
-      Class clz = Class.forName("org.apache.hadoop.metrics.MetricsServlet");
-      addServlet("metrics", "/metrics", clz);
+      Class<?> clz = Class.forName("org.apache.hadoop.metrics.MetricsServlet");
+      addPrivilegedServlet("metrics", "/metrics", clz.asSubclass(HttpServlet.class));
     } catch (Exception e) {
       // do nothing
     }
-    addServlet("jmx", "/jmx", JMXJsonServlet.class);
-    addServlet("conf", "/conf", ConfServlet.class);
+    addPrivilegedServlet("jmx", "/jmx", JMXJsonServlet.class);
+    // While we don't expect users to have sensitive information in their configuration, they
+    // might. Give them an option to not expose the service configuration to all users.
+    if (conf.getBoolean(HTTP_PRIVILEGED_CONF_KEY, HTTP_PRIVILEGED_CONF_DEFAULT)) {
+      addPrivilegedServlet("conf", "/conf", ConfServlet.class);
+    } else {
+      addUnprivilegedServlet("conf", "/conf", ConfServlet.class);
+    }
     final String asyncProfilerHome = ProfileServlet.getAsyncProfilerHome();
     if (asyncProfilerHome != null && !asyncProfilerHome.trim().isEmpty()) {
-      addServlet("prof", "/prof", ProfileServlet.class);
+      addPrivilegedServlet("prof", "/prof", ProfileServlet.class);
       Path tmpDir = Paths.get(ProfileServlet.OUTPUT_DIR);
       if (Files.notExists(tmpDir)) {
         Files.createDirectories(tmpDir);
@@ -698,6 +763,7 @@ public class HttpServer implements FilterContainer {
       genCtx.setResourceBase(tmpDir.toAbsolutePath().toString());
       genCtx.setDisplayName("prof-output");
     } else {
+      addUnprivilegedServlet("prof", "/prof", ProfileServlet.DisabledServlet.class);
       LOG.info("ASYNC_PROFILER_HOME environment variable and async.profiler.home system property " +
         "not specified. Disabling /prof endpoint.");
     }
@@ -729,30 +795,37 @@ public class HttpServer implements FilterContainer {
   }
 
   /**
-   * Add a servlet in the server.
+   * Adds a servlet in the server that any user can access. This method differs from
+   * {@link #addPrivilegedServlet(String, String, Class)} in that any authenticated user
+   * can interact with the servlet added by this method.
    * @param name The name of the servlet (can be passed as null)
    * @param pathSpec The path spec for the servlet
    * @param clazz The servlet class
    */
-  public void addServlet(String name, String pathSpec,
+  public void addUnprivilegedServlet(String name, String pathSpec,
       Class<? extends HttpServlet> clazz) {
-    addInternalServlet(name, pathSpec, clazz, false);
-    addFilterPathMapping(pathSpec, webAppContext);
+    addServletWithAuth(name, pathSpec, clazz, false);
   }
 
   /**
-   * Add an internal servlet in the server.
-   * Note: This method is to be used for adding servlets that facilitate
-   * internal communication and not for user facing functionality. For
-   * servlets added using this method, filters are not enabled.
-   *
-   * @param name The name of the servlet (can be passed as null)
-   * @param pathSpec The path spec for the servlet
-   * @param clazz The servlet class
+   * Adds a servlet in the server that only administrators can access. This method differs from
+   * {@link #addUnprivilegedServlet(String, String, Class)} in that only those authenticated user
+   * who are identified as administrators can interact with the servlet added by this method.
    */
-  public void addInternalServlet(String name, String pathSpec,
+  public void addPrivilegedServlet(String name, String pathSpec,
       Class<? extends HttpServlet> clazz) {
-    addInternalServlet(name, pathSpec, clazz, false);
+    addServletWithAuth(name, pathSpec, clazz, true);
+  }
+
+  /**
+   * Internal method to add a servlet to the HTTP server. Developers should not call this method
+   * directly, but invoke it via {@link #addUnprivilegedServlet(String, String, Class)} or
+   * {@link #addPrivilegedServlet(String, String, Class)}.
+   */
+  void addServletWithAuth(String name, String pathSpec,
+      Class<? extends HttpServlet> clazz, boolean requireAuthz) {
+    addInternalServlet(name, pathSpec, clazz, requireAuthz);
+    addFilterPathMapping(pathSpec, webAppContext);
   }
 
   /**
@@ -760,7 +833,7 @@ public class HttpServer implements FilterContainer {
    * protect with Kerberos authentication.
    * Note: This method is to be used for adding servlets that facilitate
    * internal communication and not for user facing functionality. For
-   +   * servlets added using this method, filters (except internal Kerberos
+   * servlets added using this method, filters (except internal Kerberos
    * filters) are not enabled.
    *
    * @param name The name of the servlet (can be passed as null)
@@ -768,29 +841,28 @@ public class HttpServer implements FilterContainer {
    * @param clazz The servlet class
    * @param requireAuth Require Kerberos authenticate to access servlet
    */
-  public void addInternalServlet(String name, String pathSpec,
-      Class<? extends HttpServlet> clazz, boolean requireAuth) {
+  void addInternalServlet(String name, String pathSpec,
+      Class<? extends HttpServlet> clazz, boolean requireAuthz) {
     ServletHolder holder = new ServletHolder(clazz);
     if (name != null) {
       holder.setName(name);
     }
-    webAppContext.addServlet(holder, pathSpec);
-
-    if(requireAuth && UserGroupInformation.isSecurityEnabled()) {
-       LOG.info("Adding Kerberos (SPNEGO) filter to " + name);
-       ServletHandler handler = webAppContext.getServletHandler();
-       FilterMapping fmap = new FilterMapping();
-       fmap.setPathSpec(pathSpec);
-       fmap.setFilterName(SPNEGO_FILTER);
-       fmap.setDispatches(FilterMapping.ALL);
-       handler.addFilterMapping(fmap);
+    if (authenticationEnabled && requireAuthz) {
+      FilterHolder filter = new FilterHolder(AdminAuthorizedFilter.class);
+      filter.setName(AdminAuthorizedFilter.class.getSimpleName());
+      FilterMapping fmap = new FilterMapping();
+      fmap.setPathSpec(pathSpec);
+      fmap.setDispatches(FilterMapping.ALL);
+      fmap.setFilterName(AdminAuthorizedFilter.class.getSimpleName());
+      webAppContext.getServletHandler().addFilter(filter, fmap);
     }
+    webAppContext.getSessionHandler().getSessionCookieConfig().setHttpOnly(true);
+    webAppContext.getSessionHandler().getSessionCookieConfig().setSecure(true);
+    webAppContext.addServlet(holder, pathSpec);
   }
 
   @Override
-  public void addFilter(String name, String classname,
-      Map<String, String> parameters) {
-
+  public void addFilter(String name, String classname, Map<String, String> parameters) {
     final String[] USER_FACING_URLS = { "*.html", "*.jsp" };
     defineFilter(webAppContext, name, classname, parameters, USER_FACING_URLS);
     LOG.info("Added filter " + name + " (class=" + classname
@@ -808,8 +880,7 @@ public class HttpServer implements FilterContainer {
   }
 
   @Override
-  public void addGlobalFilter(String name, String classname,
-      Map<String, String> parameters) {
+  public void addGlobalFilter(String name, String classname, Map<String, String> parameters) {
     final String[] ALL_URLS = { "/*" };
     defineFilter(webAppContext, name, classname, parameters, ALL_URLS);
     for (ServletContextHandler ctx : defaultContexts.keySet()) {
@@ -823,7 +894,6 @@ public class HttpServer implements FilterContainer {
    */
   public static void defineFilter(ServletContextHandler handler, String name,
       String classname, Map<String,String> parameters, String[] urls) {
-
     FilterHolder holder = new FilterHolder();
     holder.setName(name);
     holder.setClassName(classname);
@@ -867,7 +937,7 @@ public class HttpServer implements FilterContainer {
   }
 
   public String getWebAppsPath(String appName) throws FileNotFoundException {
-      return getWebAppsPath(this.appDir, appName);
+    return getWebAppsPath(this.appDir, appName);
   }
 
   /**
@@ -878,9 +948,12 @@ public class HttpServer implements FilterContainer {
    */
   protected String getWebAppsPath(String webapps, String appName) throws FileNotFoundException {
     URL url = getClass().getClassLoader().getResource(webapps + "/" + appName);
-    if (url == null)
+
+    if (url == null) {
       throw new FileNotFoundException(webapps + "/" + appName
-          + " not found in CLASSPATH");
+              + " not found in CLASSPATH");
+    }
+
     String urlString = url.toString();
     return urlString.substring(0, urlString.lastIndexOf('/'));
   }
@@ -888,6 +961,7 @@ public class HttpServer implements FilterContainer {
   /**
    * Get the port that the server is on
    * @return the port
+   * @deprecated Since 0.99.0
    */
   @Deprecated
   public int getPort() {
@@ -902,8 +976,10 @@ public class HttpServer implements FilterContainer {
    */
   public InetSocketAddress getConnectorAddress(int index) {
     Preconditions.checkArgument(index >= 0);
-    if (index > webServer.getConnectors().length)
+
+    if (index > webServer.getConnectors().length) {
       return null;
+    }
 
     ServerConnector c = (ServerConnector)webServer.getConnectors()[index];
     if (c.getLocalPort() == -1 || c.getLocalPort() == -2) {
@@ -956,7 +1032,18 @@ public class HttpServer implements FilterContainer {
           + "to enable SPNEGO/Kerberos authentication for the Web UI");
     }
 
-    addGlobalFilter(SPNEGO_FILTER, AuthenticationFilter.class.getName(), params);
+    if (conf.getBoolean(HTTP_SPNEGO_AUTHENTICATION_PROXYUSER_ENABLE_KEY,
+        HTTP_SPNEGO_AUTHENTICATION_PROXYUSER_ENABLE_DEFAULT)) {
+        //Copy/rename standard hadoop proxyuser settings to filter
+        for(Map.Entry<String, String> proxyEntry :
+            conf.getPropsWithPrefix(ProxyUsers.CONF_HADOOP_PROXYUSER).entrySet()) {
+            params.put(ProxyUserAuthenticationFilter.PROXYUSER_PREFIX + proxyEntry.getKey(),
+                proxyEntry.getValue());
+        }
+        addGlobalFilter(SPNEGO_PROXYUSER_FILTER, ProxyUserAuthenticationFilter.class.getName(), params);
+    } else {
+        addGlobalFilter(SPNEGO_FILTER, AuthenticationFilter.class.getName(), params);
+    }
   }
 
   /**
@@ -1031,9 +1118,8 @@ public class HttpServer implements FilterContainer {
 
   /**
    * Open the main listener for the server
-   * @throws Exception
+   * @throws Exception if the listener cannot be opened or the appropriate port is already in use
    */
-  @VisibleForTesting
   void openListeners() throws Exception {
     for (ListenerInfo li : listeners) {
       ServerConnector listener = li.listener;
@@ -1050,7 +1136,10 @@ public class HttpServer implements FilterContainer {
           listener.open();
           LOG.info("Jetty bound to port " + listener.getLocalPort());
           break;
-        } catch (BindException ex) {
+        } catch (IOException ex) {
+          if(!(ex instanceof BindException) && !(ex.getCause() instanceof BindException)) {
+            throw ex;
+          }
           if (port == 0 || !findPort) {
             BindException be = new BindException("Port in use: "
                 + listener.getHost() + ":" + listener.getPort());
@@ -1139,7 +1228,8 @@ public class HttpServer implements FilterContainer {
       return "Inactive HttpServer";
     } else {
       StringBuilder sb = new StringBuilder("HttpServer (")
-        .append(isAlive() ? STATE_DESCRIPTION_ALIVE : STATE_DESCRIPTION_NOT_LIVE).append("), listening at:");
+        .append(isAlive() ? STATE_DESCRIPTION_ALIVE :
+                STATE_DESCRIPTION_NOT_LIVE).append("), listening at:");
       for (ListenerInfo li : listeners) {
         ServerConnector l = li.listener;
         sb.append(l.getHost()).append(":").append(l.getPort()).append("/,");
@@ -1184,17 +1274,24 @@ public class HttpServer implements FilterContainer {
    * Does the user sending the HttpServletRequest has the administrator ACLs? If
    * it isn't the case, response will be modified to send an error to the user.
    *
-   * @param servletContext
-   * @param request
+   * @param servletContext the {@link ServletContext} to use
+   * @param request the {@link HttpServletRequest} to check
    * @param response used to send the error response if user does not have admin access.
    * @return true if admin-authorized, false otherwise
-   * @throws IOException
+   * @throws IOException if an unauthenticated or unauthorized user tries to access the page
    */
   public static boolean hasAdministratorAccess(
       ServletContext servletContext, HttpServletRequest request,
       HttpServletResponse response) throws IOException {
     Configuration conf =
         (Configuration) servletContext.getAttribute(CONF_CONTEXT_ATTRIBUTE);
+    AccessControlList acl = (AccessControlList) servletContext.getAttribute(ADMINS_ACL);
+
+    return hasAdministratorAccess(conf, acl, request, response);
+  }
+
+  public static boolean hasAdministratorAccess(Configuration conf, AccessControlList acl,
+      HttpServletRequest request, HttpServletResponse response) throws IOException {
     // If there is no authorization, anybody has administrator access.
     if (!conf.getBoolean(
         CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, false)) {
@@ -1209,9 +1306,8 @@ public class HttpServer implements FilterContainer {
       return false;
     }
 
-    if (servletContext.getAttribute(ADMINS_ACL) != null &&
-        !userHasAdministratorAccess(servletContext, remoteUser)) {
-      response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "User "
+    if (acl != null && !userHasAdministratorAccess(acl, remoteUser)) {
+      response.sendError(HttpServletResponse.SC_FORBIDDEN, "User "
           + remoteUser + " is unauthorized to access this page.");
       return false;
     }
@@ -1232,9 +1328,13 @@ public class HttpServer implements FilterContainer {
       String remoteUser) {
     AccessControlList adminsAcl = (AccessControlList) servletContext
         .getAttribute(ADMINS_ACL);
+    return userHasAdministratorAccess(adminsAcl, remoteUser);
+  }
+
+  public static boolean userHasAdministratorAccess(AccessControlList acl, String remoteUser) {
     UserGroupInformation remoteUserUGI =
         UserGroupInformation.createRemoteUser(remoteUser);
-    return adminsAcl != null && adminsAcl.isUserAllowed(remoteUserUGI);
+    return acl != null && acl.isUserAllowed(remoteUserUGI);
   }
 
   /**
@@ -1304,8 +1404,8 @@ public class HttpServer implements FilterContainer {
        */
       @Override
       public String getParameter(String name) {
-        return HtmlQuoting.quoteHtmlChars(rawRequest.getParameter
-                                     (HtmlQuoting.unquoteHtmlChars(name)));
+        return HtmlQuoting.quoteHtmlChars(rawRequest.getParameter(
+                HtmlQuoting.unquoteHtmlChars(name)));
       }
 
       @Override

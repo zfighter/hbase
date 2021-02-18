@@ -36,14 +36,15 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseCommonTestingUtility;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility.LoadCounter;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility.TestProcedure;
 import org.apache.hadoop.hbase.procedure2.SequentialProcedure;
+import org.apache.hadoop.hbase.procedure2.store.LeaseRecovery;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStore;
-import org.apache.hadoop.hbase.procedure2.store.ProcedureStoreTracker;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.io.IOUtils;
@@ -62,7 +63,6 @@ import org.apache.hbase.thirdparty.com.google.protobuf.Int64Value;
 
 @Category({MasterTests.class, SmallTests.class})
 public class TestWALProcedureStore {
-
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestWALProcedureStore.class);
@@ -86,7 +86,9 @@ public class TestWALProcedureStore {
   public void setUp() throws IOException {
     htu = new HBaseCommonTestingUtility();
     testDir = htu.getDataTestDir();
+    htu.getConfiguration().set(HConstants.HBASE_DIR, testDir.toString());
     fs = testDir.getFileSystem(htu.getConfiguration());
+    htu.getConfiguration().set(HConstants.HBASE_DIR, testDir.toString());
     assertTrue(testDir.depth() > 1);
 
     setupConfig(htu.getConfiguration());
@@ -628,19 +630,19 @@ public class TestWALProcedureStore {
 
     // simulate another active master removing the wals
     procStore = new WALProcedureStore(htu.getConfiguration(), logDir, null,
-        new WALProcedureStore.LeaseRecovery() {
-      private int count = 0;
+      new LeaseRecovery() {
+        private int count = 0;
 
-      @Override
-      public void recoverFileLease(FileSystem fs, Path path) throws IOException {
-        if (++count <= 2) {
-          fs.delete(path, false);
-          LOG.debug("Simulate FileNotFound at count=" + count + " for " + path);
-          throw new FileNotFoundException("test file not found " + path);
+        @Override
+        public void recoverFileLease(FileSystem fs, Path path) throws IOException {
+          if (++count <= 2) {
+            fs.delete(path, false);
+            LOG.debug("Simulate FileNotFound at count=" + count + " for " + path);
+            throw new FileNotFoundException("test file not found " + path);
+          }
+          LOG.debug("Simulate recoverFileLease() at count=" + count + " for " + path);
         }
-        LOG.debug("Simulate recoverFileLease() at count=" + count + " for " + path);
-      }
-    });
+      });
 
     final LoadCounter loader = new LoadCounter();
     procStore.start(PROCEDURE_STORE_SLOTS);
@@ -653,7 +655,7 @@ public class TestWALProcedureStore {
   }
 
   @Test
-  public void testLogFileAleadExists() throws IOException {
+  public void testLogFileAlreadyExists() throws IOException {
     final boolean[] tested = {false};
     WALProcedureStore mStore = Mockito.spy(procStore);
 
@@ -796,7 +798,7 @@ public class TestWALProcedureStore {
   }
 
   private WALProcedureStore createWALProcedureStore(Configuration conf) throws IOException {
-    return new WALProcedureStore(conf, new WALProcedureStore.LeaseRecovery() {
+    return new WALProcedureStore(conf, new LeaseRecovery() {
       @Override
       public void recoverFileLease(FileSystem fs, Path path) throws IOException {
         // no-op

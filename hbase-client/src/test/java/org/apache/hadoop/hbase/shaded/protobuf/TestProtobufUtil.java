@@ -18,17 +18,24 @@
 package org.apache.hadoop.hbase.shaded.protobuf;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.List;
+import org.apache.hadoop.hbase.ArrayBackedTag;
 import org.apache.hadoop.hbase.ByteBufferKeyValue;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.CellComparatorImpl;
+import org.apache.hadoop.hbase.ExtendedCellBuilder;
 import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.PrivateCellUtil;
+import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.client.Append;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
@@ -60,11 +67,11 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ProcedureProtos;
 
 @Category(SmallTests.class)
 public class TestProtobufUtil {
-
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestProtobufUtil.class);
-
+  private static final String TAG_STR = "tag-1";
+  private static final byte TAG_TYPE = (byte)10;
   public TestProtobufUtil() {
   }
 
@@ -86,7 +93,7 @@ public class TestProtobufUtil {
   /**
    * Test basic Get conversions.
    *
-   * @throws IOException
+   * @throws IOException if the conversion to a {@link Get} fails
    */
   @Test
   public void testGet() throws IOException {
@@ -119,7 +126,8 @@ public class TestProtobufUtil {
   /**
    * Test Delete Mutate conversions.
    *
-   * @throws IOException
+   * @throws IOException if the conversion to a {@link Delete} or a
+   *                     {@link org.apache.hadoop.hbase.client.Mutation} fails
    */
   @Test
   public void testDelete() throws IOException {
@@ -166,7 +174,8 @@ public class TestProtobufUtil {
   /**
    * Test Put Mutate conversions.
    *
-   * @throws IOException
+   * @throws IOException if the conversion to a {@link Put} or a
+   *                     {@link org.apache.hadoop.hbase.client.Mutation} fails
    */
   @Test
   public void testPut() throws IOException {
@@ -216,7 +225,7 @@ public class TestProtobufUtil {
   /**
    * Test basic Scan conversions.
    *
-   * @throws IOException
+   * @throws IOException if the conversion to a {@link org.apache.hadoop.hbase.client.Scan} fails
    */
   @Test
   public void testScan() throws IOException {
@@ -255,7 +264,7 @@ public class TestProtobufUtil {
   }
 
   @Test
-  public void testToCell() throws Exception {
+  public void testToCell() {
     KeyValue kv1 =
         new KeyValue(Bytes.toBytes("aaa"), Bytes.toBytes("f1"), Bytes.toBytes("q1"), new byte[30]);
     KeyValue kv2 =
@@ -270,15 +279,18 @@ public class TestProtobufUtil {
     ByteBuffer dbb = ByteBuffer.allocateDirect(arr.length);
     dbb.put(arr);
     ByteBufferKeyValue offheapKV = new ByteBufferKeyValue(dbb, kv1.getLength(), kv2.getLength());
-    CellProtos.Cell cell = ProtobufUtil.toCell(offheapKV);
-    Cell newOffheapKV = ProtobufUtil.toCell(ExtendedCellBuilderFactory.create(CellBuilderType.SHALLOW_COPY), cell);
+    CellProtos.Cell cell = ProtobufUtil.toCell(offheapKV, false);
+    Cell newOffheapKV =
+        ProtobufUtil.toCell(ExtendedCellBuilderFactory.create(CellBuilderType.SHALLOW_COPY), cell,
+          false);
     assertTrue(CellComparatorImpl.COMPARATOR.compare(offheapKV, newOffheapKV) == 0);
   }
 
   /**
    * Test Increment Mutate conversions.
    *
-   * @throws IOException
+   * @throws IOException if converting to an {@link Increment} or
+   *                     {@link org.apache.hadoop.hbase.client.Mutation} fails
    */
   @Test
   public void testIncrement() throws IOException {
@@ -315,7 +327,7 @@ public class TestProtobufUtil {
   /**
    * Test Append Mutate conversions.
    *
-   * @throws IOException
+   * @throws IOException if converting to an {@link Append} fails
    */
   @Test
   public void testAppend() throws IOException {
@@ -475,5 +487,93 @@ public class TestProtobufUtil {
         + "},"
         + "\"sharedLockCount\":0"
         + "}]", lockJson);
+  }
+
+  /**
+   * Test {@link ProtobufUtil#toCell(Cell, boolean)} and
+   * {@link ProtobufUtil#toCell(ExtendedCellBuilder, CellProtos.Cell, boolean)} conversion
+   * methods when it contains tags and encode/decode tags is set to true.
+   */
+  @Test
+  public void testCellConversionWithTags() {
+
+    Cell cell = getCellWithTags();
+    CellProtos.Cell protoCell = ProtobufUtil.toCell(cell, true);
+    assertNotNull(protoCell);
+
+    Cell decodedCell = getCellFromProtoResult(protoCell, true);
+    List<Tag> decodedTags = PrivateCellUtil.getTags(decodedCell);
+    assertEquals(1,  decodedTags.size());
+    Tag decodedTag = decodedTags.get(0);
+    assertEquals(TAG_TYPE, decodedTag.getType());
+    assertEquals(TAG_STR, Tag.getValueAsString(decodedTag));
+  }
+
+  private Cell getCellWithTags() {
+    Tag tag = new ArrayBackedTag(TAG_TYPE, TAG_STR);
+    ExtendedCellBuilder cellBuilder = ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY);
+    cellBuilder.setRow(Bytes.toBytes("row1"));
+    cellBuilder.setFamily(Bytes.toBytes("f1"));
+    cellBuilder.setQualifier(Bytes.toBytes("q1"));
+    cellBuilder.setValue(Bytes.toBytes("value1"));
+    cellBuilder.setType(Cell.Type.Delete);
+    cellBuilder.setTags(Collections.singletonList(tag));
+    return cellBuilder.build();
+  }
+
+  private Cell getCellFromProtoResult(CellProtos.Cell protoCell, boolean decodeTags) {
+    ExtendedCellBuilder decodedBuilder =
+      ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY);
+    return ProtobufUtil.toCell(decodedBuilder, protoCell, decodeTags);
+  }
+
+  /**
+   * Test {@link ProtobufUtil#toCell(Cell, boolean)} and
+   * {@link ProtobufUtil#toCell(ExtendedCellBuilder, CellProtos.Cell, boolean)} conversion
+   * methods when it contains tags and encode/decode tags is set to false.
+   */
+  @Test
+  public void testCellConversionWithoutTags() {
+    Cell cell = getCellWithTags();
+    CellProtos.Cell protoCell = ProtobufUtil.toCell(cell, false);
+    assertNotNull(protoCell);
+
+    Cell decodedCell = getCellFromProtoResult(protoCell, false);
+    List<Tag> decodedTags = PrivateCellUtil.getTags(decodedCell);
+    assertEquals(0,  decodedTags.size());
+  }
+
+  /**
+   * Test {@link ProtobufUtil#toCell(Cell, boolean)} and
+   * {@link ProtobufUtil#toCell(ExtendedCellBuilder, CellProtos.Cell, boolean)} conversion
+   * methods when it contains tags and encoding of tags is set to false
+   * and decoding of tags is set to true.
+   */
+  @Test
+  public void testTagEncodeFalseDecodeTrue() {
+    Cell cell = getCellWithTags();
+    CellProtos.Cell protoCell = ProtobufUtil.toCell(cell, false);
+    assertNotNull(protoCell);
+
+    Cell decodedCell = getCellFromProtoResult(protoCell, true);
+    List<Tag> decodedTags = PrivateCellUtil.getTags(decodedCell);
+    assertEquals(0,  decodedTags.size());
+  }
+
+  /**
+   * Test {@link ProtobufUtil#toCell(Cell, boolean)} and
+   * {@link ProtobufUtil#toCell(ExtendedCellBuilder, CellProtos.Cell, boolean)} conversion
+   * methods when it contains tags and encoding of tags is set to true
+   * and decoding of tags is set to false.
+   */
+  @Test
+  public void testTagEncodeTrueDecodeFalse() {
+    Cell cell = getCellWithTags();
+    CellProtos.Cell protoCell = ProtobufUtil.toCell(cell, true);
+    assertNotNull(protoCell);
+
+    Cell decodedCell = getCellFromProtoResult(protoCell, false);
+    List<Tag> decodedTags = PrivateCellUtil.getTags(decodedCell);
+    assertEquals(0,  decodedTags.size());
   }
 }

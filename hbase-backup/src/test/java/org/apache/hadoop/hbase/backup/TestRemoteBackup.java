@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,15 +22,17 @@ import static org.junit.Assert.assertTrue;
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
+import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.snapshot.MobSnapshotTestingUtils;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
@@ -56,6 +58,7 @@ public class TestRemoteBackup extends TestBackupBase {
   @Override
   public void setUp() throws Exception {
     useSecondCluster = true;
+    conf1.setInt(HConstants.REGION_SERVER_HANDLER_COUNT, 10);
     super.setUp();
   }
 
@@ -78,7 +81,7 @@ public class TestRemoteBackup extends TestBackupBase {
       } catch (InterruptedException ie) {
       }
       try {
-        HTable t1 = (HTable) conn.getTable(table1);
+        Table t1 = conn.getTable(table1);
         Put p1;
         for (int i = 0; i < NB_ROWS_IN_FAM3; i++) {
           p1 = new Put(Bytes.toBytes("row-t1" + i));
@@ -92,17 +95,16 @@ public class TestRemoteBackup extends TestBackupBase {
       }
     });
     t.start();
-
-    table1Desc.addFamily(new HColumnDescriptor(fam3Name));
     // family 2 is MOB enabled
-    HColumnDescriptor hcd = new HColumnDescriptor(fam2Name);
-    hcd.setMobEnabled(true);
-    hcd.setMobThreshold(0L);
-    table1Desc.addFamily(hcd);
-    HBaseTestingUtility.modifyTableSync(TEST_UTIL.getAdmin(), table1Desc);
+    TableDescriptor newTable1Desc = TableDescriptorBuilder.newBuilder(table1Desc)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(fam3Name))
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(fam2Name).setMobEnabled(true)
+        .setMobThreshold(0L).build())
+      .build();
+    TEST_UTIL.getAdmin().modifyTable(newTable1Desc);
 
     SnapshotTestingUtils.loadData(TEST_UTIL, table1, 50, fam2Name);
-    HTable t1 = (HTable) conn.getTable(table1);
+    Table t1 = conn.getTable(table1);
     int rows0 = MobSnapshotTestingUtils.countMobRows(t1, fam2Name);
 
     latch.countDown();
@@ -126,11 +128,11 @@ public class TestRemoteBackup extends TestBackupBase {
       tablesRestoreFull, tablesMapFull, false));
 
     // check tables for full restore
-    HBaseAdmin hAdmin = TEST_UTIL.getHBaseAdmin();
+    Admin hAdmin = TEST_UTIL.getAdmin();
     assertTrue(hAdmin.tableExists(table1_restore));
 
     // #5.2 - checking row count of tables for full restore
-    HTable hTable = (HTable) conn.getTable(table1_restore);
+    Table hTable = conn.getTable(table1_restore);
     Assert.assertEquals(TEST_UTIL.countRows(hTable, famName), NB_ROWS_IN_BATCH);
     int cnt3 = TEST_UTIL.countRows(hTable, fam3Name);
     Assert.assertTrue(cnt3 >= 0 && cnt3 <= NB_ROWS_IN_FAM3);

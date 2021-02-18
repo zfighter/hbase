@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,13 +24,16 @@ import java.util.List;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.ServerName;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
 * Action that tries to unbalance the regions of a cluster.
 */
 public class UnbalanceRegionsAction extends Action {
-  private double fractionOfRegions;
-  private double fractionOfServers;
+  private static final Logger LOG = LoggerFactory.getLogger(UnbalanceRegionsAction.class);
+  private final double fractionOfRegions;
+  private final double fractionOfServers;
 
   /**
    * Unbalances the regions on the cluster by choosing "target" servers, and moving
@@ -43,9 +46,13 @@ public class UnbalanceRegionsAction extends Action {
     this.fractionOfServers = fractionOfServers;
   }
 
+  @Override protected Logger getLogger() {
+    return LOG;
+  }
+
   @Override
   public void perform() throws Exception {
-    LOG.info("Unbalancing regions");
+    getLogger().info("Unbalancing regions");
     ClusterMetrics status = this.cluster.getClusterMetrics();
     List<ServerName> victimServers = new LinkedList<>(status.getLiveServerMetrics().keySet());
     int targetServerCount = (int)Math.ceil(fractionOfServers * victimServers.size());

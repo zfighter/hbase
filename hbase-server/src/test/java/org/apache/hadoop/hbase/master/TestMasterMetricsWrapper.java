@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,17 +17,18 @@
  */
 package org.apache.hadoop.hbase.master;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
 
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.List;
-
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
 import org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshot;
 import org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshot.SpaceQuotaStatus;
@@ -71,8 +72,10 @@ public class TestMasterMetricsWrapper {
   public void testInfo() {
     HMaster master = TEST_UTIL.getHBaseCluster().getMaster();
     MetricsMasterWrapperImpl info = new MetricsMasterWrapperImpl(master);
-    assertEquals(master.getSplitPlanCount(), info.getSplitPlanCount(), 0);
-    assertEquals(master.getMergePlanCount(), info.getMergePlanCount(), 0);
+    assertEquals(
+      master.getRegionNormalizerManager().getSplitPlanCount(), info.getSplitPlanCount(), 0);
+    assertEquals(
+      master.getRegionNormalizerManager().getMergePlanCount(), info.getMergePlanCount(), 0);
     assertEquals(master.getAverageLoad(), info.getAverageLoad(), 0);
     assertEquals(master.getClusterId(), info.getClusterId());
     assertEquals(master.getMasterActiveTime(), info.getActiveTime());
@@ -98,7 +101,9 @@ public class TestMasterMetricsWrapper {
     }
     assertEquals(regionServerCount - 1, info.getNumRegionServers());
     assertEquals(1, info.getNumDeadRegionServers());
-    assertEquals(1, info.getNumWALFiles());
+    // now we do not expose this information as WALProcedureStore is not the only ProcedureStore
+    // implementation any more.
+    assertEquals(0, info.getNumWALFiles());
   }
 
   @Test
@@ -116,17 +121,18 @@ public class TestMasterMetricsWrapper {
   /**
    * tests online and offline region number
    */
-  @Test (timeout=30000)
+  @Test
   public void testOfflineRegion() throws Exception {
     HMaster master = TEST_UTIL.getHBaseCluster().getMaster();
     MetricsMasterWrapperImpl info = new MetricsMasterWrapperImpl(master);
     TableName table = TableName.valueOf("testRegionNumber");
     try {
       RegionInfo hri;
-      HTableDescriptor desc = new HTableDescriptor(table);
       byte[] FAMILY = Bytes.toBytes("FAMILY");
-      desc.addFamily(new HColumnDescriptor(FAMILY));
-      TEST_UTIL.getHBaseAdmin().createTable(desc, Bytes.toBytes("A"), Bytes.toBytes("Z"), 5);
+      TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(table)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILY)).build();
+      TEST_UTIL.getAdmin().createTable(tableDescriptor, Bytes.toBytes("A"),
+        Bytes.toBytes("Z"), 5);
 
       // wait till the table is assigned
       long timeoutTime = System.currentTimeMillis() + 1000;
@@ -148,7 +154,7 @@ public class TestMasterMetricsWrapper {
       assertEquals(5, regionNumberPair.getFirst().intValue());
       assertEquals(0, regionNumberPair.getSecond().intValue());
 
-      TEST_UTIL.getHBaseAdmin().offline(hri.getRegionName());
+      TEST_UTIL.getAdmin().offline(hri.getRegionName());
 
       timeoutTime = System.currentTimeMillis() + 800;
       RegionStates regionStates = master.getAssignmentManager().getRegionStates();

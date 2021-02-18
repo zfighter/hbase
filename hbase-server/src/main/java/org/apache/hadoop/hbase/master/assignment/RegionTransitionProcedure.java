@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.master.assignment;
 
 import java.io.IOException;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
@@ -30,12 +31,9 @@ import org.apache.hadoop.hbase.procedure2.ProcedureSuspendedException;
 import org.apache.hadoop.hbase.procedure2.RemoteProcedureDispatcher.RemoteOperation;
 import org.apache.hadoop.hbase.procedure2.RemoteProcedureDispatcher.RemoteProcedure;
 import org.apache.hadoop.hbase.procedure2.RemoteProcedureException;
-import org.apache.yetus.audience.InterfaceAudience;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.RegionTransitionState;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.RegionServerStatusProtos.RegionStateTransition.TransitionCode;
+import org.apache.yetus.audience.InterfaceAudience;
 
 /**
  * Leave here only for checking if we can successfully start the master.
@@ -63,12 +61,11 @@ public abstract class RegionTransitionProcedure extends Procedure<MasterProcedur
     this.regionInfo = regionInfo;
   }
 
-  @VisibleForTesting
   public RegionInfo getRegionInfo() {
     return regionInfo;
   }
 
-  protected void setRegionInfo(final RegionInfo regionInfo) {
+  public void setRegionInfo(final RegionInfo regionInfo) {
     this.regionInfo = regionInfo;
   }
 
@@ -92,11 +89,12 @@ public abstract class RegionTransitionProcedure extends Procedure<MasterProcedur
 
   @Override
   public void toStringClassDetails(final StringBuilder sb) {
-    sb.append(getClass().getSimpleName());
-    sb.append(" table=");
-    sb.append(getTableName());
-    sb.append(", region=");
-    sb.append(getRegionInfo() == null ? null : getRegionInfo().getEncodedName());
+    sb.append(getProcName());
+  }
+
+  @Override public String getProcName() {
+    RegionInfo r = getRegionInfo();
+    return getClass().getSimpleName() + " " + getTableName() + (r != null? r.getEncodedName(): "");
   }
 
   public RegionStateNode getRegionState(final MasterProcedureEnv env) {
@@ -124,7 +122,8 @@ public abstract class RegionTransitionProcedure extends Procedure<MasterProcedur
       TransitionCode code, long seqId) throws UnexpectedStateException;
 
   @Override
-  public abstract RemoteOperation remoteCallBuild(MasterProcedureEnv env, ServerName serverName);
+  public abstract Optional<RemoteOperation> remoteCallBuild(MasterProcedureEnv env,
+      ServerName serverName);
 
   protected abstract boolean remoteCallFailed(MasterProcedureEnv env, RegionStateNode regionNode,
       IOException exception);

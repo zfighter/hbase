@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -59,17 +60,20 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.LogQueryFilter;
+import org.apache.hadoop.hbase.client.OnlineLogRecord;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.security.UserProvider;
 import org.apache.hadoop.hbase.thrift.HBaseServiceHandler;
 import org.apache.hadoop.hbase.thrift2.generated.TAppend;
 import org.apache.hadoop.hbase.thrift2.generated.TColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.thrift2.generated.TCompareOp;
+import org.apache.hadoop.hbase.thrift2.generated.TCompareOperator;
 import org.apache.hadoop.hbase.thrift2.generated.TDelete;
 import org.apache.hadoop.hbase.thrift2.generated.TGet;
 import org.apache.hadoop.hbase.thrift2.generated.THBaseService;
@@ -77,13 +81,17 @@ import org.apache.hadoop.hbase.thrift2.generated.THRegionLocation;
 import org.apache.hadoop.hbase.thrift2.generated.TIOError;
 import org.apache.hadoop.hbase.thrift2.generated.TIllegalArgument;
 import org.apache.hadoop.hbase.thrift2.generated.TIncrement;
+import org.apache.hadoop.hbase.thrift2.generated.TLogQueryFilter;
 import org.apache.hadoop.hbase.thrift2.generated.TNamespaceDescriptor;
+import org.apache.hadoop.hbase.thrift2.generated.TOnlineLogRecord;
 import org.apache.hadoop.hbase.thrift2.generated.TPut;
 import org.apache.hadoop.hbase.thrift2.generated.TResult;
 import org.apache.hadoop.hbase.thrift2.generated.TRowMutations;
 import org.apache.hadoop.hbase.thrift2.generated.TScan;
+import org.apache.hadoop.hbase.thrift2.generated.TServerName;
 import org.apache.hadoop.hbase.thrift2.generated.TTableDescriptor;
 import org.apache.hadoop.hbase.thrift2.generated.TTableName;
+import org.apache.hadoop.hbase.thrift2.generated.TThriftServerType;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.thrift.TException;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -227,7 +235,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
   public List<Boolean> existsAll(ByteBuffer table, List<TGet> gets) throws TIOError, TException {
     Table htable = getTable(table);
     try {
-      boolean[] exists = htable.existsAll(getsFromThrift(gets));
+      boolean[] exists = htable.exists(getsFromThrift(gets));
       List<Boolean> result = new ArrayList<>(exists.length);
       for (boolean exist : exists) {
         result.add(exist);
@@ -340,7 +348,8 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
   
   @Override
   public boolean checkAndMutate(ByteBuffer table, ByteBuffer row, ByteBuffer family,
-      ByteBuffer qualifier, TCompareOp compareOp, ByteBuffer value, TRowMutations rowMutations)
+      ByteBuffer qualifier, TCompareOperator compareOp, ByteBuffer value,
+      TRowMutations rowMutations)
           throws TIOError, TException {
     checkReadOnlyMode();
     try (final Table htable = getTable(table)) {
@@ -625,7 +634,11 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
     try {
       TableDescriptor descriptor = tableDescriptorFromThrift(desc);
       byte[][] split = splitKeyFromThrift(splitKeys);
-      connectionCache.getAdmin().createTable(descriptor, split);
+      if (split != null) {
+        connectionCache.getAdmin().createTable(descriptor, split);
+      } else {
+        connectionCache.getAdmin().createTable(descriptor);
+      }
     } catch (IOException e) {
       throw getTIOError(e);
     }
@@ -787,6 +800,56 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements TH
     try {
       NamespaceDescriptor descriptor = connectionCache.getAdmin().getNamespaceDescriptor(name);
       return namespaceDescriptorFromHBase(descriptor);
+    } catch (IOException e) {
+      throw getTIOError(e);
+    }
+  }
+
+  @Override
+  public List<String> listNamespaces() throws TIOError, TException {
+    try {
+      String[] namespaces = connectionCache.getAdmin().listNamespaces();
+      List<String> result = new ArrayList<>(namespaces.length);
+      for (String ns: namespaces) {
+        result.add(ns);
+      }
+      return result;
+    } catch (IOException e) {
+      throw getTIOError(e);
+    }
+  }
+
+  @Override
+  public TThriftServerType getThriftServerType() {
+    return TThriftServerType.TWO;
+  }
+
+  @Override
+  public String getClusterId() throws TException {
+    return connectionCache.getClusterId();
+  }
+
+  @Override
+  public List<TOnlineLogRecord> getSlowLogResponses(Set<TServerName> tServerNames,
+      TLogQueryFilter tLogQueryFilter) throws TIOError, TException {
+    try {
+      Set<ServerName> serverNames = ThriftUtilities.getServerNamesFromThrift(tServerNames);
+      LogQueryFilter logQueryFilter =
+        ThriftUtilities.getSlowLogQueryFromThrift(tLogQueryFilter);
+      List<OnlineLogRecord> onlineLogRecords =
+        connectionCache.getAdmin().getSlowLogResponses(serverNames, logQueryFilter);
+      return ThriftUtilities.getSlowLogRecordsFromHBase(onlineLogRecords);
+    } catch (IOException e) {
+      throw getTIOError(e);
+    }
+  }
+
+  @Override
+  public List<Boolean> clearSlowLogResponses(Set<TServerName> tServerNames)
+      throws TIOError, TException {
+    Set<ServerName> serverNames = ThriftUtilities.getServerNamesFromThrift(tServerNames);
+    try {
+      return connectionCache.getAdmin().clearSlowLogResponses(serverNames);
     } catch (IOException e) {
       throw getTIOError(e);
     }

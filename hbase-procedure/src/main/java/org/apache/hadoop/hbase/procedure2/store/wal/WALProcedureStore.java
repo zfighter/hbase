@@ -35,19 +35,21 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FSError;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.log.HBaseMarkers;
 import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureExecutor;
+import org.apache.hadoop.hbase.procedure2.store.LeaseRecovery;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStore;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStoreBase;
-import org.apache.hadoop.hbase.procedure2.store.ProcedureStoreTracker;
 import org.apache.hadoop.hbase.procedure2.util.ByteSlot;
 import org.apache.hadoop.hbase.procedure2.util.StringUtils;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
@@ -57,7 +59,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.org.apache.commons.collections4.queue.CircularFifoQueue;
 
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ProcedureProtos.ProcedureWALHeader;
@@ -106,7 +107,10 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ProcedureProtos.Procedu
  * deleted.
  * @see ProcedureWALPrettyPrinter for printing content of a single WAL.
  * @see #main(String[]) to parse a directory of MasterWALProcs.
+ * @deprecated Since 2.3.0, will be removed in 4.0.0. Keep here only for rolling upgrading, now we
+ *             use the new region based procedure store.
  */
+@Deprecated
 @InterfaceAudience.Private
 public class WALProcedureStore extends ProcedureStoreBase {
   private static final Logger LOG = LoggerFactory.getLogger(WALProcedureStore.class);
@@ -114,10 +118,6 @@ public class WALProcedureStore extends ProcedureStoreBase {
   /** Used to construct the name of the log directory for master procedures */
   public static final String MASTER_PROCEDURE_LOGDIR = "MasterProcWALs";
 
-
-  public interface LeaseRecovery {
-    void recoverFileLease(FileSystem fs, Path path) throws IOException;
-  }
 
   public static final String WAL_COUNT_WARN_THRESHOLD_CONF_KEY =
     "hbase.procedure.store.wal.warn.threshold";
@@ -233,15 +233,12 @@ public class WALProcedureStore extends ProcedureStoreBase {
     }
   }
 
-  public WALProcedureStore(final Configuration conf, final LeaseRecovery leaseRecovery)
-      throws IOException {
-    this(conf,
-        new Path(CommonFSUtils.getWALRootDir(conf), MASTER_PROCEDURE_LOGDIR),
-        new Path(CommonFSUtils.getWALRootDir(conf), HConstants.HREGION_OLDLOGDIR_NAME),
-        leaseRecovery);
+  public WALProcedureStore(Configuration conf, LeaseRecovery leaseRecovery) throws IOException {
+    this(conf, new Path(CommonFSUtils.getWALRootDir(conf), MASTER_PROCEDURE_LOGDIR),
+      new Path(CommonFSUtils.getWALRootDir(conf), HConstants.HREGION_OLDLOGDIR_NAME),
+      leaseRecovery);
   }
 
-  @VisibleForTesting
   public WALProcedureStore(final Configuration conf, final Path walDir, final Path walArchiveDir,
       final LeaseRecovery leaseRecovery) throws IOException {
     this.conf = conf;
@@ -659,7 +656,10 @@ public class WALProcedureStore extends ProcedureStoreBase {
 
   @Override
   public void delete(final long[] procIds, final int offset, final int count) {
-    if (count == 0) return;
+    if (count == 0) {
+      return;
+    }
+
     if (offset == 0 && count == procIds.length) {
       delete(procIds);
     } else if (count == 1) {
@@ -946,7 +946,9 @@ public class WALProcedureStore extends ProcedureStoreBase {
 
   private boolean rollWriterWithRetries() {
     for (int i = 0; i < rollRetries && isRunning(); ++i) {
-      if (i > 0) Threads.sleepWithoutInterrupt(waitBeforeRoll * i);
+      if (i > 0) {
+        Threads.sleepWithoutInterrupt(waitBeforeRoll * i);
+      }
 
       try {
         if (rollWriter()) {
@@ -980,7 +982,6 @@ public class WALProcedureStore extends ProcedureStoreBase {
     return (System.currentTimeMillis() - lastRollTs.get());
   }
 
-  @VisibleForTesting
   void periodicRollForTesting() throws IOException {
     lock.lock();
     try {
@@ -990,7 +991,6 @@ public class WALProcedureStore extends ProcedureStoreBase {
     }
   }
 
-  @VisibleForTesting
   public boolean rollWriterForTesting() throws IOException {
     lock.lock();
     try {
@@ -1000,7 +1000,6 @@ public class WALProcedureStore extends ProcedureStoreBase {
     }
   }
 
-  @VisibleForTesting
   void removeInactiveLogsForTesting() throws Exception {
     lock.lock();
     try {
@@ -1054,7 +1053,6 @@ public class WALProcedureStore extends ProcedureStoreBase {
     return true;
   }
 
-  @VisibleForTesting
   boolean rollWriter(long logId) throws IOException {
     assert logId > flushLogId : "logId=" + logId + " flushLogId=" + flushLogId;
     assert lock.isHeldByCurrentThread() : "expected to be the lock owner. " + lock.isLocked();
@@ -1082,9 +1080,9 @@ public class WALProcedureStore extends ProcedureStoreBase {
     // After we create the stream but before we attempt to use it at all
     // ensure that we can provide the level of data safety we're configured
     // to provide.
-    final String durability = useHsync ? "hsync" : "hflush";
-    if (enforceStreamCapability && !(CommonFSUtils.hasCapability(newStream, durability))) {
-        throw new IllegalStateException("The procedure WAL relies on the ability to " + durability +
+    final String durability = useHsync ? StreamCapabilities.HSYNC : StreamCapabilities.HFLUSH;
+    if (enforceStreamCapability && !newStream.hasCapability(durability)) {
+      throw new IllegalStateException("The procedure WAL relies on the ability to " + durability +
           " for proper operation during component failures, but the underlying filesystem does " +
           "not support doing so. Please check the config value of '" + USE_HSYNC_CONF_KEY +
           "' to set the desired level of robustness and ensure the config value of '" +
@@ -1149,12 +1147,12 @@ public class WALProcedureStore extends ProcedureStoreBase {
           log.addToSize(trailerSize);
         }
       }
-    } catch (IOException e) {
+    } catch (IOException | FSError e) {
       LOG.warn("Unable to write the trailer", e);
     }
     try {
       stream.close();
-    } catch (IOException e) {
+    } catch (IOException | FSError e) {
       LOG.error("Unable to close the stream", e);
     }
     stream = null;
@@ -1253,7 +1251,6 @@ public class WALProcedureStore extends ProcedureStoreBase {
     return this.walDir;
   }
 
-  @VisibleForTesting
   Path getWalArchiveDir() {
     return this.walArchiveDir;
   }
@@ -1406,7 +1403,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
       System.exit(-1);
     }
     WALProcedureStore store = new WALProcedureStore(conf, new Path(args[0]), null,
-      new WALProcedureStore.LeaseRecovery() {
+      new LeaseRecovery() {
         @Override
         public void recoverFileLease(FileSystem fs, Path path) throws IOException {
           // no-op

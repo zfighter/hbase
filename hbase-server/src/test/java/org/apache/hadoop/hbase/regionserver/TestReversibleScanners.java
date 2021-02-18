@@ -31,19 +31,20 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparatorImpl;
+import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterList;
 import org.apache.hadoop.hbase.filter.FilterList.Operator;
@@ -99,7 +100,8 @@ public class TestReversibleScanners {
 
   @BeforeClass
   public static void setUp() {
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
+    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
+      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
   }
   @Test
   public void testReversibleStoreFileScanner() throws IOException {
@@ -323,9 +325,9 @@ public class TestReversibleScanners {
   @Test
   public void testReversibleRegionScanner() throws IOException {
     byte[] FAMILYNAME2 = Bytes.toBytes("testCf2");
-    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf(name.getMethodName()))
-        .addFamily(new HColumnDescriptor(FAMILYNAME))
-        .addFamily(new HColumnDescriptor(FAMILYNAME2));
+    TableDescriptor htd = TableDescriptorBuilder.newBuilder(TableName.valueOf(name.getMethodName()))
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILYNAME))
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(FAMILYNAME2)).build();
     HRegion region = TEST_UTIL.createLocalHRegion(htd, null, null);
     loadDataToRegion(region, FAMILYNAME2);
 
@@ -383,7 +385,7 @@ public class TestReversibleScanners {
     // Case8: Case7 + SingleColumnValueFilter
     int valueNum = startRowNum % VALUESIZE;
     Filter filter = new SingleColumnValueFilter(FAMILYNAME,
-        specifiedQualifiers[0], CompareOp.EQUAL, VALUES[valueNum]);
+        specifiedQualifiers[0], CompareOperator.EQUAL, VALUES[valueNum]);
     scan.setFilter(filter);
     scanner = region.getScanner(scan);
     int unfilteredRowNum = (startRowNum - stopRowNum) / VALUESIZE
@@ -401,9 +403,9 @@ public class TestReversibleScanners {
 
     // Case10: Case7 + FilterList+MUST_PASS_ONE
     SingleColumnValueFilter scvFilter1 = new SingleColumnValueFilter(
-        FAMILYNAME, specifiedQualifiers[0], CompareOp.EQUAL, VALUES[0]);
+        FAMILYNAME, specifiedQualifiers[0], CompareOperator.EQUAL, VALUES[0]);
     SingleColumnValueFilter scvFilter2 = new SingleColumnValueFilter(
-        FAMILYNAME, specifiedQualifiers[0], CompareOp.EQUAL, VALUES[1]);
+        FAMILYNAME, specifiedQualifiers[0], CompareOperator.EQUAL, VALUES[1]);
     expectedRowNum = 0;
     for (int i = startRowNum; i > stopRowNum; i--) {
       if (i % VALUESIZE == 0 || i % VALUESIZE == 1) {

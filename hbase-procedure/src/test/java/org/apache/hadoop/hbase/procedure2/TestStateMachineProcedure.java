@@ -29,7 +29,7 @@ import org.apache.hadoop.hbase.HBaseCommonTestingUtility;
 import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility.NoopProcedure;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStore;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -38,9 +38,8 @@ import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@Category({MasterTests.class, SmallTests.class})
+@Category({MasterTests.class, MediumTests.class})
 public class TestStateMachineProcedure {
-
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestStateMachineProcedure.class);
@@ -53,8 +52,14 @@ public class TestStateMachineProcedure {
 
     @Override
     public boolean equals(final Object other) {
-      if (this == other) return true;
-      if (!(other instanceof Exception)) return false;
+      if (this == other) {
+        return true;
+      }
+
+      if (!(other instanceof Exception)) {
+        return false;
+      }
+
       // we are going to serialize the exception in the test,
       // so the instance comparison will not match
       return getMessage().equals(((Exception)other).getMessage());

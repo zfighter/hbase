@@ -116,6 +116,31 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+  public long getByteBuffAllocatorHeapAllocationBytes() {
+    return 0;
+  }
+
+  @Override
+  public long getByteBuffAllocatorPoolAllocationBytes() {
+    return 0;
+  }
+
+  @Override
+  public double getByteBuffAllocatorHeapAllocRatio() {
+    return 0;
+  }
+
+  @Override
+  public long getByteBuffAllocatorTotalBufferCount() {
+    return 0;
+  }
+
+  @Override
+  public long getByteBuffAllocatorUsedBufferCount() {
+    return 0;
+  }
+
+  @Override
   public long getReadRequestsCount() {
     return 997;
   }
@@ -396,6 +421,31 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+  public long getHedgedReadOpsInCurThread() {
+    return 5;
+  }
+
+  @Override
+  public long getTotalBytesRead() {
+    return 0;
+  }
+
+  @Override
+  public long getLocalBytesRead() {
+    return 0;
+  }
+
+  @Override
+  public long getShortCircuitBytesRead() {
+    return 0;
+  }
+
+  @Override
+  public long getZeroCopyBytesRead() {
+    return 0;
+  }
+
+  @Override
   public long getBlockedRequestsCount() {
     return 0;
   }
@@ -578,5 +628,10 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   @Override
   public long getAverageRegionSize() {
     return 10000000;
+  }
+
+  @Override
+  public  long getRpcFullScanRequestsCount() {
+    return 10;
   }
 }

@@ -88,6 +88,7 @@ public class CallRunner {
    * Cleanup after ourselves... let go of references.
    */
   private void cleanup() {
+    this.call.cleanup();
     this.call = null;
     this.rpcServer = null;
   }
@@ -110,7 +111,7 @@ public class CallRunner {
       if (RpcServer.LOG.isTraceEnabled()) {
         Optional<User> remoteUser = call.getRequestUser();
         RpcServer.LOG.trace(call.toShortString() + " executing as " +
-            (remoteUser.isPresent() ? "NULL principal" : remoteUser.get().getName()));
+            (remoteUser.isPresent() ? remoteUser.get().getName() : "NULL principal"));
       }
       Throwable errorThrowable = null;
       String error = null;

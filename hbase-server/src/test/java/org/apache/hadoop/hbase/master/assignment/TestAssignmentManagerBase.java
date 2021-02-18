@@ -56,11 +56,12 @@ import org.apache.hadoop.hbase.master.procedure.ProcedureSyncWait;
 import org.apache.hadoop.hbase.master.procedure.RSProcedureDispatcher;
 import org.apache.hadoop.hbase.procedure2.Procedure;
 import org.apache.hadoop.hbase.procedure2.ProcedureMetrics;
+import org.apache.hadoop.hbase.procedure2.ProcedureUtil;
 import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
 import org.apache.hadoop.hbase.regionserver.RegionServerAbortedException;
 import org.apache.hadoop.hbase.regionserver.RegionServerStoppedException;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.ipc.RemoteException;
 import org.junit.After;
 import org.junit.Before;
@@ -138,12 +139,15 @@ public abstract class TestAssignmentManagerBase {
   }
 
   protected void setupConfiguration(Configuration conf) throws Exception {
-    FSUtils.setRootDir(conf, util.getDataTestDir());
+    CommonFSUtils.setRootDir(conf, util.getDataTestDir());
     conf.setBoolean(WALProcedureStore.USE_HSYNC_CONF_KEY, false);
     conf.setInt(WALProcedureStore.SYNC_WAIT_MSEC_CONF_KEY, 10);
     conf.setInt(MasterProcedureConstants.MASTER_PROCEDURE_THREADS, PROC_NTHREADS);
     conf.setInt(RSProcedureDispatcher.RS_RPC_STARTUP_WAIT_TIME_CONF_KEY, 1000);
     conf.setInt(AssignmentManager.ASSIGN_MAX_ATTEMPTS, getAssignMaxAttempts());
+    // make retry for TRSP more frequent
+    conf.setLong(ProcedureUtil.PROCEDURE_RETRY_SLEEP_INTERVAL_MS, 10);
+    conf.setLong(ProcedureUtil.PROCEDURE_RETRY_MAX_SLEEP_TIME_MS, 100);
   }
 
   @Before
@@ -300,7 +304,7 @@ public abstract class TestAssignmentManagerBase {
 
   protected void doCrash(final ServerName serverName) {
     this.master.getServerManager().moveFromOnlineToDeadServers(serverName);
-    this.am.submitServerCrash(serverName, false/* No WALs here */);
+    this.am.submitServerCrash(serverName, false/* No WALs here */, false);
     // add a new server to avoid killing all the region servers which may hang the UTs
     ServerName newSn = ServerName.valueOf("localhost", 10000 + newRsAdded, 1);
     newRsAdded++;

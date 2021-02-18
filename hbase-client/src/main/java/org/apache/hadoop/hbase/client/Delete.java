@@ -25,6 +25,8 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.UUID;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellBuilder;
+import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.security.access.Permission;
@@ -151,20 +153,6 @@ public class Delete extends Mutation {
    */
   public Delete(byte[] row, long ts, NavigableMap<byte [], List<Cell>> familyMap) {
     super(row, ts, familyMap);
-  }
-
-  /**
-   * Advanced use only. Add an existing delete marker to this Delete object.
-   * @param kv An existing KeyValue of type "delete".
-   * @return this for invocation chaining
-   * @throws IOException
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0. Use {@link #add(Cell)}
-   *             instead
-   */
-  @SuppressWarnings("unchecked")
-  @Deprecated
-  public Delete addDeleteMarker(Cell kv) throws IOException {
-    return this.add(kv);
   }
 
   /**
@@ -309,17 +297,6 @@ public class Delete extends Mutation {
     return (Delete) super.setDurability(d);
   }
 
-  /**
-   * Method for setting the Delete's familyMap
-   * @deprecated As of release 2.0.0, this will be removed in HBase 3.0.0.
-   *             Use {@link Delete#Delete(byte[], long, NavigableMap)} instead
-   */
-  @Deprecated
-  @Override
-  public Delete setFamilyCellMap(NavigableMap<byte[], List<Cell>> map) {
-    return (Delete) super.setFamilyCellMap(map);
-  }
-
   @Override
   public Delete setClusterIds(List<UUID> clusterIds) {
     return (Delete) super.setClusterIds(clusterIds);
@@ -348,5 +325,10 @@ public class Delete extends Mutation {
   @Override
   public Delete setPriority(int priority) {
     return (Delete) super.setPriority(priority);
+  }
+
+  @Override
+  public CellBuilder getCellBuilder(CellBuilderType type) {
+    return getCellBuilder(type, Cell.Type.Delete);
   }
 }

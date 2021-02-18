@@ -27,9 +27,13 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.NavigableMap;
 import java.util.OptionalLong;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Future;
@@ -38,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
@@ -52,6 +57,7 @@ import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.regionserver.MultiVersionConcurrencyControl;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
+import org.apache.hadoop.hbase.regionserver.wal.WALCellCodec;
 import org.apache.hadoop.hbase.replication.WALEntryFilter;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.ReplicationTests;
@@ -64,6 +70,7 @@ import org.apache.hadoop.hbase.wal.WALKeyImpl;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.junit.After;
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -72,6 +79,8 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 import org.mockito.Mockito;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.WALProtos;
+
 
 @Category({ ReplicationTests.class, LargeTests.class })
 public class TestWALEntryStream {
@@ -333,9 +342,38 @@ public class TestWALEntryStream {
     }
   }
 
+  @Test
+  public void testWALKeySerialization() throws Exception {
+    Map<String, byte[]> attributes = new HashMap<String, byte[]>();
+    attributes.put("foo", Bytes.toBytes("foo-value"));
+    attributes.put("bar", Bytes.toBytes("bar-value"));
+    WALKeyImpl key = new WALKeyImpl(info.getEncodedNameAsBytes(), tableName,
+        System.currentTimeMillis(), new ArrayList<UUID>(), 0L, 0L,
+        mvcc, scopes, attributes);
+    Assert.assertEquals(attributes, key.getExtendedAttributes());
+
+    WALProtos.WALKey.Builder builder = key.getBuilder(WALCellCodec.getNoneCompressor());
+    WALProtos.WALKey serializedKey = builder.build();
+
+    WALKeyImpl deserializedKey = new WALKeyImpl();
+    deserializedKey.readFieldsFromPb(serializedKey, WALCellCodec.getNoneUncompressor());
+
+    //equals() only checks region name, sequence id and write time
+    Assert.assertEquals(key, deserializedKey);
+    //can't use Map.equals() because byte arrays use reference equality
+    Assert.assertEquals(key.getExtendedAttributes().keySet(),
+        deserializedKey.getExtendedAttributes().keySet());
+    for (Map.Entry<String, byte[]> entry : deserializedKey.getExtendedAttributes().entrySet()){
+      Assert.assertArrayEquals(key.getExtendedAttribute(entry.getKey()), entry.getValue());
+    }
+    Assert.assertEquals(key.getReplicationScopes(), deserializedKey.getReplicationScopes());
+  }
+
   private ReplicationSource mockReplicationSource(boolean recovered, Configuration conf) {
     ReplicationSourceManager mockSourceManager = Mockito.mock(ReplicationSourceManager.class);
     when(mockSourceManager.getTotalBufferUsed()).thenReturn(new AtomicLong(0));
+    when(mockSourceManager.getTotalBufferLimit()).thenReturn(
+        (long) HConstants.REPLICATION_SOURCE_TOTAL_BUFFER_DFAULT);
     Server mockServer = Mockito.mock(Server.class);
     ReplicationSource source = Mockito.mock(ReplicationSource.class);
     when(source.getSourceManager()).thenReturn(mockSourceManager);
@@ -343,6 +381,9 @@ public class TestWALEntryStream {
     when(source.getWALFileLengthProvider()).thenReturn(log);
     when(source.getServer()).thenReturn(mockServer);
     when(source.isRecovered()).thenReturn(recovered);
+    MetricsReplicationGlobalSourceSource globalMetrics = Mockito.mock(
+        MetricsReplicationGlobalSourceSource.class);
+    when(mockSourceManager.getGlobalMetrics()).thenReturn(globalMetrics);
     return source;
   }
 
@@ -521,9 +562,9 @@ public class TestWALEntryStream {
   }
 
   private void appendToLog(String key) throws IOException {
-    final long txid = log.append(info,
+    final long txid = log.appendData(info,
       new WALKeyImpl(info.getEncodedNameAsBytes(), tableName, System.currentTimeMillis(),
-          mvcc, scopes), getWALEdit(key), true);
+          mvcc, scopes), getWALEdit(key));
     log.sync(txid);
   }
 
@@ -545,8 +586,8 @@ public class TestWALEntryStream {
   }
 
   private long appendToLog(int count) throws IOException {
-    return log.append(info, new WALKeyImpl(info.getEncodedNameAsBytes(), tableName,
-      System.currentTimeMillis(), mvcc, scopes), getWALEdits(count), true);
+    return log.appendData(info, new WALKeyImpl(info.getEncodedNameAsBytes(), tableName,
+      System.currentTimeMillis(), mvcc, scopes), getWALEdits(count));
   }
 
   private WALEdit getWALEdits(int count) {
@@ -611,5 +652,34 @@ public class TestWALEntryStream {
 
       assertFalse(entryStream.hasNext());
     }
+  }
+
+  /*
+    Test removal of 0 length log from logQueue if the source is a recovered source and
+    size of logQueue is only 1.
+   */
+  @Test
+  public void testEOFExceptionForRecoveredQueue() throws Exception {
+    PriorityBlockingQueue<Path> queue = new PriorityBlockingQueue<>();
+    // Create a 0 length log.
+    Path emptyLog = new Path("emptyLog");
+    FSDataOutputStream fsdos = fs.create(emptyLog);
+    fsdos.close();
+    assertEquals(0, fs.getFileStatus(emptyLog).getLen());
+    queue.add(emptyLog);
+
+    Configuration conf = new Configuration(CONF);
+    // Override the max retries multiplier to fail fast.
+    conf.setInt("replication.source.maxretriesmultiplier", 1);
+    conf.setBoolean("replication.source.eof.autorecovery", true);
+    // Create a reader thread with source as recovered source.
+    ReplicationSource source = mockReplicationSource(true, conf);
+    when(source.isPeerEnabled()).thenReturn(true);
+    ReplicationSourceWALReader reader =
+      new ReplicationSourceWALReader(fs, conf, queue, 0, getDummyFilter(), source);
+    reader.run();
+    // ReplicationSourceWALReaderThread#handleEofException method will
+    // remove empty log from logQueue.
+    assertEquals(0, queue.size());
   }
 }

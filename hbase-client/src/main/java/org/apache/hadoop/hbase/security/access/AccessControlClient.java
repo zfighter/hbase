@@ -33,10 +33,11 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.security.SecurityCapability;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
-import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos;
-import org.apache.hadoop.hbase.protobuf.generated.AccessControlProtos.AccessControlService.BlockingInterface;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AccessControlProtos;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AccessControlProtos.AccessControlService.BlockingInterface;
 
 /**
  * Utility client for doing access control admin operations.
@@ -392,19 +393,9 @@ public class AccessControlClient {
     if (StringUtils.isEmpty(tableName) || StringUtils.isEmpty(userName)) {
       throw new IllegalArgumentException("Table and user name can't be null or empty.");
     }
-    boolean hasPermission = false;
-    /**
-     * todo: pass an rpccontroller hbaserpccontroller controller = ((clusterconnection)
-     * connection).getrpccontrollerfactory().newcontroller();
-     */
-    try (Table table = connection.getTable(ACL_TABLE_NAME)) {
-      CoprocessorRpcChannel service = table.coprocessorService(HConstants.EMPTY_START_ROW);
-      BlockingInterface protocol =
-          AccessControlProtos.AccessControlService.newBlockingStub(service);
-      // Check whether user has permission
-      hasPermission = AccessControlUtil.hasPermission(null, protocol, TableName.valueOf(tableName),
-        columnFamily, columnQualifier, userName, actions);
-    }
-    return hasPermission;
+    List<Permission> permissions = new ArrayList<>(1);
+    permissions.add(Permission.newBuilder(TableName.valueOf(tableName)).withFamily(columnFamily)
+        .withQualifier(columnQualifier).withActions(actions).build());
+    return connection.getAdmin().hasUserPermissions(userName, permissions).get(0);
   }
 }

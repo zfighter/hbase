@@ -16,7 +16,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.hadoop.hbase.client.example;
 
 import java.io.Closeable;
@@ -32,12 +31,13 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcUtils.BlockingRpcCallback;
 import org.apache.hadoop.hbase.ipc.ServerRpcController;
-import org.apache.hadoop.hbase.protobuf.generated.RefreshHFilesProtos;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.RefreshHFilesProtos;
 
 /**
  * This client class is for invoking the refresh HFile function deployed on the
@@ -51,7 +51,7 @@ public class RefreshHFilesClient extends Configured implements Tool, Closeable {
   /**
    * Constructor with Conf object
    *
-   * @param cfg
+   * @param cfg the {@link Configuration} object to use
    */
   public RefreshHFilesClient(Configuration cfg) {
     try {
@@ -75,26 +75,28 @@ public class RefreshHFilesClient extends Configured implements Tool, Closeable {
   }
 
   public void refreshHFiles(final Table table) throws Throwable {
-    final RefreshHFilesProtos.RefreshHFilesRequest request = RefreshHFilesProtos.RefreshHFilesRequest
-                                                               .getDefaultInstance();
-    table.coprocessorService(RefreshHFilesProtos.RefreshHFilesService.class, HConstants.EMPTY_START_ROW,
-                             HConstants.EMPTY_END_ROW,
-                             new Batch.Call<RefreshHFilesProtos.RefreshHFilesService,
-                                             RefreshHFilesProtos.RefreshHFilesResponse>() {
-                               @Override
-                               public RefreshHFilesProtos.RefreshHFilesResponse call(
-                                 RefreshHFilesProtos.RefreshHFilesService refreshHFilesService)
-                                 throws IOException {
-                                 ServerRpcController controller = new ServerRpcController();
-                                 BlockingRpcCallback<RefreshHFilesProtos.RefreshHFilesResponse> rpcCallback =
-                                   new BlockingRpcCallback<>();
-                                 refreshHFilesService.refreshHFiles(controller, request, rpcCallback);
-                                 if (controller.failedOnException()) {
-                                   throw controller.getFailedOn();
-                                 }
-                                 return rpcCallback.get();
-                               }
-                             });
+    final RefreshHFilesProtos.RefreshHFilesRequest request =
+            RefreshHFilesProtos.RefreshHFilesRequest.getDefaultInstance();
+    table.coprocessorService(RefreshHFilesProtos.RefreshHFilesService.class,
+            HConstants.EMPTY_START_ROW, HConstants.EMPTY_END_ROW,
+            new Batch.Call<RefreshHFilesProtos.RefreshHFilesService,
+                    RefreshHFilesProtos.RefreshHFilesResponse>() {
+        @Override
+        public RefreshHFilesProtos.RefreshHFilesResponse call(
+              RefreshHFilesProtos.RefreshHFilesService refreshHFilesService)
+              throws IOException {
+          ServerRpcController controller = new ServerRpcController();
+          BlockingRpcCallback<RefreshHFilesProtos.RefreshHFilesResponse> rpcCallback =
+                new BlockingRpcCallback<>();
+          refreshHFilesService.refreshHFiles(controller, request, rpcCallback);
+
+          if (controller.failedOnException()) {
+            throw controller.getFailedOn();
+          }
+
+          return rpcCallback.get();
+        }
+      });
     LOG.debug("Done refreshing HFiles");
   }
 

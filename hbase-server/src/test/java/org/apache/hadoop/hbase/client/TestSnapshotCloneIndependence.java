@@ -24,9 +24,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
@@ -66,7 +64,6 @@ public class TestSnapshotCloneIndependence {
   protected static final HBaseTestingUtility UTIL = new HBaseTestingUtility();
 
   protected static final int NUM_RS = 2;
-  private static final String STRING_TABLE_NAME = "test";
   private static final String TEST_FAM_STR = "fam";
   protected static final byte[] TEST_FAM = Bytes.toBytes(TEST_FAM_STR);
   private static final int CLEANER_INTERVAL = 100;
@@ -306,7 +303,7 @@ public class TestSnapshotCloneIndependence {
       originalRegionCount, cloneTableRegionCount);
 
     // Split a region on the parent table
-    admin.splitRegionAsync(originalTableHRegions.get(0).getRegionName(), null).get();
+    admin.splitRegionAsync(originalTableHRegions.get(0).getRegionName()).get();
     waitOnSplit(UTIL.getConnection(), originalTable, originalRegionCount);
 
     // Verify that the cloned table region is not split
@@ -322,10 +319,10 @@ public class TestSnapshotCloneIndependence {
   private void runTestSnapshotMetadataChangesIndependent() throws Exception {
     // Add a new column family to the original table
     byte[] TEST_FAM_2 = Bytes.toBytes("fam2");
-    HColumnDescriptor hcd = new HColumnDescriptor(TEST_FAM_2);
+    ColumnFamilyDescriptor familyDescriptor = ColumnFamilyDescriptorBuilder.of(TEST_FAM_2);
 
     admin.disableTable(originalTableName);
-    admin.addColumnFamily(originalTableName, hcd);
+    admin.addColumnFamily(originalTableName, familyDescriptor);
 
     // Verify that it is not in the snapshot
     admin.enableTable(originalTableName);
@@ -334,19 +331,18 @@ public class TestSnapshotCloneIndependence {
     // get a description of the cloned table
     // get a list of its families
     // assert that the family is there
-    HTableDescriptor originalTableDescriptor = new HTableDescriptor(originalTable.getDescriptor());
-    HTableDescriptor clonedTableDescriptor =
-      new HTableDescriptor(admin.getDescriptor(cloneTableName));
+    TableDescriptor originalTableDescriptor = originalTable.getDescriptor();
+    TableDescriptor clonedTableDescriptor = admin.getDescriptor(cloneTableName);
 
     Assert.assertTrue("The original family was not found. There is something wrong. ",
-      originalTableDescriptor.hasFamily(TEST_FAM));
+      originalTableDescriptor.hasColumnFamily(TEST_FAM));
     Assert.assertTrue("The original family was not found in the clone. There is something wrong. ",
-      clonedTableDescriptor.hasFamily(TEST_FAM));
+      clonedTableDescriptor.hasColumnFamily(TEST_FAM));
 
     Assert.assertTrue("The new family was not found. ",
-      originalTableDescriptor.hasFamily(TEST_FAM_2));
+      originalTableDescriptor.hasColumnFamily(TEST_FAM_2));
     Assert.assertTrue("The new family was not found. ",
-      !clonedTableDescriptor.hasFamily(TEST_FAM_2));
+      !clonedTableDescriptor.hasColumnFamily(TEST_FAM_2));
   }
 
   /**

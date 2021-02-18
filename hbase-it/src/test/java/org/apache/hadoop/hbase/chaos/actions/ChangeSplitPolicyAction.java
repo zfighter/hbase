@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.chaos.actions;
 
+import java.util.Random;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
@@ -25,10 +26,11 @@ import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.ConstantSizeRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.DisabledRegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.IncreasingToUpperBoundRegionSplitPolicy;
-
-import java.util.Random;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ChangeSplitPolicyAction extends Action {
+  private static final Logger LOG = LoggerFactory.getLogger(ChangeSplitPolicyAction.class);
   private final TableName tableName;
   private final String[] possiblePolicies;
   private final Random random;
@@ -43,18 +45,21 @@ public class ChangeSplitPolicyAction extends Action {
     this.random = new Random();
   }
 
+  @Override protected Logger getLogger() {
+    return LOG;
+  }
 
   @Override
   public void perform() throws Exception {
     HBaseTestingUtility util = context.getHBaseIntegrationTestingUtility();
     Admin admin = util.getAdmin();
 
-    LOG.info("Performing action: Change split policy of table " + tableName);
+    getLogger().info("Performing action: Change split policy of table " + tableName);
     TableDescriptor tableDescriptor = admin.getDescriptor(tableName);
     TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableDescriptor);
     String chosenPolicy = possiblePolicies[random.nextInt(possiblePolicies.length)];
     builder.setRegionSplitPolicyClassName(chosenPolicy);
-    LOG.info("Changing "  + tableName + " split policy to " + chosenPolicy);
+    getLogger().info("Changing "  + tableName + " split policy to " + chosenPolicy);
     admin.modifyTable(builder.build());
   }
 }

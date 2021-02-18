@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.RegionLocations;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.exceptions.TimeoutIOException;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -46,11 +47,14 @@ class AsyncRegionLocator {
 
   private final HashedWheelTimer retryTimer;
 
+  private final AsyncConnectionImpl conn;
+
   private final AsyncMetaRegionLocator metaRegionLocator;
 
   private final AsyncNonMetaRegionLocator nonMetaRegionLocator;
 
   AsyncRegionLocator(AsyncConnectionImpl conn, HashedWheelTimer retryTimer) {
+    this.conn = conn;
     this.metaRegionLocator = new AsyncMetaRegionLocator(conn.registry);
     this.nonMetaRegionLocator = new AsyncNonMetaRegionLocator(conn);
     this.retryTimer = retryTimer;
@@ -150,9 +154,7 @@ class AsyncRegionLocator {
   }
 
   void clearCache(TableName tableName) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Clear meta cache for " + tableName);
-    }
+    LOG.debug("Clear meta cache for {}", tableName);
     if (tableName.equals(META_TABLE_NAME)) {
       metaRegionLocator.clearCache();
     } else {
@@ -160,8 +162,37 @@ class AsyncRegionLocator {
     }
   }
 
+  void clearCache(ServerName serverName) {
+    LOG.debug("Clear meta cache for {}", serverName);
+    metaRegionLocator.clearCache(serverName);
+    nonMetaRegionLocator.clearCache(serverName);
+    conn.getConnectionMetrics().ifPresent(MetricsConnection::incrMetaCacheNumClearServer);
+  }
+
   void clearCache() {
     metaRegionLocator.clearCache();
     nonMetaRegionLocator.clearCache();
+  }
+
+  AsyncNonMetaRegionLocator getNonMetaRegionLocator() {
+    return nonMetaRegionLocator;
+  }
+
+  // only used for testing whether we have cached the location for a region.
+  RegionLocations getRegionLocationInCache(TableName tableName, byte[] row) {
+    if (TableName.isMetaTableName(tableName)) {
+      return metaRegionLocator.getRegionLocationInCache();
+    } else {
+      return nonMetaRegionLocator.getRegionLocationInCache(tableName, row);
+    }
+  }
+
+  // only used for testing whether we have cached the location for a table.
+  int getNumberOfCachedRegionLocations(TableName tableName) {
+    if (TableName.isMetaTableName(tableName)) {
+      return metaRegionLocator.getNumberOfCachedRegionLocations();
+    } else {
+      return nonMetaRegionLocator.getNumberOfCachedRegionLocations(tableName);
+    }
   }
 }

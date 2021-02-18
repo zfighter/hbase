@@ -36,7 +36,7 @@ import net.spy.memcached.transcoders.Transcoder;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.io.hfile.Cacheable.MemoryType;
+import org.apache.hadoop.hbase.io.ByteBuffAllocator;
 import org.apache.hadoop.hbase.nio.ByteBuff;
 import org.apache.hadoop.hbase.nio.SingleByteBuff;
 import org.apache.hadoop.hbase.trace.TraceUtil;
@@ -100,6 +100,9 @@ public class MemcachedBlockCache implements BlockCache {
     // case.
     String serverListString = c.get(MEMCACHED_CONFIG_KEY,"localhost:11211");
     String[] servers = serverListString.split(",");
+    // MemcachedClient requires InetSocketAddresses, we have to create them now. Implies any
+    // resolved identities cannot have their address mappings changed while the MemcachedClient
+    // instance is alive. We won't get a chance to trigger re-resolution.
     List<InetSocketAddress> serverAddresses = new ArrayList<>(servers.length);
     for (String s:servers) {
       serverAddresses.add(Addressing.createInetSocketAddressFromHostAndPortStr(s));
@@ -271,10 +274,9 @@ public class MemcachedBlockCache implements BlockCache {
     public HFileBlock decode(CachedData d) {
       try {
         ByteBuff buf = new SingleByteBuff(ByteBuffer.wrap(d.getData()));
-        return (HFileBlock) HFileBlock.BLOCK_DESERIALIZER.deserialize(buf, true,
-          MemoryType.EXCLUSIVE);
+        return (HFileBlock) HFileBlock.BLOCK_DESERIALIZER.deserialize(buf, ByteBuffAllocator.HEAP);
       } catch (IOException e) {
-        LOG.warn("Error deserializing data from memcached",e);
+        LOG.warn("Failed to deserialize data from memcached", e);
       }
       return null;
     }

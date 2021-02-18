@@ -17,17 +17,26 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import static org.apache.hadoop.hbase.HConstants.STATUS_PUBLISHED;
+import static org.apache.hadoop.hbase.HConstants.STATUS_PUBLISHED_DEFAULT;
+import static org.apache.hadoop.hbase.client.ClusterStatusListener.DEFAULT_STATUS_LISTENER_CLASS;
+import static org.apache.hadoop.hbase.client.ClusterStatusListener.STATUS_LISTENER_CLASS;
 import static org.apache.hadoop.hbase.client.ConnectionUtils.NO_NONCE_GENERATOR;
 import static org.apache.hadoop.hbase.client.ConnectionUtils.getStubKey;
+import static org.apache.hadoop.hbase.client.MetricsConnection.CLIENT_SIDE_METRICS_ENABLED_KEY;
 import static org.apache.hadoop.hbase.client.NonceGenerator.CLIENT_NONCES_ENABLED_KEY;
 import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
 import java.io.IOException;
+import java.net.SocketAddress;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -36,7 +45,8 @@ import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.MasterNotRunningException;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.ipc.HBaseRpcController;
+import org.apache.hadoop.hbase.client.backoff.ClientBackoffPolicy;
+import org.apache.hadoop.hbase.client.backoff.ClientBackoffPolicyFactory;
 import org.apache.hadoop.hbase.ipc.RpcClient;
 import org.apache.hadoop.hbase.ipc.RpcClientFactory;
 import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
@@ -48,15 +58,12 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
+import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hbase.thirdparty.io.netty.util.HashedWheelTimer;
 
-import org.apache.hadoop.hbase.shaded.protobuf.RequestConverter;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.AdminService;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.ClientService;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.IsMasterRunningResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProtos.MasterService;
 
 /**
@@ -67,11 +74,10 @@ class AsyncConnectionImpl implements AsyncConnection {
 
   private static final Logger LOG = LoggerFactory.getLogger(AsyncConnectionImpl.class);
 
-  @VisibleForTesting
   static final HashedWheelTimer RETRY_TIMER = new HashedWheelTimer(
-    Threads.newDaemonThreadFactory("Async-Client-Retry-Timer"), 10, TimeUnit.MILLISECONDS);
-
-  private static final String RESOLVE_HOSTNAME_ON_FAIL_KEY = "hbase.resolve.hostnames.on.failure";
+    new ThreadFactoryBuilder().setNameFormat("Async-Client-Retry-Timer-pool-%d").setDaemon(true)
+      .setUncaughtExceptionHandler(Threads.LOGGING_EXCEPTION_HANDLER).build(),
+    10, TimeUnit.MILLISECONDS);
 
   private final Configuration conf;
 
@@ -79,15 +85,13 @@ class AsyncConnectionImpl implements AsyncConnection {
 
   private final User user;
 
-  final AsyncRegistry registry;
+  final ConnectionRegistry registry;
 
   private final int rpcTimeout;
 
-  private final RpcClient rpcClient;
+  protected final RpcClient rpcClient;
 
   final RpcControllerFactory rpcControllerFactory;
-
-  private final boolean hostnameCanChange;
 
   private final AsyncRegionLocator locator;
 
@@ -103,22 +107,37 @@ class AsyncConnectionImpl implements AsyncConnection {
   private final AtomicReference<CompletableFuture<MasterService.Interface>> masterStubMakeFuture =
     new AtomicReference<>();
 
-  private ChoreService authService;
+  private final Optional<ServerStatisticTracker> stats;
+  private final ClientBackoffPolicy backoffPolicy;
 
-  private volatile boolean closed = false;
+  private ChoreService choreService;
 
-  public AsyncConnectionImpl(Configuration conf, AsyncRegistry registry, String clusterId,
-      User user) {
+  private final AtomicBoolean closed = new AtomicBoolean(false);
+
+  private final Optional<MetricsConnection> metrics;
+
+  private final ClusterStatusListener clusterStatusListener;
+
+  private volatile ConnectionOverAsyncConnection conn;
+
+  public AsyncConnectionImpl(Configuration conf, ConnectionRegistry registry, String clusterId,
+      SocketAddress localAddress, User user) {
     this.conf = conf;
     this.user = user;
+
     if (user.isLoginFromKeytab()) {
       spawnRenewalChore(user.getUGI());
     }
     this.connConf = new AsyncConnectionConfiguration(conf);
     this.registry = registry;
-    this.rpcClient = RpcClientFactory.createClient(conf, clusterId);
+    if (conf.getBoolean(CLIENT_SIDE_METRICS_ENABLED_KEY, false)) {
+      this.metrics = Optional.of(new MetricsConnection(this.toString(), () -> null, () -> null));
+    } else {
+      this.metrics = Optional.empty();
+    }
+    this.rpcClient = RpcClientFactory.createClient(
+        conf, clusterId, localAddress, metrics.orElse(null));
     this.rpcControllerFactory = RpcControllerFactory.instantiate(conf);
-    this.hostnameCanChange = conf.getBoolean(RESOLVE_HOSTNAME_ON_FAIL_KEY, true);
     this.rpcTimeout =
       (int) Math.min(Integer.MAX_VALUE, TimeUnit.NANOSECONDS.toMillis(connConf.getRpcTimeoutNs()));
     this.locator = new AsyncRegionLocator(this, RETRY_TIMER);
@@ -128,11 +147,51 @@ class AsyncConnectionImpl implements AsyncConnection {
     } else {
       nonceGenerator = NO_NONCE_GENERATOR;
     }
+    this.stats = Optional.ofNullable(ServerStatisticTracker.create(conf));
+    this.backoffPolicy = ClientBackoffPolicyFactory.create(conf);
+    ClusterStatusListener listener = null;
+    if (conf.getBoolean(STATUS_PUBLISHED, STATUS_PUBLISHED_DEFAULT)) {
+      // TODO: this maybe a blocking operation, better to create it outside the constructor and pass
+      // it in, just like clusterId. Not a big problem for now as the default value is false.
+      Class<? extends ClusterStatusListener.Listener> listenerClass = conf.getClass(
+        STATUS_LISTENER_CLASS, DEFAULT_STATUS_LISTENER_CLASS, ClusterStatusListener.Listener.class);
+      if (listenerClass == null) {
+        LOG.warn("{} is true, but {} is not set", STATUS_PUBLISHED, STATUS_LISTENER_CLASS);
+      } else {
+        try {
+          listener = new ClusterStatusListener(
+            new ClusterStatusListener.DeadServerHandler() {
+              @Override
+              public void newDead(ServerName sn) {
+                locator.clearCache(sn);
+                rpcClient.cancelConnections(sn);
+              }
+            }, conf, listenerClass);
+        } catch (IOException e) {
+          LOG.warn("Failed create of ClusterStatusListener, not a critical, ignoring...", e);
+        }
+      }
+    }
+    this.clusterStatusListener = listener;
   }
 
   private void spawnRenewalChore(final UserGroupInformation user) {
-    authService = new ChoreService("Relogin service");
-    authService.scheduleChore(AuthUtil.getAuthRenewalChore(user));
+    ChoreService service = getChoreService();
+    service.scheduleChore(AuthUtil.getAuthRenewalChore(user));
+  }
+
+  /**
+   * If choreService has not been created yet, create the ChoreService.
+   * @return ChoreService
+   */
+  synchronized ChoreService getChoreService() {
+    if (isClosed()) {
+      throw new IllegalStateException("connection is already closed");
+    }
+    if (choreService == null) {
+      choreService = new ChoreService("AsyncConn Chore Service");
+    }
+    return choreService;
   }
 
   @Override
@@ -141,28 +200,54 @@ class AsyncConnectionImpl implements AsyncConnection {
   }
 
   @Override
-  public void close() {
-    // As the code below is safe to be executed in parallel, here we do not use CAS or lock, just a
-    // simple volatile flag.
-    if (closed) {
-      return;
-    }
-    IOUtils.closeQuietly(rpcClient);
-    IOUtils.closeQuietly(registry);
-    if (authService != null) {
-      authService.shutdown();
-    }
-    closed = true;
+  public boolean isClosed() {
+    return closed.get();
   }
 
   @Override
-  public boolean isClosed() {
-    return closed;
+  public void close() {
+    if (!closed.compareAndSet(false, true)) {
+      return;
+    }
+    LOG.info("Connection has been closed by {}.", Thread.currentThread().getName());
+    if(LOG.isDebugEnabled()){
+      logCallStack(Thread.currentThread().getStackTrace());
+    }
+    IOUtils.closeQuietly(clusterStatusListener,
+      e -> LOG.warn("failed to close clusterStatusListener", e));
+    IOUtils.closeQuietly(rpcClient, e -> LOG.warn("failed to close rpcClient", e));
+    IOUtils.closeQuietly(registry, e -> LOG.warn("failed to close registry", e));
+    synchronized (this) {
+      if (choreService != null) {
+        choreService.shutdown();
+        choreService = null;
+      }
+    }
+    metrics.ifPresent(MetricsConnection::shutdown);
+    ConnectionOverAsyncConnection c = this.conn;
+    if (c != null) {
+      c.closePool();
+    }
+  }
+
+  private void logCallStack(StackTraceElement[] stackTraceElements) {
+    StringBuilder stackBuilder = new StringBuilder("Call stack:");
+    for (StackTraceElement element : stackTraceElements) {
+      stackBuilder.append("\n    at ");
+      stackBuilder.append(element);
+    }
+    stackBuilder.append("\n");
+    LOG.debug(stackBuilder.toString());
   }
 
   @Override
   public AsyncTableRegionLocator getRegionLocator(TableName tableName) {
     return new AsyncTableRegionLocatorImpl(tableName, this);
+  }
+
+  @Override
+  public void clearRegionLocationCache() {
+    locator.clearCache();
   }
 
   // we will override this method for testing retry caller, so do not remove this method.
@@ -171,8 +256,7 @@ class AsyncConnectionImpl implements AsyncConnection {
   }
 
   // ditto
-  @VisibleForTesting
-  public NonceGenerator getNonceGenerator() {
+  NonceGenerator getNonceGenerator() {
     return nonceGenerator;
   }
 
@@ -182,7 +266,7 @@ class AsyncConnectionImpl implements AsyncConnection {
 
   ClientService.Interface getRegionServerStub(ServerName serverName) throws IOException {
     return ConcurrentMapUtils.computeIfAbsentEx(rsStubs,
-      getStubKey(ClientService.Interface.class.getSimpleName(), serverName, hostnameCanChange),
+      getStubKey(ClientService.getDescriptor().getName(), serverName),
       () -> createRegionServerStub(serverName));
   }
 
@@ -196,90 +280,52 @@ class AsyncConnectionImpl implements AsyncConnection {
 
   AdminService.Interface getAdminStub(ServerName serverName) throws IOException {
     return ConcurrentMapUtils.computeIfAbsentEx(adminSubs,
-      getStubKey(AdminService.Interface.class.getSimpleName(), serverName, hostnameCanChange),
+      getStubKey(AdminService.getDescriptor().getName(), serverName),
       () -> createAdminServerStub(serverName));
   }
 
-  private void makeMasterStub(CompletableFuture<MasterService.Interface> future) {
-    addListener(registry.getMasterAddress(), (sn, error) -> {
-      if (sn == null) {
-        String msg = "ZooKeeper available but no active master location found";
-        LOG.info(msg);
-        this.masterStubMakeFuture.getAndSet(null)
-          .completeExceptionally(new MasterNotRunningException(msg));
-        return;
-      }
-      try {
-        MasterService.Interface stub = createMasterStub(sn);
-        HBaseRpcController controller = getRpcController();
-        stub.isMasterRunning(controller, RequestConverter.buildIsMasterRunningRequest(),
-          new RpcCallback<IsMasterRunningResponse>() {
-            @Override
-            public void run(IsMasterRunningResponse resp) {
-              if (controller.failed() || resp == null ||
-                (resp != null && !resp.getIsMasterRunning())) {
-                masterStubMakeFuture.getAndSet(null).completeExceptionally(
-                  new MasterNotRunningException("Master connection is not running anymore"));
-              } else {
-                masterStub.set(stub);
-                masterStubMakeFuture.set(null);
-                future.complete(stub);
-              }
-            }
-          });
-      } catch (IOException e) {
-        this.masterStubMakeFuture.getAndSet(null)
-          .completeExceptionally(new IOException("Failed to create async master stub", e));
-      }
-    });
-  }
-
   CompletableFuture<MasterService.Interface> getMasterStub() {
-    MasterService.Interface masterStub = this.masterStub.get();
-
-    if (masterStub == null) {
-      for (;;) {
-        if (this.masterStubMakeFuture.compareAndSet(null, new CompletableFuture<>())) {
-          CompletableFuture<MasterService.Interface> future = this.masterStubMakeFuture.get();
-          makeMasterStub(future);
+    return ConnectionUtils.getOrFetch(masterStub, masterStubMakeFuture, false, () -> {
+      CompletableFuture<MasterService.Interface> future = new CompletableFuture<>();
+      addListener(registry.getActiveMaster(), (addr, error) -> {
+        if (error != null) {
+          future.completeExceptionally(error);
+        } else if (addr == null) {
+          future.completeExceptionally(new MasterNotRunningException(
+            "ZooKeeper available but no active master location found"));
         } else {
-          CompletableFuture<MasterService.Interface> future = this.masterStubMakeFuture.get();
-          if (future != null) {
-            return future;
+          LOG.debug("The fetched master address is {}", addr);
+          try {
+            future.complete(createMasterStub(addr));
+          } catch (IOException e) {
+            future.completeExceptionally(e);
           }
         }
-      }
-    }
 
-    for (;;) {
-      if (masterStubMakeFuture.compareAndSet(null, new CompletableFuture<>())) {
-        CompletableFuture<MasterService.Interface> future = masterStubMakeFuture.get();
-        HBaseRpcController controller = getRpcController();
-        masterStub.isMasterRunning(controller, RequestConverter.buildIsMasterRunningRequest(),
-          new RpcCallback<IsMasterRunningResponse>() {
-            @Override
-            public void run(IsMasterRunningResponse resp) {
-              if (controller.failed() || resp == null ||
-                (resp != null && !resp.getIsMasterRunning())) {
-                makeMasterStub(future);
-              } else {
-                future.complete(masterStub);
-              }
-            }
-          });
-      } else {
-        CompletableFuture<MasterService.Interface> future = masterStubMakeFuture.get();
-        if (future != null) {
-          return future;
-        }
-      }
-    }
+      });
+      return future;
+    }, stub -> true, "master stub");
   }
 
-  private HBaseRpcController getRpcController() {
-    HBaseRpcController controller = this.rpcControllerFactory.newController();
-    controller.setCallTimeout((int) TimeUnit.NANOSECONDS.toMillis(connConf.getRpcTimeoutNs()));
-    return controller;
+  String getClusterId() {
+    try {
+      return registry.getClusterId().get();
+    } catch (InterruptedException | ExecutionException e) {
+      LOG.error("Error fetching cluster ID: ", e);
+    }
+    return null;
+  }
+
+  void clearMasterStubCache(MasterService.Interface stub) {
+    masterStub.compareAndSet(stub, null);
+  }
+
+  Optional<ServerStatisticTracker> getStatisticsTracker() {
+    return stats;
+  }
+
+  ClientBackoffPolicy getBackoffPolicy() {
+    return backoffPolicy;
   }
 
   @Override
@@ -342,9 +388,26 @@ class AsyncConnectionImpl implements AsyncConnection {
   }
 
   @Override
+  public Connection toConnection() {
+    ConnectionOverAsyncConnection c = this.conn;
+    if (c != null) {
+      return c;
+    }
+    synchronized (this) {
+      c = this.conn;
+      if (c != null) {
+        return c;
+      }
+      c = new ConnectionOverAsyncConnection(this);
+      this.conn = c;
+    }
+    return c;
+  }
+
+  @Override
   public CompletableFuture<Hbck> getHbck() {
     CompletableFuture<Hbck> future = new CompletableFuture<>();
-    addListener(registry.getMasterAddress(), (sn, error) -> {
+    addListener(registry.getActiveMaster(), (sn, error) -> {
       if (error != null) {
         future.completeExceptionally(error);
       } else {
@@ -367,8 +430,7 @@ class AsyncConnectionImpl implements AsyncConnection {
       rpcClient.createBlockingRpcChannel(masterServer, user, rpcTimeout)), rpcControllerFactory);
   }
 
-  @Override
-  public void clearRegionLocationCache() {
-    locator.clearCache();
+  Optional<MetricsConnection> getConnectionMetrics() {
+    return metrics;
   }
 }

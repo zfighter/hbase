@@ -30,23 +30,21 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.CatalogFamilyFormat;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellBuilder;
 import org.apache.hadoop.hbase.CellBuilderFactory;
 import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.client.Append;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Get;
@@ -59,6 +57,8 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.ParseFilter;
 import org.apache.hadoop.hbase.filter.PrefixFilter;
@@ -77,6 +77,7 @@ import org.apache.hadoop.hbase.thrift.generated.TIncrement;
 import org.apache.hadoop.hbase.thrift.generated.TRegionInfo;
 import org.apache.hadoop.hbase.thrift.generated.TRowResult;
 import org.apache.hadoop.hbase.thrift.generated.TScan;
+import org.apache.hadoop.hbase.thrift.generated.TThriftServerType;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.thrift.TException;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -103,16 +104,12 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
 
   /**
    * Returns a list of all the column families for a given Table.
-   *
-   * @param table table
-   * @throws IOException
    */
   byte[][] getAllColumns(Table table) throws IOException {
-    HColumnDescriptor[] cds = table.getTableDescriptor().getColumnFamilies();
+    ColumnFamilyDescriptor[] cds = table.getDescriptor().getColumnFamilies();
     byte[][] columns = new byte[cds.length][];
     for (int i = 0; i < cds.length; i++) {
-      columns[i] = Bytes.add(cds[i].getName(),
-          KeyValue.COLUMN_FAMILY_DELIM_ARRAY);
+      columns[i] = Bytes.add(cds[i].getName(), KeyValue.COLUMN_FAMILY_DELIM_ARRAY);
     }
     return columns;
   }
@@ -250,7 +247,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       List<HRegionLocation> regionLocations = locator.getAllRegionLocations();
       List<TRegionInfo> results = new ArrayList<>(regionLocations.size());
       for (HRegionLocation regionLocation : regionLocations) {
-        RegionInfo info = regionLocation.getRegionInfo();
+        RegionInfo info = regionLocation.getRegion();
         ServerName serverName = regionLocation.getServerName();
         TRegionInfo region = new TRegionInfo();
         region.serverName = ByteBuffer.wrap(
@@ -355,7 +352,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       } else {
         get.addColumn(family, qualifier);
       }
-      get.setMaxVersions(numVersions);
+      get.readVersions(numVersions);
       Result result = table.get(get);
       return ThriftUtilities.cellFromHBase(result.rawCells());
     } catch (IOException e) {
@@ -402,7 +399,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
         get.addColumn(family, qualifier);
       }
       get.setTimeRange(0, timestamp);
-      get.setMaxVersions(numVersions);
+      get.readVersions(numVersions);
       Result result = table.get(get);
       return ThriftUtilities.cellFromHBase(result.rawCells());
     } catch (IOException e) {
@@ -604,19 +601,18 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
   }
 
   @Override
-  public void createTable(ByteBuffer in_tableName,
-      List<ColumnDescriptor> columnFamilies) throws IOError, IllegalArgument, AlreadyExists {
+  public void createTable(ByteBuffer in_tableName, List<ColumnDescriptor> columnFamilies)
+    throws IOError, IllegalArgument, AlreadyExists {
     TableName tableName = getTableName(in_tableName);
     try {
       if (getAdmin().tableExists(tableName)) {
         throw new AlreadyExists("table name already in use");
       }
-      HTableDescriptor desc = new HTableDescriptor(tableName);
+      TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
       for (ColumnDescriptor col : columnFamilies) {
-        HColumnDescriptor colDesc = ThriftUtilities.colDescFromThrift(col);
-        desc.addFamily(colDesc);
+        builder.setColumnFamily(ThriftUtilities.colDescFromThrift(col));
       }
-      getAdmin().createTable(desc);
+      getAdmin().createTable(builder.build());
     } catch (IOException e) {
       LOG.warn(e.getMessage(), e);
       throw getIOError(e);
@@ -882,10 +878,10 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       Scan scan = new Scan();
       addAttributes(scan, attributes);
       if (tScan.isSetStartRow()) {
-        scan.setStartRow(tScan.getStartRow());
+        scan.withStartRow(tScan.getStartRow());
       }
       if (tScan.isSetStopRow()) {
-        scan.setStopRow(tScan.getStopRow());
+        scan.withStopRow(tScan.getStopRow());
       }
       if (tScan.isSetTimestamp()) {
         scan.setTimeRange(0, tScan.getTimestamp());
@@ -934,7 +930,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan(getBytes(startRow));
+      Scan scan = new Scan().withStartRow(getBytes(startRow));
       addAttributes(scan, attributes);
       if(columns != null && !columns.isEmpty()) {
         for(ByteBuffer column : columns) {
@@ -964,7 +960,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan(getBytes(startRow), getBytes(stopRow));
+      Scan scan = new Scan().withStartRow(getBytes(startRow)).withStopRow(getBytes(stopRow));
       addAttributes(scan, attributes);
       if(columns != null && !columns.isEmpty()) {
         for(ByteBuffer column : columns) {
@@ -995,7 +991,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan(getBytes(startAndPrefix));
+      Scan scan = new Scan().withStartRow(getBytes(startAndPrefix));
       addAttributes(scan, attributes);
       Filter f = new WhileMatchFilter(
           new PrefixFilter(getBytes(startAndPrefix)));
@@ -1027,7 +1023,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan(getBytes(startRow));
+      Scan scan = new Scan().withStartRow(getBytes(startRow));
       addAttributes(scan, attributes);
       scan.setTimeRange(0, timestamp);
       if (columns != null && !columns.isEmpty()) {
@@ -1058,7 +1054,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     Table table = null;
     try {
       table = getTable(tableName);
-      Scan scan = new Scan(getBytes(startRow), getBytes(stopRow));
+      Scan scan = new Scan().withStartRow(getBytes(startRow)).withStopRow(getBytes(stopRow));
       addAttributes(scan, attributes);
       scan.setTimeRange(0, timestamp);
       if (columns != null && !columns.isEmpty()) {
@@ -1090,9 +1086,9 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       TreeMap<ByteBuffer, ColumnDescriptor> columns = new TreeMap<>();
 
       table = getTable(tableName);
-      HTableDescriptor desc = table.getTableDescriptor();
+      TableDescriptor desc = table.getDescriptor();
 
-      for (HColumnDescriptor e : desc.getFamilies()) {
+      for (ColumnFamilyDescriptor e : desc.getColumnFamilies()) {
         ColumnDescriptor col = ThriftUtilities.colDescFromHbase(e);
         columns.put(col.name, col);
       }
@@ -1129,7 +1125,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       }
 
       // find region start and end keys
-      RegionInfo regionInfo = MetaTableAccessor.getRegionInfo(startRowResult);
+      RegionInfo regionInfo = CatalogFamilyFormat.getRegionInfo(startRowResult);
       if (regionInfo == null) {
         throw new IOException("RegionInfo REGIONINFO was null or " +
             " empty in Meta for row="
@@ -1143,7 +1139,7 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
       region.version = HREGION_VERSION; // version not used anymore, PB encoding used.
 
       // find region assignment to server
-      ServerName serverName = MetaTableAccessor.getServerName(startRowResult, 0);
+      ServerName serverName = CatalogFamilyFormat.getServerName(startRowResult, 0);
       if (serverName != null) {
         region.setServerName(Bytes.toBytes(serverName.getHostname()));
         region.port = serverName.getPort();
@@ -1157,10 +1153,10 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
 
   private Result getReverseScanResult(byte[] tableName, byte[] row, byte[] family)
       throws IOException {
-    Scan scan = new Scan(row);
+    Scan scan = new Scan().withStartRow(row);
     scan.setReversed(true);
     scan.addFamily(family);
-    scan.setStartRow(row);
+    scan.withStartRow(row);
     try (Table table = getTable(tableName);
          ResultScanner scanner = table.getScanner(scan)) {
       return scanner.next();
@@ -1268,6 +1264,16 @@ public class ThriftHBaseServiceHandler extends HBaseServiceHandler implements Hb
     } finally {
       closeTable(table);
     }
+  }
+
+  @Override
+  public TThriftServerType getThriftServerType() {
+    return TThriftServerType.ONE;
+  }
+
+  @Override
+  public String getClusterId() throws TException {
+    return connectionCache.getClusterId();
   }
 
   private static IOError getIOError(Throwable throwable) {

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,16 +24,18 @@ import java.util.Collection;
 import java.util.List;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.MiniHBaseCluster;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.impl.BackupAdminImpl;
 import org.apache.hadoop.hbase.backup.util.BackupUtils;
+import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
-import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -82,31 +84,28 @@ public class TestIncrementalBackup extends TestBackupBase {
     final byte[] fam3Name = Bytes.toBytes("f3");
     final byte[] mobName = Bytes.toBytes("mob");
 
-    table1Desc.addFamily(new HColumnDescriptor(fam3Name));
-    HColumnDescriptor mobHcd = new HColumnDescriptor(mobName);
-    mobHcd.setMobEnabled(true);
-    mobHcd.setMobThreshold(5L);
-    table1Desc.addFamily(mobHcd);
-    HBaseTestingUtility.modifyTableSync(TEST_UTIL.getAdmin(), table1Desc);
+    TableDescriptor newTable1Desc = TableDescriptorBuilder.newBuilder(table1Desc)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(fam3Name))
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(mobName).setMobEnabled(true)
+        .setMobThreshold(5L).build()).build();
+    TEST_UTIL.getAdmin().modifyTable(newTable1Desc);
 
     try (Connection conn = ConnectionFactory.createConnection(conf1)) {
       int NB_ROWS_FAM3 = 6;
       insertIntoTable(conn, table1, fam3Name, 3, NB_ROWS_FAM3).close();
       insertIntoTable(conn, table1, mobName, 3, NB_ROWS_FAM3).close();
-      HBaseAdmin admin = null;
-      admin = (HBaseAdmin) conn.getAdmin();
+      Admin admin = conn.getAdmin();
       BackupAdminImpl client = new BackupAdminImpl(conn);
       BackupRequest request = createBackupRequest(BackupType.FULL, tables, BACKUP_ROOT_DIR);
       String backupIdFull = client.backupTables(request);
       assertTrue(checkSucceeded(backupIdFull));
 
       // #2 - insert some data to table
-      HTable t1 = insertIntoTable(conn, table1, famName, 1, ADD_ROWS);
+      Table t1 = insertIntoTable(conn, table1, famName, 1, ADD_ROWS);
       LOG.debug("writing " + ADD_ROWS + " rows to " + table1);
       Assert.assertEquals(HBaseTestingUtility.countRows(t1),
               NB_ROWS_IN_BATCH + ADD_ROWS + NB_ROWS_FAM3);
       LOG.debug("written " + ADD_ROWS + " rows to " + table1);
-
       // additionally, insert rows to MOB cf
       int NB_ROWS_MOB = 111;
       insertIntoTable(conn, table1, mobName, 3, NB_ROWS_MOB);
@@ -114,8 +113,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       t1.close();
       Assert.assertEquals(HBaseTestingUtility.countRows(t1),
               NB_ROWS_IN_BATCH + ADD_ROWS + NB_ROWS_MOB);
-
-      HTable t2 = (HTable) conn.getTable(table2);
+      Table t2 = conn.getTable(table2);
       Put p2;
       for (int i = 0; i < 5; i++) {
         p2 = new Put(Bytes.toBytes("row-t2" + i));
@@ -125,15 +123,13 @@ public class TestIncrementalBackup extends TestBackupBase {
       Assert.assertEquals(NB_ROWS_IN_BATCH + 5, HBaseTestingUtility.countRows(t2));
       t2.close();
       LOG.debug("written " + 5 + " rows to " + table2);
-
       // split table1
       MiniHBaseCluster cluster = TEST_UTIL.getHBaseCluster();
       List<HRegion> regions = cluster.getRegions(table1);
       byte[] name = regions.get(0).getRegionInfo().getRegionName();
       long startSplitTime = EnvironmentEdgeManager.currentTime();
-
       try {
-        admin.splitRegionAsync(name, null).get();
+        admin.splitRegionAsync(name).get();
       } catch (Exception e) {
         // although split fail, this may not affect following check in current API,
         // exception will be thrown.
@@ -142,7 +138,6 @@ public class TestIncrementalBackup extends TestBackupBase {
       while (!admin.isTableAvailable(table1)) {
         Thread.sleep(100);
       }
-
       long endSplitTime = EnvironmentEdgeManager.currentTime();
       // split finished
       LOG.debug("split finished in =" + (endSplitTime - startSplitTime));
@@ -154,15 +149,15 @@ public class TestIncrementalBackup extends TestBackupBase {
       assertTrue(checkSucceeded(backupIdIncMultiple));
 
       // add column family f2 to table1
-      final byte[] fam2Name = Bytes.toBytes("f2");
-      table1Desc.addFamily(new HColumnDescriptor(fam2Name));
-
       // drop column family f3
-      table1Desc.removeFamily(fam3Name);
-      HBaseTestingUtility.modifyTableSync(TEST_UTIL.getAdmin(), table1Desc);
+      final byte[] fam2Name = Bytes.toBytes("f2");
+      newTable1Desc = TableDescriptorBuilder.newBuilder(newTable1Desc)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(fam2Name)).removeColumnFamily(fam3Name)
+        .build();
+      TEST_UTIL.getAdmin().modifyTable(newTable1Desc);
 
       int NB_ROWS_FAM2 = 7;
-      HTable t3 = insertIntoTable(conn, table1, fam2Name, 2, NB_ROWS_FAM2);
+      Table t3 = insertIntoTable(conn, table1, fam2Name, 2, NB_ROWS_FAM2);
       t3.close();
 
       // Wait for 5 sec to make sure that old WALs were deleted
@@ -182,17 +177,17 @@ public class TestIncrementalBackup extends TestBackupBase {
                 tablesRestoreFull, tablesMapFull, true));
 
       // #6.1 - check tables for full restore
-      HBaseAdmin hAdmin = TEST_UTIL.getHBaseAdmin();
+      Admin hAdmin = TEST_UTIL.getAdmin();
       assertTrue(hAdmin.tableExists(table1_restore));
       assertTrue(hAdmin.tableExists(table2_restore));
       hAdmin.close();
 
       // #6.2 - checking row count of tables for full restore
-      HTable hTable = (HTable) conn.getTable(table1_restore);
+      Table hTable = conn.getTable(table1_restore);
       Assert.assertEquals(HBaseTestingUtility.countRows(hTable), NB_ROWS_IN_BATCH + NB_ROWS_FAM3);
       hTable.close();
 
-      hTable = (HTable) conn.getTable(table2_restore);
+      hTable = conn.getTable(table2_restore);
       Assert.assertEquals(NB_ROWS_IN_BATCH, HBaseTestingUtility.countRows(hTable));
       hTable.close();
 
@@ -201,7 +196,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       TableName[] tablesMapIncMultiple = new TableName[] { table1_restore, table2_restore };
       client.restore(BackupUtils.createRestoreRequest(BACKUP_ROOT_DIR, backupIdIncMultiple2,
               false, tablesRestoreIncMultiple, tablesMapIncMultiple, true));
-      hTable = (HTable) conn.getTable(table1_restore);
+      hTable = conn.getTable(table1_restore);
 
       LOG.debug("After incremental restore: " + hTable.getDescriptor());
       int countFamName = TEST_UTIL.countRows(hTable, famName);
@@ -217,7 +212,7 @@ public class TestIncrementalBackup extends TestBackupBase {
       Assert.assertEquals(countMobName, NB_ROWS_MOB);
       hTable.close();
 
-      hTable = (HTable) conn.getTable(table2_restore);
+      hTable = conn.getTable(table2_restore);
       Assert.assertEquals(NB_ROWS_IN_BATCH + 5, HBaseTestingUtility.countRows(hTable));
       hTable.close();
       admin.close();

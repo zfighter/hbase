@@ -28,15 +28,15 @@ import java.util.Collections;
 import java.util.EmptyStackException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.Set;
 import java.util.Stack;
 
 import org.apache.hadoop.hbase.CompareOperator;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
-import org.apache.hadoop.hbase.util.Bytes;
 
 /**
  * This class allows a user to specify a filter via a string
@@ -793,33 +793,6 @@ public class ParseFilter {
       throw new IllegalArgumentException("Invalid compare operator");
   }
 
-  /**
-   * Takes a compareOperator symbol as a byte array and returns the corresponding CompareOperator
-   * @deprecated Since 2.0
-   * <p>
-   * @param compareOpAsByteArray the comparatorOperator symbol as a byte array
-   * @return the Compare Operator
-   * @deprecated Since 2.0.0. Will be removed in 3.0.0. Use {@link #createCompareOperator(byte [])}
-   */
-  @Deprecated
-  public static CompareFilter.CompareOp createCompareOp (byte [] compareOpAsByteArray) {
-    ByteBuffer compareOp = ByteBuffer.wrap(compareOpAsByteArray);
-    if (compareOp.equals(ParseConstants.LESS_THAN_BUFFER))
-      return CompareOp.LESS;
-    else if (compareOp.equals(ParseConstants.LESS_THAN_OR_EQUAL_TO_BUFFER))
-      return CompareOp.LESS_OR_EQUAL;
-    else if (compareOp.equals(ParseConstants.GREATER_THAN_BUFFER))
-      return CompareOp.GREATER;
-    else if (compareOp.equals(ParseConstants.GREATER_THAN_OR_EQUAL_TO_BUFFER))
-      return CompareOp.GREATER_OR_EQUAL;
-    else if (compareOp.equals(ParseConstants.NOT_EQUAL_TO_BUFFER))
-      return CompareOp.NOT_EQUAL;
-    else if (compareOp.equals(ParseConstants.EQUAL_TO_BUFFER))
-      return CompareOp.EQUAL;
-    else
-      throw new IllegalArgumentException("Invalid compare operator");
-  }
-
 /**
  * Parses a comparator of the form comparatorType:comparatorValue form and returns a comparator
  * <p>
@@ -840,6 +813,9 @@ public class ParseFilter {
       return new BinaryPrefixComparator(comparatorValue);
     else if (Bytes.equals(comparatorType, ParseConstants.regexStringType))
       return new RegexStringComparator(new String(comparatorValue, StandardCharsets.UTF_8));
+    else if (Bytes.equals(comparatorType, ParseConstants.regexStringNoCaseType))
+      return new RegexStringComparator(new String(comparatorValue, StandardCharsets.UTF_8),
+                                       Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     else if (Bytes.equals(comparatorType, ParseConstants.substringType))
       return new SubstringComparator(new String(comparatorValue, StandardCharsets.UTF_8));
     else

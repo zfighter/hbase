@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-
 import org.apache.hadoop.hbase.HBaseIOException;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotDisabledException;
@@ -37,7 +36,7 @@ import org.apache.hadoop.hbase.util.ModifyRegionUtils;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos;
@@ -98,13 +97,10 @@ public class TruncateTableProcedure
           // Call coprocessors
           preTruncate(env);
 
-          setNextState(TruncateTableState.TRUNCATE_TABLE_REMOVE_FROM_META);
-          break;
-        case TRUNCATE_TABLE_REMOVE_FROM_META:
-          tableDescriptor = env.getMasterServices().getTableDescriptors()
-              .get(tableName);
-          DeleteTableProcedure.deleteFromMeta(env, getTableName(), regions);
-          DeleteTableProcedure.deleteAssignmentState(env, getTableName());
+          //We need to cache table descriptor in the initial stage, so that it's saved within
+          //the procedure stage and can get recovered if the procedure crashes between
+          //TRUNCATE_TABLE_REMOVE_FROM_META and TRUNCATE_TABLE_CREATE_FS_LAYOUT
+          tableDescriptor = env.getMasterServices().getTableDescriptors().get(tableName);
           setNextState(TruncateTableState.TRUNCATE_TABLE_CLEAR_FS_LAYOUT);
           break;
         case TRUNCATE_TABLE_CLEAR_FS_LAYOUT:
@@ -121,12 +117,19 @@ public class TruncateTableProcedure
           } else {
             regions = recreateRegionInfo(regions);
           }
+          setNextState(TruncateTableState.TRUNCATE_TABLE_REMOVE_FROM_META);
+          break;
+        case TRUNCATE_TABLE_REMOVE_FROM_META:
+          List<RegionInfo> originalRegions = env.getAssignmentManager()
+            .getRegionStates().getRegionsOfTable(getTableName());
+          DeleteTableProcedure.deleteFromMeta(env, getTableName(), originalRegions);
+          DeleteTableProcedure.deleteAssignmentState(env, getTableName());
           setNextState(TruncateTableState.TRUNCATE_TABLE_CREATE_FS_LAYOUT);
           break;
         case TRUNCATE_TABLE_CREATE_FS_LAYOUT:
           DeleteTableProcedure.deleteFromFs(env, getTableName(), regions, true);
           regions = CreateTableProcedure.createFsLayout(env, tableDescriptor, regions);
-          CreateTableProcedure.updateTableDescCache(env, getTableName());
+          env.getMasterServices().getTableDescriptors().update(tableDescriptor, true);
           setNextState(TruncateTableState.TRUNCATE_TABLE_ADD_TO_META);
           break;
         case TRUNCATE_TABLE_ADD_TO_META:
@@ -314,7 +317,6 @@ public class TruncateTableProcedure
     }
   }
 
-  @VisibleForTesting
   RegionInfo getFirstRegionInfo() {
     if (regions == null || regions.isEmpty()) {
       return null;

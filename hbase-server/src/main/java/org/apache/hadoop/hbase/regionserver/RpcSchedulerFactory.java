@@ -35,7 +35,4 @@ public interface RpcSchedulerFactory {
    * Constructs a {@link org.apache.hadoop.hbase.ipc.RpcScheduler}.
    */
   RpcScheduler create(Configuration conf, PriorityFunction priority, Abortable server);
-
-  @Deprecated
-  RpcScheduler create(Configuration conf, PriorityFunction priority);
 }

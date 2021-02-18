@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
-import static org.apache.hadoop.hbase.CellUtil.createCell;
 import static org.apache.hadoop.hbase.KeyValueTestUtil.create;
 import static org.apache.hadoop.hbase.regionserver.KeyValueScanFixture.scanFixture;
 import static org.junit.Assert.assertEquals;
@@ -31,24 +30,31 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.NavigableSet;
-import java.util.OptionalInt;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellBuilderType;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.CompareOperator;
+import org.apache.hadoop.hbase.ExtendedCellBuilderFactory;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.filter.ColumnCountGetFilter;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.filter.Filter;
+import org.apache.hadoop.hbase.filter.QualifierFilter;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdge;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManagerTestHelper;
@@ -62,7 +68,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 // Can't be small as it plays with EnvironmentEdgeManager
-@Category({RegionServerTests.class, MediumTests.class})
+@Category({RegionServerTests.class, SmallTests.class})
 public class TestStoreScanner {
 
   @ClassRule
@@ -74,15 +80,15 @@ public class TestStoreScanner {
   private static final String CF_STR = "cf";
   private static final byte[] CF = Bytes.toBytes(CF_STR);
   static Configuration CONF = HBaseConfiguration.create();
+  private static final HBaseTestingUtility TEST_UTIL = new HBaseTestingUtility();
   private ScanInfo scanInfo = new ScanInfo(CONF, CF, 0, Integer.MAX_VALUE, Long.MAX_VALUE,
       KeepDeletedCells.FALSE, HConstants.DEFAULT_BLOCKSIZE, 0, CellComparator.getInstance(), false);
 
   /**
    * From here on down, we have a bunch of defines and specific CELL_GRID of Cells. The
    * CELL_GRID then has a Scanner that can fake out 'block' transitions. All this elaborate
-   * setup is for tests that ensure we don't overread, and that the
-   * {@link StoreScanner#optimize(org.apache.hadoop.hbase.regionserver.querymatcher.ScanQueryMatcher.MatchCode,
-   * Cell)} is not overly enthusiastic.
+   * setup is for tests that ensure we don't overread, and that the {@link StoreScanner} is not
+   * overly enthusiastic.
    */
   private static final byte[] ZERO = new byte[] {'0'};
   private static final byte[] ZERO_POINT_ZERO = new byte[] {'0', '.', '0'};
@@ -106,31 +112,73 @@ public class TestStoreScanner {
    * we do Gets, StoreScanner#optimize, and what we do on (faked) block boundaries.
    */
   private static final Cell[] CELL_GRID = new Cell [] {
-    createCell(ONE, CF, ONE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(ONE, CF, TWO, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(ONE, CF, THREE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(ONE, CF, FOUR, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(THREE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(FOUR).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
     // Offset 4 CELL_GRID_BLOCK2_BOUNDARY
-    createCell(TWO, CF, ONE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO, CF, TWO, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO, CF, THREE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO, CF, FOUR, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO_POINT_TWO, CF, ZERO, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO_POINT_TWO, CF, ZERO_POINT_ZERO, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO_POINT_TWO, CF, FIVE, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO)
+      .setFamily(CF).setQualifier(THREE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO)
+      .setFamily(CF).setQualifier(FOUR).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO_POINT_TWO)
+      .setFamily(CF).setQualifier(ZERO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO_POINT_TWO)
+      .setFamily(CF).setQualifier(ZERO_POINT_ZERO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO_POINT_TWO)
+      .setFamily(CF).setQualifier(FIVE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
     // Offset 11! CELL_GRID_BLOCK3_BOUNDARY
-    createCell(THREE, CF, ONE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(THREE, CF, TWO, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(THREE, CF, THREE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(THREE, CF, FOUR, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(THREE)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(THREE)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(THREE)
+      .setFamily(CF).setQualifier(THREE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(THREE)
+      .setFamily(CF).setQualifier(FOUR).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
     // Offset 15 CELL_GRID_BLOCK4_BOUNDARY
-    createCell(FOUR, CF, ONE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(FOUR, CF, TWO, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(FOUR, CF, THREE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(FOUR, CF, FOUR, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(FOUR)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(FOUR)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(FOUR)
+      .setFamily(CF).setQualifier(THREE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(FOUR)
+      .setFamily(CF).setQualifier(FOUR).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
     // Offset 19 CELL_GRID_BLOCK5_BOUNDARY
-    createCell(FOUR, CF, FIVE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(FIVE, CF, ZERO, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(FOUR)
+      .setFamily(CF).setQualifier(FIVE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(FIVE)
+      .setFamily(CF).setQualifier(ZERO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
   };
 
   private static class KeyValueHeapWithCount extends KeyValueHeap {
@@ -161,7 +209,7 @@ public class TestStoreScanner {
 
     CellGridStoreScanner(final Scan scan, ScanInfo scanInfo) throws IOException {
       super(scan, scanInfo, scan.getFamilyMap().get(CF), Arrays.<KeyValueScanner> asList(
-        new KeyValueScanner[] { new KeyValueScanFixture(CellComparator.getInstance(), CELL_GRID) }));
+        new KeyValueScanner[] {new KeyValueScanFixture(CellComparator.getInstance(), CELL_GRID)}));
     }
 
     @Override
@@ -217,13 +265,25 @@ public class TestStoreScanner {
   private static final int CELL_WITH_VERSIONS_BLOCK2_BOUNDARY = 4;
 
   private static final Cell[] CELL_WITH_VERSIONS = new Cell [] {
-    createCell(ONE, CF, ONE, 2L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(ONE, CF, ONE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(ONE, CF, TWO, 2L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(ONE, CF, TWO, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(2L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(2L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(ONE)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
     // Offset 4 CELL_WITH_VERSIONS_BLOCK2_BOUNDARY
-    createCell(TWO, CF, ONE, 1L, KeyValue.Type.Put.getCode(), VALUE),
-    createCell(TWO, CF, TWO, 1L, KeyValue.Type.Put.getCode(), VALUE),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO)
+      .setFamily(CF).setQualifier(ONE).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
+    ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY).setRow(TWO)
+      .setFamily(CF).setQualifier(TWO).setTimestamp(1L)
+      .setType(KeyValue.Type.Put.getCode()).setValue(VALUE).build(),
   };
 
   private static class CellWithVersionsStoreScanner extends StoreScanner {
@@ -233,7 +293,7 @@ public class TestStoreScanner {
     CellWithVersionsStoreScanner(final Scan scan, ScanInfo scanInfo) throws IOException {
       super(scan, scanInfo, scan.getFamilyMap().get(CF),
           Arrays.<KeyValueScanner> asList(new KeyValueScanner[] {
-              new KeyValueScanFixture(CellComparator.getInstance(), CELL_WITH_VERSIONS) }));
+            new KeyValueScanFixture(CellComparator.getInstance(), CELL_WITH_VERSIONS) }));
     }
 
     @Override
@@ -261,8 +321,8 @@ public class TestStoreScanner {
 
     CellWithVersionsNoOptimizeStoreScanner(Scan scan, ScanInfo scanInfo) throws IOException {
       super(scan, scanInfo, scan.getFamilyMap().get(CF),
-          Arrays.<KeyValueScanner> asList(new KeyValueScanner[] {
-              new KeyValueScanFixture(CellComparator.getInstance(), CELL_WITH_VERSIONS) }));
+        Arrays.<KeyValueScanner> asList(new KeyValueScanner[] {
+          new KeyValueScanFixture(CellComparator.getInstance(), CELL_WITH_VERSIONS) }));
     }
 
     @Override
@@ -347,6 +407,7 @@ public class TestStoreScanner {
       // We should have gone the optimize route 5 times totally... an INCLUDE for the four cells
       // in the row plus the DONE on the end.
       assertEquals(5, scanner.count.get());
+      assertEquals(1, scanner.memstoreOnlyReads);
       // For a full row Get, there should be no opportunity for scanner optimization.
       assertEquals(0, scanner.optimization.get());
     }
@@ -376,7 +437,6 @@ public class TestStoreScanner {
   /**
    * Test optimize in StoreScanner. Test that we skip to the next 'block' when we it makes sense
    * reading the block 'index'.
-   * @throws IOException
    */
   @Test
   public void testOptimize() throws IOException {
@@ -404,7 +464,6 @@ public class TestStoreScanner {
    * work... seeking to start of block and then SKIPPING until we find the wanted Cell.
    * This 'simple' scenario mimics case of all Cells fitting inside a single HFileBlock.
    * See HBASE-15392. This test is a little cryptic. Takes a bit of staring to figure what it up to.
-   * @throws IOException
    */
   @Test
   public void testOptimizeAndGet() throws IOException {
@@ -423,6 +482,8 @@ public class TestStoreScanner {
       // And we should have gone through optimize twice only.
       assertEquals("First qcode is SEEK_NEXT_COL and second INCLUDE_AND_SEEK_NEXT_ROW", 3,
         scanner.count.get());
+      assertEquals("Memstore Read count should be", 1,
+        scanner.memstoreOnlyReads);
     }
   }
 
@@ -433,7 +494,6 @@ public class TestStoreScanner {
    * because we had to exhaust all Cells in the current row making us load the next block just to
    * discard what we read there. This test is a little cryptic. Takes a bit of staring to figure
    * what it up to.
-   * @throws IOException
    */
   @Test
   public void testOptimizeAndGetWithFakedNextBlockIndexStart() throws IOException {
@@ -466,9 +526,7 @@ public class TestStoreScanner {
         create(r1, CF_STR, "a", 5, KeyValue.Type.Put, "dont-care"),
     };
     List<KeyValueScanner> scanners = Arrays.<KeyValueScanner>asList(
-        new KeyValueScanner[] {
-            new KeyValueScanFixture(CellComparator.getInstance(), kvs)
-    });
+      new KeyValueScanner[] {new KeyValueScanFixture(CellComparator.getInstance(), kvs)});
     Scan scanSpec = new Scan().withStartRow(Bytes.toBytes(r1));
     scanSpec.setTimeRange(0, 6);
     scanSpec.readAllVersions();
@@ -517,16 +575,36 @@ public class TestStoreScanner {
         create("R1", "cf", "a", 1, KeyValue.Type.Put, "dont-care"),
     };
     List<KeyValueScanner> scanners = Arrays.asList(
-        new KeyValueScanner[] {
-            new KeyValueScanFixture(CellComparator.getInstance(), kvs)
-        });
+      new KeyValueScanner[] {new KeyValueScanFixture(CellComparator.getInstance(), kvs)});
 
     Scan scanSpec = new Scan().withStartRow(Bytes.toBytes("R1"));
     // this only uses maxVersions (default=1) and TimeRange (default=all)
-    try (StoreScanner scan = new StoreScanner(scanSpec, scanInfo, getCols("a"), scanners)) {
+    try (StoreScanner scan = new StoreScanner(scanSpec, scanInfo, null, scanners)) {
       List<Cell> results = new ArrayList<>();
       assertEquals(true, scan.next(results));
       assertEquals(1, results.size());
+      assertEquals(1, scan.memstoreOnlyReads);
+      assertEquals(kvs[0], results.get(0));
+    }
+  }
+
+  @Test
+  public void testNonUserScan() throws IOException {
+    // returns only 1 of these 2 even though same timestamp
+    KeyValue[] kvs = new KeyValue[] { create("R1", "cf", "a", 1, KeyValue.Type.Put, "dont-care"),
+        create("R1", "cf", "a", 1, KeyValue.Type.Put, "dont-care"), };
+    List<KeyValueScanner> scanners = Arrays.asList(
+      new KeyValueScanner[] { new KeyValueScanFixture(CellComparator.getInstance(), kvs) });
+
+    Scan scanSpec = new Scan().withStartRow(Bytes.toBytes("R1"));
+    // this only uses maxVersions (default=1) and TimeRange (default=all)
+    try (StoreScanner scan =
+        new StoreScanner(scanSpec, scanInfo, null, scanners, ScanType.COMPACT_RETAIN_DELETES)) {
+      List<Cell> results = new ArrayList<>();
+      assertEquals(true, scan.next(results));
+      assertEquals(1, results.size());
+      // the type is not a user scan. so it won't account for the memstore reads
+      assertEquals(0, scan.memstoreOnlyReads);
       assertEquals(kvs[0], results.get(0));
     }
   }
@@ -847,7 +925,6 @@ public class TestStoreScanner {
     }
   }
 
-
   @Test @Ignore("this fails, since we don't handle deletions, etc, in peek")
   public void testPeek() throws Exception {
     KeyValue[] kvs = new KeyValue [] {
@@ -868,10 +945,10 @@ public class TestStoreScanner {
   public void testExpiredDeleteFamily() throws Exception {
     long now = System.currentTimeMillis();
     KeyValue[] kvs = new KeyValue[] {
-        new KeyValue(Bytes.toBytes("R1"), Bytes.toBytes("cf"), null, now-1000,
-            KeyValue.Type.DeleteFamily),
-        create("R1", "cf", "a", now-10, KeyValue.Type.Put,
-            "dont-care"),
+      new KeyValue(Bytes.toBytes("R1"), Bytes.toBytes("cf"), null, now-1000,
+        KeyValue.Type.DeleteFamily),
+      create("R1", "cf", "a", now-10, KeyValue.Type.Put,
+        "dont-care"),
     };
     List<KeyValueScanner> scanners = scanFixture(kvs);
     Scan scan = new Scan();
@@ -943,7 +1020,7 @@ public class TestStoreScanner {
         200, /* timeToPurgeDeletes */
         CellComparator.getInstance(), false);
       try (StoreScanner scanner =
-          new StoreScanner(scanInfo, OptionalInt.of(2), ScanType.COMPACT_DROP_DELETES, scanners)) {
+          new StoreScanner(scanInfo, 2, ScanType.COMPACT_DROP_DELETES, scanners)) {
         List<Cell> results = new ArrayList<>();
         results = new ArrayList<>();
         assertEquals(true, scanner.next(results));
@@ -965,15 +1042,41 @@ public class TestStoreScanner {
   public void testPreadNotEnabledForCompactionStoreScanners() throws Exception {
     long now = System.currentTimeMillis();
     KeyValue[] kvs = new KeyValue[] {
-        new KeyValue(Bytes.toBytes("R1"), Bytes.toBytes("cf"), null, now - 1000,
-            KeyValue.Type.DeleteFamily),
-        create("R1", "cf", "a", now - 10, KeyValue.Type.Put, "dont-care"), };
+      new KeyValue(Bytes.toBytes("R1"), Bytes.toBytes("cf"), null, now - 1000,
+        KeyValue.Type.DeleteFamily),
+      create("R1", "cf", "a", now - 10, KeyValue.Type.Put, "dont-care"), };
     List<KeyValueScanner> scanners = scanFixture(kvs);
     ScanInfo scanInfo = new ScanInfo(CONF, CF, 0, 1, 500, KeepDeletedCells.FALSE,
         HConstants.DEFAULT_BLOCKSIZE, 0, CellComparator.getInstance(), false);
-    try (StoreScanner storeScanner = new StoreScanner(scanInfo, OptionalInt.empty(),
-        ScanType.COMPACT_RETAIN_DELETES, scanners)) {
+    try (StoreScanner storeScanner = new StoreScanner(scanInfo, -1,
+      ScanType.COMPACT_RETAIN_DELETES, scanners)) {
       assertFalse(storeScanner.isScanUsePread());
+    }
+  }
+
+  @Test
+  public void testReadVersionWithRawAndFilter() throws IOException {
+    ScanInfo scanInfo = new ScanInfo(CONF, CF, 0, 1, Long.MAX_VALUE,
+            KeepDeletedCells.FALSE, HConstants.DEFAULT_BLOCKSIZE, 0
+            , CellComparator.getInstance(), false);
+    KeyValue [] kvs = new KeyValue[] {
+            create("R1", "cf", "a", 3, KeyValue.Type.Put, "dont-care"),
+            create("R1", "cf", "a", 2, KeyValue.Type.Put, "dont-care"),
+            create("R1", "cf", "a", 1, KeyValue.Type.Put, "dont-care")
+    };
+    List<KeyValueScanner> scanners = Arrays.asList(
+      new KeyValueScanner[]{
+        new KeyValueScanFixture(CellComparator.getInstance(), kvs)
+      });
+
+    BinaryComparator comp = new BinaryComparator(Bytes.toBytes("a"));
+    Filter filter = new QualifierFilter(CompareOperator.EQUAL, comp);
+    Scan scanSpec = new Scan().withStartRow(Bytes.toBytes("R1")).readVersions(2).setRaw(true);
+    scanSpec.setFilter(filter);
+    try (StoreScanner scan = new StoreScanner(scanSpec, scanInfo, null, scanners)) {
+      List<Cell> results = new ArrayList<>();
+      assertEquals(true, scan.next(results));
+      assertEquals(2, results.size());
     }
   }
 }

@@ -41,8 +41,10 @@ import org.apache.hadoop.hbase.procedure2.ProcedureTestingUtility;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.ModifyRegionUtils;
+import org.apache.hadoop.hbase.util.TableDescriptorChecker;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
@@ -95,7 +97,7 @@ public class TestCreateTableProcedure extends TestTableDDLProcedureBase {
       TableDescriptorBuilder.newBuilder(MasterProcedureTestingUtility.createHTD(tableName));
 
     // disable sanity check
-    builder.setValue("hbase.table.sanity.checks", Boolean.FALSE.toString());
+    builder.setValue(TableDescriptorChecker.TABLE_SANITY_CHECKS, Boolean.FALSE.toString());
     TableDescriptor htd = builder.build();
     final RegionInfo[] regions = ModifyRegionUtils.createRegionInfos(htd, null);
 
@@ -223,8 +225,8 @@ public class TestCreateTableProcedure extends TestTableDDLProcedureBase {
           Configuration conf = env.getMasterConfiguration();
           MasterFileSystem mfs = env.getMasterServices().getMasterFileSystem();
           Path tempdir = mfs.getTempDir();
-          Path tableDir = FSUtils.getTableDir(tempdir, regionInfo.getTable());
-          Path regionDir = FSUtils.getRegionDir(tableDir, regionInfo);
+          Path tableDir = CommonFSUtils.getTableDir(tempdir, regionInfo.getTable());
+          Path regionDir = FSUtils.getRegionDirFromTableDir(tableDir, regionInfo);
           FileSystem fs = FileSystem.get(conf);
           fs.mkdirs(regionDir);
 

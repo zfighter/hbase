@@ -42,7 +42,7 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -59,7 +59,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.hbase.thirdparty.com.google.common.collect.ImmutableList;
 
 @RunWith(Parameterized.class)
-@Category({ MediumTests.class })
+@Category({ LargeTests.class })
 public class TestNamespaceReplication extends TestReplicationBase {
 
   @ClassRule
@@ -101,8 +101,8 @@ public class TestNamespaceReplication extends TestReplicationBase {
   public static void setUpBeforeClass() throws Exception {
     TestReplicationBase.setUpBeforeClass();
 
-    connection1 = ConnectionFactory.createConnection(conf1);
-    connection2 = ConnectionFactory.createConnection(conf2);
+    connection1 = ConnectionFactory.createConnection(CONF1);
+    connection2 = ConnectionFactory.createConnection(CONF2);
     admin1 = connection1.getAdmin();
     admin2 = connection2.getAdmin();
 

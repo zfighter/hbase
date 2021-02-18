@@ -25,14 +25,13 @@ import java.io.PrintWriter;
 import java.util.Date;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-
-import org.apache.hadoop.hbase.ipc.CallQueueInfo;
-import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.monitoring.LogMonitoring;
+import org.apache.hadoop.hbase.ipc.CallQueueInfo;
 import org.apache.hadoop.hbase.monitoring.StateDumpServlet;
 import org.apache.hadoop.hbase.monitoring.TaskMonitor;
+import org.apache.hadoop.hbase.util.LogMonitoring;
 import org.apache.hadoop.hbase.util.Threads;
+import org.apache.yetus.audience.InterfaceAudience;
 
 @InterfaceAudience.Private
 public class RSDumpServlet extends StateDumpServlet {
@@ -134,11 +133,10 @@ public class RSDumpServlet extends StateDumpServlet {
       out.println(hrs.compactSplitThread.dumpQueue());
     }
 
-    if (hrs.cacheFlusher != null) {
+    if (hrs.getMemStoreFlusher() != null) {
       // 2. Print out flush Queue
-      out.println("\nFlush Queue summary: "
-          + hrs.cacheFlusher.toString());
-      out.println(hrs.cacheFlusher.dumpQueue());
+      out.println("\nFlush Queue summary: " + hrs.getMemStoreFlusher().toString());
+      out.println(hrs.getMemStoreFlusher().dumpQueue());
     }
   }
 

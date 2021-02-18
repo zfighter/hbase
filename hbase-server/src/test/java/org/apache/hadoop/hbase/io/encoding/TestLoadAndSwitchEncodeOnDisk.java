@@ -45,9 +45,8 @@ import org.junit.runners.Parameterized.Parameters;
 /**
  * Uses the load tester
  */
-@Category({IOTests.class, MediumTests.class})
-public class TestLoadAndSwitchEncodeOnDisk extends
-    TestMiniClusterLoadSequential {
+@Category({ IOTests.class, MediumTests.class })
+public class TestLoadAndSwitchEncodeOnDisk extends TestMiniClusterLoadSequential {
 
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
@@ -116,8 +115,8 @@ public class TestLoadAndSwitchEncodeOnDisk extends
       regions = rl.getAllRegionLocations();
     }
     for (HRegionLocation e: regions) {
-      byte [] startkey = e.getRegionInfo().getStartKey();
-      Scan s = new Scan(startkey);
+      byte [] startkey = e.getRegion().getStartKey();
+      Scan s = new Scan().withStartRow(startkey);
       ResultScanner scanner = t.getScanner(s);
       Result r = scanner.next();
       org.junit.Assert.assertTrue(r != null && r.size() > 0);

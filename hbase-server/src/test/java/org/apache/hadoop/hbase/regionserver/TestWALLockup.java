@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -36,7 +36,7 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Put;
@@ -190,6 +190,11 @@ public class TestWALLockup {
         public long getLength() {
           return w.getLength();
         }
+
+        @Override
+        public long getSyncedLength() {
+          return w.getSyncedLength();
+        }
       };
     }
   }
@@ -204,11 +209,10 @@ public class TestWALLockup {
   @Test
   public void testLockupWhenSyncInMiddleOfZigZagSetup() throws IOException {
     // Mocked up server and regionserver services. Needed below.
-    Server server = Mockito.mock(Server.class);
-    Mockito.when(server.getConfiguration()).thenReturn(CONF);
-    Mockito.when(server.isStopped()).thenReturn(false);
-    Mockito.when(server.isAborted()).thenReturn(false);
     RegionServerServices services = Mockito.mock(RegionServerServices.class);
+    Mockito.when(services.getConfiguration()).thenReturn(CONF);
+    Mockito.when(services.isStopped()).thenReturn(false);
+    Mockito.when(services.isAborted()).thenReturn(false);
 
     // OK. Now I have my mocked up Server & RegionServerServices and dodgy WAL, go ahead with test.
     FileSystem fs = FileSystem.get(CONF);
@@ -217,12 +221,12 @@ public class TestWALLockup {
     dodgyWAL.init();
     Path originalWAL = dodgyWAL.getCurrentFileName();
     // I need a log roller running.
-    LogRoller logRoller = new LogRoller(server, services);
+    LogRoller logRoller = new LogRoller(services);
     logRoller.addWAL(dodgyWAL);
     // There is no 'stop' once a logRoller is running.. it just dies.
     logRoller.start();
     // Now get a region and start adding in edits.
-    final HRegion region = initHRegion(tableName, null, null, dodgyWAL);
+    final HRegion region = initHRegion(tableName, null, null, CONF, dodgyWAL);
     byte [] bytes = Bytes.toBytes(getName());
     NavigableMap<byte[], Integer> scopes = new TreeMap<>(
         Bytes.BYTES_COMPARATOR);
@@ -249,7 +253,7 @@ public class TestWALLockup {
       LOG.info("SET throwing of exception on append");
       dodgyWAL.throwException = true;
       // This append provokes a WAL roll request
-      dodgyWAL.append(region.getRegionInfo(), key, edit, true);
+      dodgyWAL.appendData(region.getRegionInfo(), key, edit);
       boolean exception = false;
       try {
         dodgyWAL.sync(false);
@@ -294,7 +298,7 @@ public class TestWALLockup {
       }
     } finally {
       // To stop logRoller, its server has to say it is stopped.
-      Mockito.when(server.isStopped()).thenReturn(true);
+      Mockito.when(services.isStopped()).thenReturn(true);
       Closeables.close(logRoller, true);
       try {
         if (region != null) {
@@ -314,7 +318,7 @@ public class TestWALLockup {
    * If below is broken, we will see this test timeout because RingBufferEventHandler was stuck in
    * attainSafePoint. Everyone will wait for sync to finish forever. See HBASE-14317.
    */
-  @Test (timeout=30000)
+  @Test
   public void testRingBufferEventHandlerStuckWhenSyncFailed()
     throws IOException, InterruptedException {
 
@@ -375,23 +379,27 @@ public class TestWALLockup {
           public long getLength() {
             return w.getLength();
           }
+
+          @Override
+          public long getSyncedLength() {
+            return w.getSyncedLength();
+          }
         };
       }
     }
 
     // Mocked up server and regionserver services. Needed below.
-    final Server server = Mockito.mock(Server.class);
-    Mockito.when(server.getConfiguration()).thenReturn(CONF);
-    Mockito.when(server.isStopped()).thenReturn(false);
-    Mockito.when(server.isAborted()).thenReturn(false);
     RegionServerServices services = Mockito.mock(RegionServerServices.class);
+    Mockito.when(services.getConfiguration()).thenReturn(CONF);
+    Mockito.when(services.isStopped()).thenReturn(false);
+    Mockito.when(services.isAborted()).thenReturn(false);
 
     // OK. Now I have my mocked up Server & RegionServerServices and dodgy WAL, go ahead with test.
     FileSystem fs = FileSystem.get(CONF);
     Path rootDir = new Path(dir + getName());
     final DodgyFSLog dodgyWAL = new DodgyFSLog(fs, rootDir, getName(), CONF);
     // I need a log roller running.
-    LogRoller logRoller = new LogRoller(server, services);
+    LogRoller logRoller = new LogRoller(services);
     logRoller.addWAL(dodgyWAL);
     // There is no 'stop' once a logRoller is running.. it just dies.
     logRoller.start();
@@ -432,9 +440,9 @@ public class TestWALLockup {
 
     } finally {
       // To stop logRoller, its server has to say it is stopped.
-      Mockito.when(server.isStopped()).thenReturn(true);
+      Mockito.when(services.isStopped()).thenReturn(true);
       if (logRoller != null) {
-        logRoller.interrupt();
+        logRoller.close();
       }
       if (dodgyWAL != null) {
         dodgyWAL.close();
@@ -469,7 +477,7 @@ public class TestWALLockup {
     }
 
     @Override
-    public ClusterConnection getConnection() {
+    public Connection getConnection() {
       return null;
     }
 
@@ -505,11 +513,6 @@ public class TestWALLockup {
     }
 
     @Override
-    public ClusterConnection getClusterConnection() {
-      return null;
-    }
-
-    @Override
     public FileSystem getFileSystem() {
       return null;
     }
@@ -521,6 +524,11 @@ public class TestWALLockup {
 
     @Override
     public Connection createConnection(Configuration conf) throws IOException {
+      return null;
+    }
+
+    @Override
+    public AsyncClusterConnection getAsyncClusterConnection() {
       return null;
     }
   }
@@ -549,10 +557,11 @@ public class TestWALLockup {
    * @return A region on which you must call {@link HBaseTestingUtility#closeRegionAndWAL(HRegion)}
    *         when done.
    */
-  private static HRegion initHRegion(TableName tableName, byte[] startKey, byte[] stopKey, WAL wal)
-      throws IOException {
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
-    return TEST_UTIL.createLocalHRegion(tableName, startKey, stopKey, false, Durability.SYNC_WAL,
-      wal, COLUMN_FAMILY_BYTES);
+  private static HRegion initHRegion(TableName tableName, byte[] startKey, byte[] stopKey,
+      Configuration conf, WAL wal) throws IOException {
+    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
+      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
+    return TEST_UTIL.createLocalHRegion(tableName, startKey, stopKey, conf, false,
+      Durability.SYNC_WAL, wal, COLUMN_FAMILY_BYTES);
   }
 }

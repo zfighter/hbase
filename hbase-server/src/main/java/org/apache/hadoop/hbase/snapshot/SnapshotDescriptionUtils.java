@@ -18,13 +18,15 @@
 package org.apache.hadoop.hbase.snapshot;
 
 import java.io.IOException;
+import java.net.URI;
 import java.security.PrivilegedExceptionAction;
 import java.util.Collections;
-
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hbase.HConstants;
@@ -33,9 +35,10 @@ import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hadoop.hbase.security.access.AccessControlLists;
+import org.apache.hadoop.hbase.security.access.PermissionStorage;
 import org.apache.hadoop.hbase.security.access.ShadedAccessControlUtil;
 import org.apache.hadoop.hbase.security.access.UserPermission;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -43,6 +46,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.common.collect.ListMultimap;
+
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
 
@@ -124,27 +128,13 @@ public final class SnapshotDescriptionUtils {
   /** Default value if no start time is specified */
   public static final long NO_SNAPSHOT_START_TIME_SPECIFIED = 0;
 
+  // Default value if no ttl is specified for Snapshot
+  private static final long NO_SNAPSHOT_TTL_SPECIFIED = 0;
 
   public static final String MASTER_SNAPSHOT_TIMEOUT_MILLIS = "hbase.snapshot.master.timeout.millis";
 
   /** By default, wait 300 seconds for a snapshot to complete */
   public static final long DEFAULT_MAX_WAIT_TIME = 60000 * 5 ;
-
-
-  /**
-   * By default, check to see if the snapshot is complete (ms)
-   * @deprecated Use {@link #DEFAULT_MAX_WAIT_TIME} instead.
-   * */
-  @Deprecated
-  public static final int SNAPSHOT_TIMEOUT_MILLIS_DEFAULT = 60000 * 5;
-
-  /**
-   * Conf key for # of ms elapsed before injecting a snapshot timeout error when waiting for
-   * completion.
-   * @deprecated Use {@link #MASTER_SNAPSHOT_TIMEOUT_MILLIS} instead.
-   */
-  @Deprecated
-  public static final String SNAPSHOT_TIMEOUT_MILLIS_KEY = "hbase.snapshot.master.timeoutMillis";
 
   private SnapshotDescriptionUtils() {
     // private constructor for utility class
@@ -165,7 +155,7 @@ public final class SnapshotDescriptionUtils {
       confKey = MASTER_SNAPSHOT_TIMEOUT_MILLIS;
     }
     return Math.max(conf.getLong(confKey, defaultMaxWaitTime),
-        conf.getLong(SNAPSHOT_TIMEOUT_MILLIS_KEY, defaultMaxWaitTime));
+        conf.getLong(MASTER_SNAPSHOT_TIMEOUT_MILLIS, defaultMaxWaitTime));
   }
 
   /**
@@ -275,7 +265,7 @@ public final class SnapshotDescriptionUtils {
    */
   public static boolean isWithinDefaultWorkingDir(final Path workingDir, Configuration conf)
     throws IOException {
-    Path defaultWorkingDir = getDefaultWorkingSnapshotDir(FSUtils.getRootDir(conf));
+    Path defaultWorkingDir = getDefaultWorkingSnapshotDir(CommonFSUtils.getRootDir(conf));
     return workingDir.equals(defaultWorkingDir) || isSubDirectoryOf(workingDir, defaultWorkingDir);
   }
 
@@ -317,6 +307,22 @@ public final class SnapshotDescriptionUtils {
       snapshot = builder.build();
     }
 
+    long ttl = snapshot.getTtl();
+    // set default ttl(sec) if it is not set already or the value is out of the range
+    if (ttl == SnapshotDescriptionUtils.NO_SNAPSHOT_TTL_SPECIFIED ||
+        ttl > TimeUnit.MILLISECONDS.toSeconds(Long.MAX_VALUE)) {
+      final long defaultSnapshotTtl = conf.getLong(HConstants.DEFAULT_SNAPSHOT_TTL_CONFIG_KEY,
+          HConstants.DEFAULT_SNAPSHOT_TTL);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Snapshot current TTL value: {} resetting it to default value: {}", ttl,
+            defaultSnapshotTtl);
+      }
+      ttl = defaultSnapshotTtl;
+    }
+    SnapshotDescription.Builder builder = snapshot.toBuilder();
+    builder.setTtl(ttl);
+    snapshot = builder.build();
+
     // set the acl to snapshot if security feature is enabled.
     if (isSecurityAvailable(conf)) {
       snapshot = writeAclToSnapshotDescription(snapshot, conf);
@@ -334,16 +340,11 @@ public final class SnapshotDescriptionUtils {
    */
   public static void writeSnapshotInfo(SnapshotDescription snapshot, Path workingDir, FileSystem fs)
       throws IOException {
-    FsPermission perms = FSUtils.getFilePermissions(fs, fs.getConf(),
+    FsPermission perms = CommonFSUtils.getFilePermissions(fs, fs.getConf(),
       HConstants.DATA_FILE_UMASK_KEY);
     Path snapshotInfo = new Path(workingDir, SnapshotDescriptionUtils.SNAPSHOTINFO_FILE);
-    try {
-      FSDataOutputStream out = FSUtils.create(fs, snapshotInfo, perms, true);
-      try {
-        snapshot.writeTo(out);
-      } finally {
-        out.close();
-      }
+    try (FSDataOutputStream out = CommonFSUtils.create(fs, snapshotInfo, perms, true)){
+      snapshot.writeTo(out);
     } catch (IOException e) {
       // if we get an exception, try to remove the snapshot info
       if (!fs.delete(snapshotInfo, false)) {
@@ -355,50 +356,55 @@ public final class SnapshotDescriptionUtils {
   }
 
   /**
-   * Read in the {@link org.apache.hadoop.hbase.protobuf.generated.HBaseProtos.SnapshotDescription} stored for the snapshot in the passed directory
+   * Read in the {@link SnapshotDescription} stored for the snapshot in the passed directory
    * @param fs filesystem where the snapshot was taken
    * @param snapshotDir directory where the snapshot was stored
    * @return the stored snapshot description
-   * @throws CorruptedSnapshotException if the
-   * snapshot cannot be read
+   * @throws CorruptedSnapshotException if the snapshot cannot be read
    */
   public static SnapshotDescription readSnapshotInfo(FileSystem fs, Path snapshotDir)
       throws CorruptedSnapshotException {
     Path snapshotInfo = new Path(snapshotDir, SNAPSHOTINFO_FILE);
-    try {
-      FSDataInputStream in = null;
-      try {
-        in = fs.open(snapshotInfo);
-        SnapshotDescription desc = SnapshotDescription.parseFrom(in);
-        return desc;
-      } finally {
-        if (in != null) in.close();
-      }
+    try (FSDataInputStream in = fs.open(snapshotInfo)){
+      return SnapshotDescription.parseFrom(in);
     } catch (IOException e) {
       throw new CorruptedSnapshotException("Couldn't read snapshot info from:" + snapshotInfo, e);
     }
   }
 
   /**
-   * Move the finished snapshot to its final, publicly visible directory - this marks the snapshot
-   * as 'complete'.
-   * @param snapshot description of the snapshot being tabken
-   * @param rootdir root directory of the hbase installation
-   * @param workingDir directory where the in progress snapshot was built
-   * @param fs {@link FileSystem} where the snapshot was built
-   * @throws org.apache.hadoop.hbase.snapshot.SnapshotCreationException if the
-   * snapshot could not be moved
+   * Commits the snapshot process by moving the working snapshot
+   * to the finalized filepath
+   *
+   * @param snapshotDir The file path of the completed snapshots
+   * @param workingDir  The file path of the in progress snapshots
+   * @param fs The file system of the completed snapshots
+   * @param workingDirFs The file system of the in progress snapshots
+   * @param conf Configuration
+   *
+   * @throws SnapshotCreationException if the snapshot could not be moved
    * @throws IOException the filesystem could not be reached
    */
-  public static void completeSnapshot(SnapshotDescription snapshot, Path rootdir, Path workingDir,
-      FileSystem fs) throws SnapshotCreationException, IOException {
-    Path finishedDir = getCompletedSnapshotDir(snapshot, rootdir);
-    LOG.debug("Snapshot is done, just moving the snapshot from " + workingDir + " to "
-        + finishedDir);
-    if (!fs.rename(workingDir, finishedDir)) {
-      throw new SnapshotCreationException(
-          "Failed to move working directory(" + workingDir + ") to completed directory("
-              + finishedDir + ").", ProtobufUtil.createSnapshotDesc(snapshot));
+  public static void completeSnapshot(Path snapshotDir, Path workingDir, FileSystem fs,
+    FileSystem workingDirFs, final Configuration conf)
+    throws SnapshotCreationException, IOException {
+    LOG.debug("Sentinel is done, just moving the snapshot from " + workingDir + " to "
+      + snapshotDir);
+    // If the working and completed snapshot directory are on the same file system, attempt
+    // to rename the working snapshot directory to the completed location. If that fails,
+    // or the file systems differ, attempt to copy the directory over, throwing an exception
+    // if this fails
+    URI workingURI = workingDirFs.getUri();
+    URI rootURI = fs.getUri();
+    if ((!workingURI.getScheme().equals(rootURI.getScheme()) ||
+      workingURI.getAuthority() == null ||
+      !workingURI.getAuthority().equals(rootURI.getAuthority()) ||
+      workingURI.getUserInfo() == null ||
+      !workingURI.getUserInfo().equals(rootURI.getUserInfo()) ||
+      !fs.rename(workingDir, snapshotDir)) && !FileUtil.copy(workingDirFs, workingDir, fs,
+      snapshotDir, true, true, conf)) {
+      throw new SnapshotCreationException("Failed to copy working directory(" + workingDir
+        + ") to completed directory(" + snapshotDir + ").");
     }
   }
 
@@ -416,10 +422,8 @@ public final class SnapshotDescriptionUtils {
   }
 
   public static boolean isSecurityAvailable(Configuration conf) throws IOException {
-    try (Connection conn = ConnectionFactory.createConnection(conf)) {
-      try (Admin admin = conn.getAdmin()) {
-        return admin.tableExists(AccessControlLists.ACL_TABLE_NAME);
-      }
+    try (Connection conn = ConnectionFactory.createConnection(conf); Admin admin = conn.getAdmin()) {
+      return admin.tableExists(PermissionStorage.ACL_TABLE_NAME);
     }
   }
 
@@ -429,7 +433,7 @@ public final class SnapshotDescriptionUtils {
         User.runAsLoginUser(new PrivilegedExceptionAction<ListMultimap<String, UserPermission>>() {
           @Override
           public ListMultimap<String, UserPermission> run() throws Exception {
-            return AccessControlLists.getTablePermissions(conf,
+            return PermissionStorage.getTablePermissions(conf,
               TableName.valueOf(snapshot.getTable()));
           }
         });

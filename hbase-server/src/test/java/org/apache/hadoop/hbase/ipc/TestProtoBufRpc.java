@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -30,10 +30,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RPCTests;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
+import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -57,7 +55,7 @@ import org.apache.hadoop.hbase.shaded.ipc.protobuf.generated.TestRpcServiceProto
  * <code>src/test/protobuf/test_rpc_service.proto</code>
  */
 @RunWith(Parameterized.class)
-@Category({ RPCTests.class, MediumTests.class })
+@Category({ RPCTests.class, SmallTests.class })
 public class TestProtoBufRpc {
 
   @ClassRule
@@ -65,7 +63,7 @@ public class TestProtoBufRpc {
       HBaseClassTestRule.forClass(TestProtoBufRpc.class);
 
   public final static String ADDRESS = "localhost";
-  public static int PORT = 0;
+  private static int PORT = 0;
   private InetSocketAddress isa;
   private Configuration conf;
   private RpcServerInterface server;
@@ -84,10 +82,10 @@ public class TestProtoBufRpc {
     this.conf = HBaseConfiguration.create();
     this.conf.set(RpcServerFactory.CUSTOM_RPC_SERVER_IMPL_CONF_KEY,
         rpcServerImpl);
-    Logger log = Logger.getLogger("org.apache.hadoop.ipc.HBaseServer");
-    log.setLevel(Level.DEBUG);
-    log = Logger.getLogger("org.apache.hadoop.ipc.HBaseServer.trace");
-    log.setLevel(Level.TRACE);
+    org.apache.log4j.Logger.getLogger("org.apache.hadoop.ipc.HBaseServer")
+      .setLevel(org.apache.log4j.Level.ERROR);
+    org.apache.log4j.Logger.getLogger("org.apache.hadoop.ipc.HBaseServer.trace")
+      .setLevel(org.apache.log4j.Level.TRACE);
     // Create server side implementation
     // Get RPC server for server side implementation
     this.server = RpcServerFactory.createRpcServer(null, "testrpc",

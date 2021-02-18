@@ -23,13 +23,18 @@ import java.util.Collection;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.*;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
-import org.apache.hadoop.hbase.client.*;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.ConnectionFactory;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -107,10 +112,10 @@ public class TestCompactSplitThread {
     Configuration conf = TEST_UTIL.getConfiguration();
     Connection conn = ConnectionFactory.createConnection(conf);
     try {
-      HTableDescriptor htd = new HTableDescriptor(tableName);
-      htd.addFamily(new HColumnDescriptor(family));
-      htd.setCompactionEnabled(false);
-      TEST_UTIL.getAdmin().createTable(htd);
+      TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(tableName)
+        .setColumnFamily(ColumnFamilyDescriptorBuilder.of(family)).setCompactionEnabled(false)
+        .build();
+      TEST_UTIL.getAdmin().createTable(tableDescriptor);
       TEST_UTIL.waitTableAvailable(tableName);
       HRegionServer regionServer = TEST_UTIL.getRSForFirstRegionInTable(tableName);
 
@@ -155,8 +160,8 @@ public class TestCompactSplitThread {
 
   @Test
   public void testFlushWithTableCompactionDisabled() throws Exception {
-    HTableDescriptor htd = new HTableDescriptor(tableName);
-    htd.setCompactionEnabled(false);
+    TableDescriptor htd =
+      TableDescriptorBuilder.newBuilder(tableName).setCompactionEnabled(false).build();
     TEST_UTIL.createTable(htd, new byte[][] { family }, null);
 
     // load the table
@@ -166,7 +171,7 @@ public class TestCompactSplitThread {
     }
 
     // Make sure that store file number is greater than blockingStoreFiles + 1
-    Path tableDir = FSUtils.getTableDir(rootDir, tableName);
+    Path tableDir = CommonFSUtils.getTableDir(rootDir, tableName);
     Collection<String> hfiles =  SnapshotTestingUtils.listHFileNames(fs, tableDir);
     assert(hfiles.size() > blockingStoreFiles + 1);
   }

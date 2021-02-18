@@ -19,6 +19,7 @@ package org.apache.hadoop.hbase.regionserver.throttle;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.conf.Configuration;
@@ -32,8 +33,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * StoreHotnessProtector is designed to help limit the concurrency of puts with dense columns, it
@@ -78,7 +77,7 @@ public class StoreHotnessProtector {
   private final static int DEFAULT_PARALLEL_PUT_STORE_THREADS_LIMIT_MIN_COLUMN_NUM = 100;
   private final static int DEFAULT_PARALLEL_PREPARE_PUT_STORE_MULTIPLIER = 2;
 
-  private final Map<byte[], AtomicInteger> preparePutToStoreMap =
+  private final ConcurrentMap<byte[], AtomicInteger> preparePutToStoreMap =
       new ConcurrentSkipListMap<>(Bytes.BYTES_RAWCOMPARATOR);
   private final Region region;
 
@@ -101,7 +100,7 @@ public class StoreHotnessProtector {
   public void update(Configuration conf) {
     init(conf);
     preparePutToStoreMap.clear();
-    LOG.debug("update config: " + toString());
+    LOG.debug("update config: {}", this);
   }
 
   public void start(Map<byte[], List<Cell>> familyMaps) throws RegionTooBusyException {
@@ -121,13 +120,9 @@ public class StoreHotnessProtector {
 
         //we need to try to add #preparePutCount at first because preparePutToStoreMap will be
         //cleared when changing the configuration.
-        preparePutToStoreMap.putIfAbsent(e.getKey(), new AtomicInteger());
-        AtomicInteger preparePutCounter = preparePutToStoreMap.get(e.getKey());
-        if (preparePutCounter == null) {
-          preparePutCounter = new AtomicInteger();
-          preparePutToStoreMap.putIfAbsent(e.getKey(), preparePutCounter);
-        }
-        int preparePutCount = preparePutCounter.incrementAndGet();
+        int preparePutCount = preparePutToStoreMap
+            .computeIfAbsent(e.getKey(), key -> new AtomicInteger())
+            .incrementAndGet();
         if (store.getCurrentParallelPutCount() > this.parallelPutToStoreThreadLimit
             || preparePutCount > this.parallelPreparePutToStoreThreadLimit) {
           tooBusyStore = (tooBusyStore == null ?
@@ -146,9 +141,7 @@ public class StoreHotnessProtector {
       String msg =
           "StoreTooBusy," + this.region.getRegionInfo().getRegionNameAsString() + ":" + tooBusyStore
               + " Above parallelPutToStoreThreadLimit(" + this.parallelPutToStoreThreadLimit + ")";
-      if (LOG.isTraceEnabled()) {
-        LOG.trace(msg);
-      }
+      LOG.trace(msg);
       throw new RegionTooBusyException(msg);
     }
   }
@@ -189,7 +182,6 @@ public class StoreHotnessProtector {
     return this.parallelPutToStoreThreadLimit > 0;
   }
 
-  @VisibleForTesting
   Map<byte[], AtomicInteger> getPreparePutToStoreMap() {
     return preparePutToStoreMap;
   }

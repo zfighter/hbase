@@ -44,7 +44,6 @@ import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ipc.RpcServer;
 import org.apache.hadoop.hbase.security.User;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.hbase.util.CoprocessorClassLoader;
 import org.apache.hadoop.hbase.util.SortedList;
 
@@ -143,8 +142,16 @@ public abstract class CoprocessorHost<C extends Coprocessor, E extends Coprocess
     if (defaultCPClasses == null || defaultCPClasses.length == 0)
       return;
 
-    int priority = Coprocessor.PRIORITY_SYSTEM;
+    int currentSystemPriority = Coprocessor.PRIORITY_SYSTEM;
     for (String className : defaultCPClasses) {
+      String[] classNameAndPriority = className.split("\\|");
+      boolean hasPriorityOverride = false;
+      className = classNameAndPriority[0];
+      int overridePriority = Coprocessor.PRIORITY_SYSTEM;
+      if (classNameAndPriority.length > 1){
+        overridePriority = Integer.parseInt(classNameAndPriority[1]);
+        hasPriorityOverride = true;
+      }
       className = className.trim();
       if (findCoprocessor(className) != null) {
         // If already loaded will just continue
@@ -155,13 +162,16 @@ public abstract class CoprocessorHost<C extends Coprocessor, E extends Coprocess
       Thread.currentThread().setContextClassLoader(cl);
       try {
         implClass = cl.loadClass(className);
+        int coprocPriority = hasPriorityOverride ? overridePriority : currentSystemPriority;
         // Add coprocessors as we go to guard against case where a coprocessor is specified twice
         // in the configuration
-        E env = checkAndLoadInstance(implClass, priority, conf);
+        E env = checkAndLoadInstance(implClass, coprocPriority, conf);
         if (env != null) {
           this.coprocEnvironments.add(env);
-          LOG.info("System coprocessor {} loaded, priority={}.", className, priority);
-          ++priority;
+          LOG.info("System coprocessor {} loaded, priority={}.", className, coprocPriority);
+          if (!hasPriorityOverride) {
+            ++currentSystemPriority;
+          }
         }
       } catch (Throwable t) {
         // We always abort if system coprocessors cannot be loaded
@@ -242,7 +252,6 @@ public abstract class CoprocessorHost<C extends Coprocessor, E extends Coprocess
     }
   }
 
-  @VisibleForTesting
   public void load(Class<? extends C> implClass, int priority, Configuration conf)
       throws IOException {
     E env = checkAndLoadInstance(implClass, priority, conf);
@@ -314,7 +323,6 @@ public abstract class CoprocessorHost<C extends Coprocessor, E extends Coprocess
     return null;
   }
 
-  @VisibleForTesting
   public <T extends C> T findCoprocessor(Class<T> cls) {
     for (E env: coprocEnvironments) {
       if (cls.isAssignableFrom(env.getInstance().getClass())) {
@@ -349,7 +357,6 @@ public abstract class CoprocessorHost<C extends Coprocessor, E extends Coprocess
    * @param className the class name
    * @return the coprocessor, or null if not found
    */
-  @VisibleForTesting
   public E findCoprocessorEnvironment(String className) {
     for (E env: coprocEnvironments) {
       if (env.getInstance().getClass().getName().equals(className) ||

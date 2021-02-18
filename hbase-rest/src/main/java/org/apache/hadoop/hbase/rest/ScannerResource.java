@@ -99,7 +99,7 @@ public class ScannerResource extends ResourceBase {
       String tableName = tableResource.getName();
       ScannerResultGenerator gen =
         new ScannerResultGenerator(tableName, spec, filter, model.getCaching(),
-          model.getCacheBlocks());
+          model.getCacheBlocks(), model.getLimit());
       String id = gen.getID();
       ScannerInstanceResource instance =
         new ScannerInstanceResource(tableName, id, gen, model.getBatch());
@@ -112,7 +112,7 @@ public class ScannerResource extends ResourceBase {
       servlet.getMetrics().incrementSucessfulPutRequests(1);
       return Response.created(uri).build();
     } catch (Exception e) {
-      LOG.error("Exception occured while processing " + uriInfo.getAbsolutePath() + " : ", e);
+      LOG.error("Exception occurred while processing " + uriInfo.getAbsolutePath() + " : ", e);
       servlet.getMetrics().incrementFailedPutRequests(1);
       if (e instanceof TableNotFoundException) {
         return Response.status(Response.Status.NOT_FOUND)

@@ -29,7 +29,7 @@ import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.master.MasterFileSystem;
 import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.HFileTestUtil;
 import org.junit.After;
 import org.slf4j.Logger;
@@ -55,7 +55,8 @@ public class TestRefreshHFilesBase {
       CONF.set(HConstants.REGION_IMPL, regionImpl);
       CONF.setInt(HConstants.HBASE_CLIENT_RETRIES_NUMBER, 2);
 
-      CONF.setStrings(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY, RefreshHFilesEndpoint.class.getName());
+      CONF.setStrings(CoprocessorHost.REGION_COPROCESSOR_CONF_KEY,
+              RefreshHFilesEndpoint.class.getName());
       cluster = HTU.startMiniCluster(NUM_RS);
 
       // Create table
@@ -76,13 +77,13 @@ public class TestRefreshHFilesBase {
 
   protected void addHFilesToRegions() throws IOException {
     MasterFileSystem mfs = HTU.getMiniHBaseCluster().getMaster().getMasterFileSystem();
-    Path tableDir = FSUtils.getTableDir(mfs.getRootDir(), TABLE_NAME);
+    Path tableDir = CommonFSUtils.getTableDir(mfs.getRootDir(), TABLE_NAME);
     for (Region region : cluster.getRegions(TABLE_NAME)) {
       Path regionDir = new Path(tableDir, region.getRegionInfo().getEncodedName());
       Path familyDir = new Path(regionDir, Bytes.toString(FAMILY));
-      HFileTestUtil
-          .createHFile(HTU.getConfiguration(), HTU.getTestFileSystem(), new Path(familyDir, HFILE_NAME), FAMILY,
-              QUALIFIER, Bytes.toBytes("50"), Bytes.toBytes("60"), NUM_ROWS);
+      HFileTestUtil.createHFile(HTU.getConfiguration(), HTU.getTestFileSystem(),
+              new Path(familyDir, HFILE_NAME), FAMILY, QUALIFIER, Bytes.toBytes("50"),
+              Bytes.toBytes("60"), NUM_ROWS);
     }
   }
 }

@@ -18,7 +18,7 @@
 
 set -e
 function usage {
-  echo "Usage: ${0} [options] /path/to/component/bin-install /path/to/hadoop/executable /path/to/hadoop/hadoop-yarn-server-tests-tests.jar /path/to/hadoop/hadoop-mapreduce-client-jobclient-tests.jar"
+  echo "Usage: ${0} [options] /path/to/component/bin-install /path/to/hadoop/executable /path/to/share/hadoop/yarn/timelineservice /path/to/hadoop/hadoop-yarn-server-tests-tests.jar /path/to/hadoop/hadoop-mapreduce-client-jobclient-tests.jar /path/to/mapred/executable"
   echo ""
   echo "    --zookeeper-data /path/to/use                                     Where the embedded zookeeper instance should write its data."
   echo "                                                                      defaults to 'zk-data' in the working-dir."
@@ -33,7 +33,7 @@ function usage {
   exit 1
 }
 # if no args specified, show usage
-if [ $# -lt 4 ]; then
+if [ $# -lt 5 ]; then
   usage
 fi
 
@@ -62,16 +62,23 @@ do
 done
 
 # should still have where component checkout is.
-if [ $# -lt 4 ]; then
+if [ $# -lt 5 ]; then
   usage
 fi
 component_install="$(cd "$(dirname "$1")"; pwd)/$(basename "$1")"
 hadoop_exec="$(cd "$(dirname "$2")"; pwd)/$(basename "$2")"
-yarn_server_tests_test_jar="$(cd "$(dirname "$3")"; pwd)/$(basename "$3")"
-mapred_jobclient_test_jar="$(cd "$(dirname "$4")"; pwd)/$(basename "$4")"
+timeline_service_dir="$(cd "$(dirname "$3")"; pwd)/$(basename "$3")"
+yarn_server_tests_test_jar="$(cd "$(dirname "$4")"; pwd)/$(basename "$4")"
+mapred_jobclient_test_jar="$(cd "$(dirname "$5")"; pwd)/$(basename "$5")"
+mapred_exec="$(cd "$(dirname "$6")"; pwd)/$(basename "$6")"
 
 if [ ! -x "${hadoop_exec}" ]; then
   echo "hadoop cli does not appear to be executable." >&2
+  exit 1
+fi
+
+if [ ! -x "${mapred_exec}" ]; then
+  echo "mapred cli does not appear to be executable." >&2
   exit 1
 fi
 
@@ -169,7 +176,7 @@ fi
 
 echo "HBase version information:"
 "${component_install}/bin/hbase" version 2>/dev/null
-hbase_version=$("${component_install}/bin/hbase" version | head -n 1 2>/dev/null)
+hbase_version=$("${component_install}/bin/hbase" version 2>&1 | grep ^HBase | head -n 1)
 hbase_version="${hbase_version#HBase }"
 
 if [ ! -s "${hbase_client}/lib/shaded-clients/hbase-shaded-mapreduce-${hbase_version}.jar" ]; then
@@ -276,15 +283,27 @@ trap cleanup EXIT SIGQUIT
 
 echo "Starting up Hadoop"
 
-HADOOP_CLASSPATH="${yarn_server_tests_test_jar}" "${hadoop_exec}" jar "${mapred_jobclient_test_jar}" minicluster -writeConfig "${working_dir}/hbase-conf/core-site.xml" -writeDetails "${working_dir}/hadoop_cluster_info.json" >"${working_dir}/hadoop_cluster_command.out" 2>"${working_dir}/hadoop_cluster_command.err" &
+if [ "${hadoop_version%.*.*}" -gt 2 ]; then
+  "${mapred_exec}" minicluster -format -writeConfig "${working_dir}/hbase-conf/core-site.xml" -writeDetails "${working_dir}/hadoop_cluster_info.json" >"${working_dir}/hadoop_cluster_command.out" 2>"${working_dir}/hadoop_cluster_command.err" &
+else
+  HADOOP_CLASSPATH="${timeline_service_dir}/*:${timeline_service_dir}/lib/*:${yarn_server_tests_test_jar}" "${hadoop_exec}" jar "${mapred_jobclient_test_jar}" minicluster -format -writeConfig "${working_dir}/hbase-conf/core-site.xml" -writeDetails "${working_dir}/hadoop_cluster_info.json" >"${working_dir}/hadoop_cluster_command.out" 2>"${working_dir}/hadoop_cluster_command.err" &
+fi
+
 echo "$!" > "${working_dir}/hadoop.pid"
 
+# 2 + 4 + 8 + .. + 256 ~= 8.5 minutes.
+max_sleep_time=512
 sleep_time=2
-until [ -s "${working_dir}/hbase-conf/core-site.xml" ]; do
+until [[ -s "${working_dir}/hbase-conf/core-site.xml" || "${sleep_time}" -ge "${max_sleep_time}" ]]; do
   printf '\twaiting for Hadoop to finish starting up.\n'
   sleep "${sleep_time}"
   sleep_time="$((sleep_time*2))"
 done
+
+if [ "${sleep_time}" -ge "${max_sleep_time}" ] ; then
+  echo "time out waiting for Hadoop to startup" >&2
+  exit 1
+fi
 
 if [ "${hadoop_version%.*.*}" -gt 2 ]; then
   echo "Verifying configs"
@@ -507,8 +526,8 @@ EOF
 
 echo "Verifying row count from example."
 example_rowcount=$(echo 'count "test:example"' | "${hbase_client}/bin/hbase" --config "${working_dir}/hbase-conf/" shell --noninteractive 2>/dev/null | tail -n 1)
-if [ "${example_rowcount}" -gt "1050" ]; then
-  echo "Found ${example_rowcount} rows, which is enough to cover 48 for import, 1000 example's use of user table regions, 2 for example's use of meta/root regions, and 1 for example's count record"
+if [ "${example_rowcount}" -gt "1049" ]; then
+  echo "Found ${example_rowcount} rows, which is enough to cover 48 for import, 1000 example's use of user table regions, 1 for example's use of meta region, and 1 for example's count record"
 else
   echo "ERROR: Only found ${example_rowcount} rows."
 fi

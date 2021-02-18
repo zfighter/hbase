@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,7 +16,8 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hbase.master.assignment;
-
+import static org.apache.hadoop.hbase.HConstants.DEFAULT_HBASE_SPLIT_COORDINATED_BY_ZK;
+import static org.apache.hadoop.hbase.HConstants.HBASE_SPLIT_WAL_COORDINATED_BY_ZK;
 import static org.mockito.ArgumentMatchers.any;
 
 import java.io.IOException;
@@ -31,10 +32,9 @@ import org.apache.hadoop.hbase.ServerMetricsBuilder;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.HConnectionTestingUtility;
-import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.client.TableState;
@@ -44,6 +44,7 @@ import org.apache.hadoop.hbase.master.MasterServices;
 import org.apache.hadoop.hbase.master.MasterWalManager;
 import org.apache.hadoop.hbase.master.MockNoopMasterServices;
 import org.apache.hadoop.hbase.master.ServerManager;
+import org.apache.hadoop.hbase.master.SplitWALManager;
 import org.apache.hadoop.hbase.master.TableStateManager;
 import org.apache.hadoop.hbase.master.balancer.LoadBalancerFactory;
 import org.apache.hadoop.hbase.master.procedure.MasterProcedureConstants;
@@ -56,7 +57,7 @@ import org.apache.hadoop.hbase.procedure2.store.NoopProcedureStore;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStore;
 import org.apache.hadoop.hbase.procedure2.store.ProcedureStore.ProcedureStoreListener;
 import org.apache.hadoop.hbase.security.Superusers;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.zookeeper.KeeperException;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
@@ -65,7 +66,6 @@ import org.mockito.stubbing.Answer;
 import org.apache.hbase.thirdparty.com.google.protobuf.ServiceException;
 
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.MultiRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.MultiResponse;
@@ -81,13 +81,14 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.ResultOrEx
 public class MockMasterServices extends MockNoopMasterServices {
   private final MasterFileSystem fileSystemManager;
   private final MasterWalManager walManager;
+  private final SplitWALManager splitWALManager;
   private final AssignmentManager assignmentManager;
   private final TableStateManager tableStateManager;
 
   private MasterProcedureEnv procedureEnv;
   private ProcedureExecutor<MasterProcedureEnv> procedureExecutor;
   private ProcedureStore procedureStore;
-  private final ClusterConnection connection;
+  private final Connection connection;
   private final LoadBalancer balancer;
   private final ServerManager serverManager;
 
@@ -102,18 +103,12 @@ public class MockMasterServices extends MockNoopMasterServices {
     Superusers.initialize(conf);
     this.fileSystemManager = new MasterFileSystem(conf);
     this.walManager = new MasterWalManager(this);
-    // Mock an AM.
-    this.assignmentManager = new AssignmentManager(this, new MockRegionStateStore(this)) {
-      @Override
-      public boolean isTableEnabled(final TableName tableName) {
-        return true;
-      }
+    this.splitWALManager =
+      conf.getBoolean(HBASE_SPLIT_WAL_COORDINATED_BY_ZK, DEFAULT_HBASE_SPLIT_COORDINATED_BY_ZK)?
+        null: new SplitWALManager(this);
 
-      @Override
-      public boolean isTableDisabled(final TableName tableName) {
-        return false;
-      }
-    };
+    // Mock an AM.
+    this.assignmentManager = new AssignmentManager(this, new MockRegionStateStore(this));
     this.balancer = LoadBalancerFactory.getLoadBalancer(conf);
     this.serverManager = new ServerManager(this);
     this.tableStateManager = Mockito.mock(TableStateManager.class);
@@ -141,17 +136,10 @@ public class MockMasterServices extends MockNoopMasterServices {
     } catch (ServiceException se) {
       throw ProtobufUtil.getRemoteException(se);
     }
-    // Mock n ClusterConnection and an AdminProtocol implementation. Have the
-    // ClusterConnection return the HRI.  Have the HRI return a few mocked up responses
-    // to make our test work.
-    this.connection =
-        HConnectionTestingUtility.getMockedConnectionAndDecorate(getConfiguration(),
-          Mockito.mock(AdminProtos.AdminService.BlockingInterface.class), ri, MOCK_MASTER_SERVERNAME,
-          RegionInfoBuilder.FIRST_META_REGIONINFO);
+    this.connection = HConnectionTestingUtility.getMockedConnection(getConfiguration());
     // Set hbase.rootdir into test dir.
-    Path rootdir = FSUtils.getRootDir(getConfiguration());
-    FSUtils.setRootDir(getConfiguration(), rootdir);
-    Mockito.mock(AdminProtos.AdminService.BlockingInterface.class);
+    Path rootdir = CommonFSUtils.getRootDir(getConfiguration());
+    CommonFSUtils.setRootDir(getConfiguration(), rootdir);
   }
 
   public void start(final int numServes, final RSProcedureDispatcher remoteDispatcher)
@@ -284,7 +272,7 @@ public class MockMasterServices extends MockNoopMasterServices {
   }
 
   @Override
-  public ClusterConnection getConnection() {
+  public Connection getConnection() {
     return this.connection;
   }
 
@@ -336,16 +324,8 @@ public class MockMasterServices extends MockNoopMasterServices {
       }
 
       @Override
-      public void add(TableDescriptor htd) throws IOException {
+      public void update(TableDescriptor htd, boolean cacheOnly) throws IOException {
         // noop
-      }
-
-      @Override
-      public void setCacheOn() throws IOException {
-      }
-
-      @Override
-      public void setCacheOff() throws IOException {
       }
     };
   }
@@ -366,5 +346,9 @@ public class MockMasterServices extends MockNoopMasterServices {
       builder.addRegionActionResult(regionActionResultBuilder.build());
     }
     return builder.build();
+  }
+
+  @Override public SplitWALManager getSplitWALManager() {
+    return splitWALManager;
   }
 }

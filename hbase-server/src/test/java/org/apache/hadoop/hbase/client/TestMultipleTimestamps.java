@@ -23,8 +23,11 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import org.apache.hadoop.hbase.*;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -115,7 +118,7 @@ public class TestMultipleTimestamps {
     ResultScanner scanner = scan(ht, FAMILY, scanRows, scanColumns,
         scanTimestamps, scanMaxVersions);
 
-    Cell [] kvs;
+    Cell[] kvs;
 
     kvs = scanner.next().rawCells();
     assertEquals(2, kvs.length);
@@ -192,7 +195,7 @@ public class TestMultipleTimestamps {
 
     TEST_UTIL.flush(tableName);
     Scan scan = new Scan();
-    scan.setMaxVersions(10);
+    scan.readVersions(10);
     ResultScanner scanner = ht.getScanner(scan);
     while (true) {
       Result r = scanner.next();
@@ -437,7 +440,7 @@ public class TestMultipleTimestamps {
     byte column[] = Bytes.toBytes("column:" + colIdx);
     Get get = new Get(row);
     get.addColumn(cf, column);
-    get.setMaxVersions();
+    get.readAllVersions();
     get.setTimeRange(Collections.min(versions), Collections.max(versions)+1);
     Result result = ht.get(get);
 
@@ -452,12 +455,12 @@ public class TestMultipleTimestamps {
         Collections.min( Arrays.asList(rowIndexes)));
     byte endRow[] = Bytes.toBytes("row:" +
         Collections.max( Arrays.asList(rowIndexes))+1);
-    Scan scan = new Scan(startRow, endRow);
+    Scan scan = new Scan().withStartRow(startRow).withStopRow(endRow);
     for (Integer colIdx: columnIndexes) {
       byte column[] = Bytes.toBytes("column:" + colIdx);
       scan.addColumn(cf, column);
     }
-    scan.setMaxVersions(maxVersions);
+    scan.readVersions(maxVersions);
     scan.setTimeRange(Collections.min(Arrays.asList(versions)),
         Collections.max(Arrays.asList(versions))+1);
     ResultScanner scanner = ht.getScanner(scan);

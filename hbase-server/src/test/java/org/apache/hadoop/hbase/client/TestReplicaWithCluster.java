@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,10 +18,12 @@
 package org.apache.hadoop.hbase.client;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -32,28 +34,22 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
-import org.apache.hadoop.hbase.RegionLocations;
-import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Waiter;
-import org.apache.hadoop.hbase.client.replication.ReplicationAdmin;
 import org.apache.hadoop.hbase.coprocessor.CoreCoprocessor;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessor;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.RegionObserver;
-import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
 import org.apache.hadoop.hbase.regionserver.RegionServerStoppedException;
 import org.apache.hadoop.hbase.regionserver.StorefileRefresherChore;
 import org.apache.hadoop.hbase.regionserver.TestHRegionServerBulkLoad;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.tool.BulkLoadHFiles;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.zookeeper.MiniZooKeeperCluster;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -64,7 +60,7 @@ import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@Category({MediumTests.class, ClientTests.class})
+@Category({LargeTests.class, ClientTests.class})
 public class TestReplicaWithCluster {
 
   @ClassRule
@@ -253,12 +249,6 @@ public class TestReplicaWithCluster {
     HTU.getConfiguration().setInt("hbase.client.primaryCallTimeout.get", 1000000);
     HTU.getConfiguration().setInt("hbase.client.primaryCallTimeout.scan", 1000000);
 
-    // Retry less so it can fail faster
-    HTU.getConfiguration().setInt("hbase.client.retries.number", 1);
-
-    // Enable meta replica at server side
-    HTU.getConfiguration().setInt("hbase.meta.replica.count", 2);
-
     // Make sure master does not host system tables.
     HTU.getConfiguration().set("hbase.balancer.tablesOnMaster", "none");
 
@@ -270,6 +260,9 @@ public class TestReplicaWithCluster {
         META_SCAN_TIMEOUT_IN_MILLISEC * 1000);
 
     HTU.startMiniCluster(NB_SERVERS);
+    // Enable meta replica at server side
+    HBaseTestingUtility.setReplicas(HTU.getAdmin(), TableName.META_TABLE_NAME, 2);
+
     HTU.getHBaseCluster().startMaster();
   }
 
@@ -283,10 +276,14 @@ public class TestReplicaWithCluster {
   @Test
   public void testCreateDeleteTable() throws IOException {
     // Create table then get the single region for our new table.
-    HTableDescriptor hdt = HTU.createTableDescriptor("testCreateDeleteTable");
-    hdt.setRegionReplication(NB_SERVERS);
-    hdt.addCoprocessor(SlowMeCopro.class.getName());
-    Table table = HTU.createTable(hdt, new byte[][]{f}, null);
+    TableDescriptorBuilder builder =
+      HTU.createModifyableTableDescriptor(TableName.valueOf("testCreateDeleteTable"),
+        ColumnFamilyDescriptorBuilder.DEFAULT_MIN_VERSIONS, 3, HConstants.FOREVER,
+        ColumnFamilyDescriptorBuilder.DEFAULT_KEEP_DELETED);
+    builder.setRegionReplication(NB_SERVERS);
+    builder.setCoprocessor(SlowMeCopro.class.getName());
+    TableDescriptor hdt = builder.build();
+    Table table = HTU.createTable(hdt, new byte[][] { f }, null);
 
     Put p = new Put(row);
     p.addColumn(f, row, row);
@@ -375,15 +372,15 @@ public class TestReplicaWithCluster {
   @SuppressWarnings("deprecation")
   @Test
   public void testReplicaAndReplication() throws Exception {
-    HTableDescriptor hdt = HTU.createTableDescriptor("testReplicaAndReplication");
-    hdt.setRegionReplication(NB_SERVERS);
+    TableDescriptorBuilder builder =
+      HTU.createModifyableTableDescriptor("testReplicaAndReplication");
+    builder.setRegionReplication(NB_SERVERS);
+    builder.setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(row)
+      .setScope(HConstants.REPLICATION_SCOPE_GLOBAL).build());
 
-    HColumnDescriptor fam = new HColumnDescriptor(row);
-    fam.setScope(HConstants.REPLICATION_SCOPE_GLOBAL);
-    hdt.addFamily(fam);
-
-    hdt.addCoprocessor(SlowMeCopro.class.getName());
-    HTU.getAdmin().createTable(hdt, HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE);
+    builder.setCoprocessor(SlowMeCopro.class.getName());
+    TableDescriptor tableDescriptor = builder.build();
+    HTU.getAdmin().createTable(tableDescriptor, HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE);
 
     Configuration conf2 = HBaseConfiguration.create(HTU.getConfiguration());
     conf2.set(HConstants.HBASE_CLIENT_INSTANCE_ID, String.valueOf(-1));
@@ -394,18 +391,18 @@ public class TestReplicaWithCluster {
     HTU2.setZkCluster(miniZK);
     HTU2.startMiniCluster(NB_SERVERS);
     LOG.info("Setup second Zk");
-    HTU2.getAdmin().createTable(hdt, HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE);
+    HTU2.getAdmin().createTable(tableDescriptor, HBaseTestingUtility.KEYS_FOR_HBA_CREATE_TABLE);
 
-    ReplicationAdmin admin = new ReplicationAdmin(HTU.getConfiguration());
-
-    ReplicationPeerConfig rpc = new ReplicationPeerConfig();
-    rpc.setClusterKey(HTU2.getClusterKey());
-    admin.addPeer("2", rpc, null);
-    admin.close();
+    try (Connection connection = ConnectionFactory.createConnection(HTU.getConfiguration());
+      Admin admin = connection.getAdmin()) {
+      ReplicationPeerConfig rpc = ReplicationPeerConfig.newBuilder()
+        .setClusterKey(HTU2.getClusterKey()).build();
+      admin.addReplicationPeer("2", rpc);
+    }
 
     Put p = new Put(row);
     p.addColumn(row, row, row);
-    final Table table = HTU.getConnection().getTable(hdt.getTableName());
+    final Table table = HTU.getConnection().getTable(tableDescriptor.getTableName());
     table.put(p);
 
     HTU.getAdmin().flush(table.getName());
@@ -429,7 +426,7 @@ public class TestReplicaWithCluster {
     table.close();
     LOG.info("stale get on the first cluster done. Now for the second.");
 
-    final Table table2 = HTU.getConnection().getTable(hdt.getTableName());
+    final Table table2 = HTU.getConnection().getTable(tableDescriptor.getTableName());
     Waiter.waitFor(HTU.getConfiguration(), 1000, new Waiter.Predicate<Exception>() {
       @Override public boolean evaluate() throws Exception {
         try {
@@ -447,11 +444,11 @@ public class TestReplicaWithCluster {
     });
     table2.close();
 
-    HTU.getAdmin().disableTable(hdt.getTableName());
-    HTU.deleteTable(hdt.getTableName());
+    HTU.getAdmin().disableTable(tableDescriptor.getTableName());
+    HTU.deleteTable(tableDescriptor.getTableName());
 
-    HTU2.getAdmin().disableTable(hdt.getTableName());
-    HTU2.deleteTable(hdt.getTableName());
+    HTU2.getAdmin().disableTable(tableDescriptor.getTableName());
+    HTU2.deleteTable(tableDescriptor.getTableName());
 
     // We shutdown HTU2 minicluster later, in afterClass(), as shutting down
     // the minicluster has negative impact of deleting all HConnections in JVM.
@@ -461,10 +458,13 @@ public class TestReplicaWithCluster {
   public void testBulkLoad() throws IOException {
     // Create table then get the single region for our new table.
     LOG.debug("Creating test table");
-    HTableDescriptor hdt = HTU.createTableDescriptor("testBulkLoad");
-    hdt.setRegionReplication(NB_SERVERS);
-    hdt.addCoprocessor(SlowMeCopro.class.getName());
-    Table table = HTU.createTable(hdt, new byte[][]{f}, null);
+    TableDescriptorBuilder builder = HTU.createModifyableTableDescriptor(
+      TableName.valueOf("testBulkLoad"), ColumnFamilyDescriptorBuilder.DEFAULT_MIN_VERSIONS, 3,
+      HConstants.FOREVER, ColumnFamilyDescriptorBuilder.DEFAULT_KEEP_DELETED);
+    builder.setRegionReplication(NB_SERVERS);
+    builder.setCoprocessor(SlowMeCopro.class.getName());
+    TableDescriptor hdt = builder.build();
+    Table table = HTU.createTable(hdt, new byte[][] { f }, null);
 
     // create hfiles to load.
     LOG.debug("Creating test data");
@@ -472,40 +472,17 @@ public class TestReplicaWithCluster {
     final int numRows = 10;
     final byte[] qual = Bytes.toBytes("qual");
     final byte[] val  = Bytes.toBytes("val");
-    final List<Pair<byte[], String>> famPaths = new ArrayList<>();
-    for (HColumnDescriptor col : hdt.getColumnFamilies()) {
+    Map<byte[], List<Path>> family2Files = new TreeMap<>(Bytes.BYTES_COMPARATOR);
+    for (ColumnFamilyDescriptor col : hdt.getColumnFamilies()) {
       Path hfile = new Path(dir, col.getNameAsString());
-      TestHRegionServerBulkLoad.createHFile(HTU.getTestFileSystem(), hfile, col.getName(),
-        qual, val, numRows);
-      famPaths.add(new Pair<>(col.getName(), hfile.toString()));
+      TestHRegionServerBulkLoad.createHFile(HTU.getTestFileSystem(), hfile, col.getName(), qual,
+        val, numRows);
+      family2Files.put(col.getName(), Collections.singletonList(hfile));
     }
 
     // bulk load HFiles
     LOG.debug("Loading test data");
-    final ClusterConnection conn = (ClusterConnection) HTU.getAdmin().getConnection();
-    table = conn.getTable(hdt.getTableName());
-    final String bulkToken =
-        new SecureBulkLoadClient(HTU.getConfiguration(), table).prepareBulkLoad(conn);
-    ClientServiceCallable<Void> callable = new ClientServiceCallable<Void>(conn,
-        hdt.getTableName(), TestHRegionServerBulkLoad.rowkey(0),
-        new RpcControllerFactory(HTU.getConfiguration()).newController(), HConstants.PRIORITY_UNSET) {
-      @Override
-      protected Void rpcCall() throws Exception {
-        LOG.debug("Going to connect to server " + getLocation() + " for row "
-            + Bytes.toStringBinary(getRow()));
-        SecureBulkLoadClient secureClient = null;
-        byte[] regionName = getLocation().getRegionInfo().getRegionName();
-        try (Table table = conn.getTable(getTableName())) {
-          secureClient = new SecureBulkLoadClient(HTU.getConfiguration(), table);
-          secureClient.secureBulkLoadHFiles(getStub(), famPaths, regionName,
-              true, null, bulkToken);
-        }
-        return null;
-      }
-    };
-    RpcRetryingCallerFactory factory = new RpcRetryingCallerFactory(HTU.getConfiguration());
-    RpcRetryingCaller<Void> caller = factory.newCaller();
-    caller.callWithRetries(callable, 10000);
+    BulkLoadHFiles.create(HTU.getConfiguration()).bulkLoad(hdt.getTableName(), family2Files);
 
     // verify we can read them from the primary
     LOG.debug("Verifying data load");
@@ -540,9 +517,13 @@ public class TestReplicaWithCluster {
   @Test
   public void testReplicaGetWithPrimaryDown() throws IOException {
     // Create table then get the single region for our new table.
-    HTableDescriptor hdt = HTU.createTableDescriptor("testCreateDeleteTable");
-    hdt.setRegionReplication(NB_SERVERS);
-    hdt.addCoprocessor(RegionServerStoppedCopro.class.getName());
+    TableDescriptorBuilder builder =
+      HTU.createModifyableTableDescriptor(TableName.valueOf("testCreateDeleteTable"),
+        ColumnFamilyDescriptorBuilder.DEFAULT_MIN_VERSIONS, 3, HConstants.FOREVER,
+        ColumnFamilyDescriptorBuilder.DEFAULT_KEEP_DELETED);
+    builder.setRegionReplication(NB_SERVERS);
+    builder.setCoprocessor(RegionServerStoppedCopro.class.getName());
+    TableDescriptor hdt = builder.build();
     try {
       Table table = HTU.createTable(hdt, new byte[][] { f }, null);
 
@@ -574,10 +555,13 @@ public class TestReplicaWithCluster {
   @Test
   public void testReplicaScanWithPrimaryDown() throws IOException {
     // Create table then get the single region for our new table.
-    HTableDescriptor hdt = HTU.createTableDescriptor("testCreateDeleteTable");
-    hdt.setRegionReplication(NB_SERVERS);
-    hdt.addCoprocessor(RegionServerStoppedCopro.class.getName());
-
+    TableDescriptorBuilder builder =
+      HTU.createModifyableTableDescriptor(TableName.valueOf("testCreateDeleteTable"),
+        ColumnFamilyDescriptorBuilder.DEFAULT_MIN_VERSIONS, 3, HConstants.FOREVER,
+        ColumnFamilyDescriptorBuilder.DEFAULT_KEEP_DELETED);
+    builder.setRegionReplication(NB_SERVERS);
+    builder.setCoprocessor(RegionServerStoppedCopro.class.getName());
+    TableDescriptor hdt = builder.build();
     try {
       Table table = HTU.createTable(hdt, new byte[][] { f }, null);
 
@@ -616,14 +600,18 @@ public class TestReplicaWithCluster {
   }
 
   @Test
-  public void testReplicaGetWithRpcClientImpl() throws IOException {
+  public void testReplicaGetWithAsyncRpcClientImpl() throws IOException {
     HTU.getConfiguration().setBoolean("hbase.ipc.client.specificThreadForWriting", true);
-    HTU.getConfiguration().set("hbase.rpc.client.impl", "org.apache.hadoop.hbase.ipc.RpcClientImpl");
+    HTU.getConfiguration().set("hbase.rpc.client.impl",
+      "org.apache.hadoop.hbase.ipc.AsyncRpcClient");
     // Create table then get the single region for our new table.
-    HTableDescriptor hdt = HTU.createTableDescriptor("testReplicaGetWithRpcClientImpl");
-    hdt.setRegionReplication(NB_SERVERS);
-    hdt.addCoprocessor(SlowMeCopro.class.getName());
-
+    TableDescriptorBuilder builder =
+      HTU.createModifyableTableDescriptor(TableName.valueOf("testReplicaGetWithAsyncRpcClientImpl"),
+        ColumnFamilyDescriptorBuilder.DEFAULT_MIN_VERSIONS, 3, HConstants.FOREVER,
+        ColumnFamilyDescriptorBuilder.DEFAULT_KEEP_DELETED);
+    builder.setRegionReplication(NB_SERVERS);
+    builder.setCoprocessor(SlowMeCopro.class.getName());
+    TableDescriptor hdt = builder.build();
     try {
       Table table = HTU.createTable(hdt, new byte[][] { f }, null);
 
@@ -660,136 +648,6 @@ public class TestReplicaWithCluster {
     } finally {
       HTU.getConfiguration().unset("hbase.ipc.client.specificThreadForWriting");
       HTU.getConfiguration().unset("hbase.rpc.client.impl");
-      HTU.getAdmin().disableTable(hdt.getTableName());
-      HTU.deleteTable(hdt.getTableName());
-    }
-  }
-
-  // This test is to test when hbase.client.metaReplicaCallTimeout.scan is configured, meta table
-  // scan will always get the result from primary meta region as long as the result is returned
-  // within configured hbase.client.metaReplicaCallTimeout.scan from primary meta region.
-  @Test
-  public void testGetRegionLocationFromPrimaryMetaRegion() throws IOException, InterruptedException {
-    HTU.getAdmin().balancerSwitch(false, true);
-
-    ((ConnectionImplementation) HTU.getAdmin().getConnection()).setUseMetaReplicas(true);
-
-    // Create table then get the single region for our new table.
-    HTableDescriptor hdt = HTU.createTableDescriptor("testGetRegionLocationFromPrimaryMetaRegion");
-    hdt.setRegionReplication(2);
-    try {
-
-      HTU.createTable(hdt, new byte[][] { f }, null);
-
-      RegionServerHostingPrimayMetaRegionSlowOrStopCopro.slowDownPrimaryMetaScan = true;
-
-      // Get user table location, always get it from the primary meta replica
-      RegionLocations url = ((ClusterConnection) HTU.getConnection())
-          .locateRegion(hdt.getTableName(), row, false, false);
-
-    } finally {
-      RegionServerHostingPrimayMetaRegionSlowOrStopCopro.slowDownPrimaryMetaScan = false;
-      ((ConnectionImplementation) HTU.getAdmin().getConnection()).setUseMetaReplicas(false);
-      HTU.getAdmin().balancerSwitch(true, true);
-      HTU.getAdmin().disableTable(hdt.getTableName());
-      HTU.deleteTable(hdt.getTableName());
-    }
-  }
-
-
-  // This test is to simulate the case that the meta region and the primary user region
-  // are down, hbase client is able to access user replica regions and return stale data.
-  // Meta replica is enabled to show the case that the meta replica region could be out of sync
-  // with the primary meta region.
-  @Test
-  public void testReplicaGetWithPrimaryAndMetaDown() throws IOException, InterruptedException {
-    HTU.getAdmin().balancerSwitch(false, true);
-
-    ((ConnectionImplementation)HTU.getAdmin().getConnection()).setUseMetaReplicas(true);
-
-    // Create table then get the single region for our new table.
-    HTableDescriptor hdt = HTU.createTableDescriptor("testReplicaGetWithPrimaryAndMetaDown");
-    hdt.setRegionReplication(2);
-    try {
-
-      Table table = HTU.createTable(hdt, new byte[][] { f }, null);
-
-      // Get Meta location
-      RegionLocations mrl = ((ClusterConnection) HTU.getConnection())
-          .locateRegion(TableName.META_TABLE_NAME,
-              HConstants.EMPTY_START_ROW, false, false);
-
-      // Get user table location
-      RegionLocations url = ((ClusterConnection) HTU.getConnection())
-          .locateRegion(hdt.getTableName(), row, false, false);
-
-      // Make sure that user primary region is co-hosted with the meta region
-      if (!url.getDefaultRegionLocation().getServerName().equals(
-          mrl.getDefaultRegionLocation().getServerName())) {
-        HTU.moveRegionAndWait(url.getDefaultRegionLocation().getRegionInfo(),
-            mrl.getDefaultRegionLocation().getServerName());
-      }
-
-      // Make sure that the user replica region is not hosted by the same region server with
-      // primary
-      if (url.getRegionLocation(1).getServerName().equals(mrl.getDefaultRegionLocation()
-          .getServerName())) {
-        HTU.moveRegionAndWait(url.getRegionLocation(1).getRegionInfo(),
-            url.getDefaultRegionLocation().getServerName());
-      }
-
-      // Wait until the meta table is updated with new location info
-      while (true) {
-        mrl = ((ClusterConnection) HTU.getConnection())
-            .locateRegion(TableName.META_TABLE_NAME, HConstants.EMPTY_START_ROW, false, false);
-
-        // Get user table location
-        url = ((ClusterConnection) HTU.getConnection())
-            .locateRegion(hdt.getTableName(), row, false, true);
-
-        LOG.info("meta locations " + mrl);
-        LOG.info("table locations " + url);
-        ServerName a = url.getDefaultRegionLocation().getServerName();
-        ServerName b = mrl.getDefaultRegionLocation().getServerName();
-        if(a.equals(b)) {
-          break;
-        } else {
-          LOG.info("Waiting for new region info to be updated in meta table");
-          Thread.sleep(100);
-        }
-      }
-
-      Put p = new Put(row);
-      p.addColumn(f, row, row);
-      table.put(p);
-
-      // Flush so it can be picked by the replica refresher thread
-      HTU.flush(table.getName());
-
-      // Sleep for some time until data is picked up by replicas
-      try {
-        Thread.sleep(2 * REFRESH_PERIOD);
-      } catch (InterruptedException e1) {
-        LOG.error(e1.toString(), e1);
-      }
-
-      // Simulating the RS down
-      RegionServerHostingPrimayMetaRegionSlowOrStopCopro.throwException = true;
-
-      // The first Get is supposed to succeed
-      Get g = new Get(row);
-      g.setConsistency(Consistency.TIMELINE);
-      Result r = table.get(g);
-      Assert.assertTrue(r.isStale());
-
-      // The second Get will succeed as well
-      r = table.get(g);
-      Assert.assertTrue(r.isStale());
-
-    } finally {
-      ((ConnectionImplementation)HTU.getAdmin().getConnection()).setUseMetaReplicas(false);
-      RegionServerHostingPrimayMetaRegionSlowOrStopCopro.throwException = false;
-      HTU.getAdmin().balancerSwitch(true, true);
       HTU.getAdmin().disableTable(hdt.getTableName());
       HTU.deleteTable(hdt.getTableName());
     }

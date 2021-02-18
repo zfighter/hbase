@@ -26,14 +26,13 @@ import com.codahale.metrics.JmxReporter;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.RatioGauge;
 import com.codahale.metrics.Timer;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-
+import java.util.function.Supplier;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.hbase.thirdparty.com.google.protobuf.Descriptors.MethodDescriptor;
@@ -58,6 +57,7 @@ public class MetricsConnection implements StatisticTrackable {
   /** Set this key to {@code true} to enable metrics collection of client requests. */
   public static final String CLIENT_SIDE_METRICS_ENABLED_KEY = "hbase.client.metrics.enable";
 
+  private static final String CNT_BASE = "rpcCount_";
   private static final String DRTN_BASE = "rpcCallDurationMs_";
   private static final String REQ_BASE = "rpcCallRequestSizeBytes_";
   private static final String RESP_BASE = "rpcCallResponseSizeBytes_";
@@ -65,6 +65,8 @@ public class MetricsConnection implements StatisticTrackable {
   private static final String HEAP_BASE = "heapOccupancy_";
   private static final String CACHE_BASE = "cacheDroppingExceptions_";
   private static final String UNKNOWN_EXCEPTION = "UnknownException";
+  private static final String NS_LOOKUPS = "nsLookups";
+  private static final String NS_LOOKUPS_FAILED = "nsLookupsFailed";
   private static final String CLIENT_SVC = ClientService.getDescriptor().getName();
 
   /** A container class for collecting details about the RPC call as it percolates. */
@@ -125,12 +127,11 @@ public class MetricsConnection implements StatisticTrackable {
     }
   }
 
-  @VisibleForTesting
   protected static final class CallTracker {
     private final String name;
-    @VisibleForTesting final Timer callTimer;
-    @VisibleForTesting final Histogram reqHist;
-    @VisibleForTesting final Histogram respHist;
+    final Timer callTimer;
+    final Histogram reqHist;
+    final Histogram respHist;
 
     private CallTracker(MetricRegistry registry, String name, String subName, String scope) {
       StringBuilder sb = new StringBuilder(CLIENT_SVC).append("_").append(name);
@@ -181,7 +182,6 @@ public class MetricsConnection implements StatisticTrackable {
     }
   }
 
-  @VisibleForTesting
   protected static class RunnerStats {
     final Counter normalRunners;
     final Counter delayRunners;
@@ -209,7 +209,6 @@ public class MetricsConnection implements StatisticTrackable {
     }
   }
 
-  @VisibleForTesting
   protected ConcurrentHashMap<ServerName, ConcurrentMap<byte[], RegionStats>> serverStats
           = new ConcurrentHashMap<>();
 
@@ -246,8 +245,7 @@ public class MetricsConnection implements StatisticTrackable {
   /** Default load factor from {@link java.util.HashMap#DEFAULT_LOAD_FACTOR} */
   private static final float LOAD_FACTOR = 0.75f;
   /**
-   * Anticipated number of concurrent accessor threads, from
-   * {@link ConnectionImplementation#getBatchPool()}
+   * Anticipated number of concurrent accessor threads
    */
   private static final int CONCURRENCY_LEVEL = 256;
 
@@ -275,60 +273,64 @@ public class MetricsConnection implements StatisticTrackable {
 
   // static metrics
 
-  @VisibleForTesting protected final Counter metaCacheHits;
-  @VisibleForTesting protected final Counter metaCacheMisses;
-  @VisibleForTesting protected final CallTracker getTracker;
-  @VisibleForTesting protected final CallTracker scanTracker;
-  @VisibleForTesting protected final CallTracker appendTracker;
-  @VisibleForTesting protected final CallTracker deleteTracker;
-  @VisibleForTesting protected final CallTracker incrementTracker;
-  @VisibleForTesting protected final CallTracker putTracker;
-  @VisibleForTesting protected final CallTracker multiTracker;
-  @VisibleForTesting protected final RunnerStats runnerStats;
-  @VisibleForTesting protected final Counter metaCacheNumClearServer;
-  @VisibleForTesting protected final Counter metaCacheNumClearRegion;
-  @VisibleForTesting protected final Counter hedgedReadOps;
-  @VisibleForTesting protected final Counter hedgedReadWin;
-  @VisibleForTesting protected final Histogram concurrentCallsPerServerHist;
-  @VisibleForTesting protected final Histogram numActionsPerServerHist;
+  protected final Counter metaCacheHits;
+  protected final Counter metaCacheMisses;
+  protected final CallTracker getTracker;
+  protected final CallTracker scanTracker;
+  protected final CallTracker appendTracker;
+  protected final CallTracker deleteTracker;
+  protected final CallTracker incrementTracker;
+  protected final CallTracker putTracker;
+  protected final CallTracker multiTracker;
+  protected final RunnerStats runnerStats;
+  protected final Counter metaCacheNumClearServer;
+  protected final Counter metaCacheNumClearRegion;
+  protected final Counter hedgedReadOps;
+  protected final Counter hedgedReadWin;
+  protected final Histogram concurrentCallsPerServerHist;
+  protected final Histogram numActionsPerServerHist;
+  protected final Counter nsLookups;
+  protected final Counter nsLookupsFailed;
 
   // dynamic metrics
 
   // These maps are used to cache references to the metric instances that are managed by the
   // registry. I don't think their use perfectly removes redundant allocations, but it's
   // a big improvement over calling registry.newMetric each time.
-  @VisibleForTesting protected final ConcurrentMap<String, Timer> rpcTimers =
+  protected final ConcurrentMap<String, Timer> rpcTimers =
       new ConcurrentHashMap<>(CAPACITY, LOAD_FACTOR, CONCURRENCY_LEVEL);
-  @VisibleForTesting protected final ConcurrentMap<String, Histogram> rpcHistograms =
+  protected final ConcurrentMap<String, Histogram> rpcHistograms =
       new ConcurrentHashMap<>(CAPACITY * 2 /* tracking both request and response sizes */,
           LOAD_FACTOR, CONCURRENCY_LEVEL);
   private final ConcurrentMap<String, Counter> cacheDroppingExceptions =
     new ConcurrentHashMap<>(CAPACITY, LOAD_FACTOR, CONCURRENCY_LEVEL);
+  protected final ConcurrentMap<String, Counter>  rpcCounters =
+      new ConcurrentHashMap<>(CAPACITY, LOAD_FACTOR, CONCURRENCY_LEVEL);
 
-  MetricsConnection(final ConnectionImplementation conn) {
-    this.scope = conn.toString();
+  MetricsConnection(String scope, Supplier<ThreadPoolExecutor> batchPool,
+      Supplier<ThreadPoolExecutor> metaPool) {
+    this.scope = scope;
     this.registry = new MetricRegistry();
-
     this.registry.register(getExecutorPoolName(),
         new RatioGauge() {
           @Override
           protected Ratio getRatio() {
-            ThreadPoolExecutor batchPool = (ThreadPoolExecutor) conn.getCurrentBatchPool();
-            if (batchPool == null) {
+            ThreadPoolExecutor pool = batchPool.get();
+            if (pool == null) {
               return Ratio.of(0, 0);
             }
-            return Ratio.of(batchPool.getActiveCount(), batchPool.getMaximumPoolSize());
+            return Ratio.of(pool.getActiveCount(), pool.getMaximumPoolSize());
           }
         });
     this.registry.register(getMetaPoolName(),
         new RatioGauge() {
           @Override
           protected Ratio getRatio() {
-            ThreadPoolExecutor metaPool = (ThreadPoolExecutor) conn.getCurrentMetaLookupPool();
-            if (metaPool == null) {
+            ThreadPoolExecutor pool = metaPool.get();
+            if (pool == null) {
               return Ratio.of(0, 0);
             }
-            return Ratio.of(metaPool.getActiveCount(), metaPool.getMaximumPoolSize());
+            return Ratio.of(pool.getActiveCount(), pool.getMaximumPoolSize());
           }
         });
     this.metaCacheHits = registry.counter(name(this.getClass(), "metaCacheHits", scope));
@@ -351,22 +353,21 @@ public class MetricsConnection implements StatisticTrackable {
       "concurrentCallsPerServer", scope));
     this.numActionsPerServerHist = registry.histogram(name(MetricsConnection.class,
       "numActionsPerServer", scope));
+    this.nsLookups = registry.counter(name(this.getClass(), NS_LOOKUPS, scope));
+    this.nsLookupsFailed = registry.counter(name(this.getClass(), NS_LOOKUPS_FAILED, scope));
 
     this.reporter = JmxReporter.forRegistry(this.registry).build();
     this.reporter.start();
   }
 
-  @VisibleForTesting
   final String getExecutorPoolName() {
     return name(getClass(), "executorPoolActiveThreads", scope);
   }
 
-  @VisibleForTesting
   final String getMetaPoolName() {
     return name(getClass(), "metaPoolActiveThreads", scope);
   }
 
-  @VisibleForTesting
   MetricRegistry getMetricRegistry() {
     return registry;
   }
@@ -401,6 +402,11 @@ public class MetricsConnection implements StatisticTrackable {
     metaCacheNumClearRegion.inc();
   }
 
+  /** Increment the number of meta cache drops requested for individual region. */
+  public void incrMetaCacheNumClearRegion(int count) {
+    metaCacheNumClearRegion.inc(count);
+  }
+
   /** Increment the number of hedged read that have occurred. */
   public void incrHedgedReadOps() {
     hedgedReadOps.inc();
@@ -416,13 +422,9 @@ public class MetricsConnection implements StatisticTrackable {
     this.runnerStats.incrNormalRunners();
   }
 
-  /** Increment the number of delay runner counts. */
-  public void incrDelayRunners() {
+  /** Increment the number of delay runner counts and update delay interval of delay runner. */
+  public void incrDelayRunnersAndUpdateDelayInterval(long interval) {
     this.runnerStats.incrDelayRunners();
-  }
-
-  /** Update delay interval of delay runner. */
-  public void updateDelayInterval(long interval) {
     this.runnerStats.updateDelayInterval(interval);
   }
 
@@ -434,8 +436,7 @@ public class MetricsConnection implements StatisticTrackable {
   }
 
   /** Update call stats for non-critical-path methods */
-  private void updateRpcGeneric(MethodDescriptor method, CallStats stats) {
-    final String methodName = method.getService().getName() + "_" + method.getName();
+  private void updateRpcGeneric(String methodName, CallStats stats) {
     getMetric(DRTN_BASE + methodName, rpcTimers, timerFactory)
         .update(stats.getCallTimeMs(), TimeUnit.MILLISECONDS);
     getMetric(REQ_BASE + methodName, rpcHistograms, histogramFactory)
@@ -450,6 +451,9 @@ public class MetricsConnection implements StatisticTrackable {
     if (callsPerServer > 0) {
       concurrentCallsPerServerHist.update(callsPerServer);
     }
+    // Update the counter that tracks RPCs by type.
+    final String methodName = method.getService().getName() + "_" + method.getName();
+    getMetric(CNT_BASE + methodName, rpcCounters, counterFactory).inc();
     // this implementation is tied directly to protobuf implementation details. would be better
     // if we could dispatch based on something static, ie, request Message type.
     if (method.getService() == ClientService.getDescriptor()) {
@@ -511,12 +515,20 @@ public class MetricsConnection implements StatisticTrackable {
       }
     }
     // Fallback to dynamic registry lookup for DDL methods.
-    updateRpcGeneric(method, stats);
+    updateRpcGeneric(methodName, stats);
   }
 
   public void incrCacheDroppingExceptions(Object exception) {
     getMetric(CACHE_BASE +
       (exception == null? UNKNOWN_EXCEPTION : exception.getClass().getSimpleName()),
       cacheDroppingExceptions, counterFactory).inc();
+  }
+
+  public void incrNsLookups() {
+    this.nsLookups.inc();
+  }
+
+  public void incrNsLookupsFailed() {
+    this.nsLookupsFailed.inc();
   }
 }

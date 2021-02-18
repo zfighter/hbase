@@ -21,9 +21,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import com.google.protobuf.RpcCallback;
-import com.google.protobuf.RpcController;
-import com.google.protobuf.Service;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Collections;
@@ -34,13 +31,7 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.RetriesExhaustedException;
 import org.apache.hadoop.hbase.client.TestAsyncAdminBase;
-import org.apache.hadoop.hbase.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos;
-import org.apache.hadoop.hbase.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos.DummyRequest;
-import org.apache.hadoop.hbase.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos.DummyResponse;
-import org.apache.hadoop.hbase.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos.DummyService;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcUtils;
-import org.apache.hadoop.hbase.ipc.protobuf.generated.TestProtos;
-import org.apache.hadoop.hbase.ipc.protobuf.generated.TestRpcServiceProtos;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.junit.BeforeClass;
@@ -49,6 +40,17 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+
+import org.apache.hbase.thirdparty.com.google.protobuf.RpcCallback;
+import org.apache.hbase.thirdparty.com.google.protobuf.RpcController;
+import org.apache.hbase.thirdparty.com.google.protobuf.Service;
+
+import org.apache.hadoop.hbase.shaded.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos;
+import org.apache.hadoop.hbase.shaded.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos.DummyRequest;
+import org.apache.hadoop.hbase.shaded.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos.DummyResponse;
+import org.apache.hadoop.hbase.shaded.coprocessor.protobuf.generated.DummyRegionServerEndpointProtos.DummyService;
+import org.apache.hadoop.hbase.shaded.ipc.protobuf.generated.TestProtos;
+import org.apache.hadoop.hbase.shaded.ipc.protobuf.generated.TestRpcServiceProtos;
 
 @RunWith(Parameterized.class)
 @Category({ ClientTests.class, MediumTests.class })
@@ -81,7 +83,7 @@ public class TestAsyncCoprocessorEndpoint extends TestAsyncAdminBase {
         admin
             .<TestRpcServiceProtos.TestProtobufRpcProto.Stub, TestProtos.EchoResponseProto>
                 coprocessorService(TestRpcServiceProtos.TestProtobufRpcProto::newStub,
-              (s, c, done) -> s.echo(c, request, done)).get();
+                  (s, c, done) -> s.echo(c, request, done)).get();
     assertEquals("hello", response.getMessage());
   }
 
@@ -92,7 +94,7 @@ public class TestAsyncCoprocessorEndpoint extends TestAsyncAdminBase {
       admin
           .<TestRpcServiceProtos.TestProtobufRpcProto.Stub, TestProtos.EmptyResponseProto>
               coprocessorService(TestRpcServiceProtos.TestProtobufRpcProto::newStub,
-            (s, c, done) -> s.error(c, emptyRequest, done)).get();
+                (s, c, done) -> s.error(c, emptyRequest, done)).get();
       fail("Should have thrown an exception");
     } catch (Exception e) {
     }
@@ -108,7 +110,7 @@ public class TestAsyncCoprocessorEndpoint extends TestAsyncAdminBase {
             .<DummyRegionServerEndpointProtos.DummyService.Stub,
                 DummyRegionServerEndpointProtos.DummyResponse> coprocessorService(
               DummyRegionServerEndpointProtos.DummyService::newStub,
-              (s, c, done) -> s.dummyCall(c, request, done), serverName).get();
+                  (s, c, done) -> s.dummyCall(c, request, done), serverName).get();
     assertEquals(DUMMY_VALUE, response.getValue());
   }
 
@@ -122,7 +124,7 @@ public class TestAsyncCoprocessorEndpoint extends TestAsyncAdminBase {
           .<DummyRegionServerEndpointProtos.DummyService.Stub,
               DummyRegionServerEndpointProtos.DummyResponse> coprocessorService(
             DummyRegionServerEndpointProtos.DummyService::newStub,
-            (s, c, done) -> s.dummyThrow(c, request, done), serverName).get();
+                (s, c, done) -> s.dummyThrow(c, request, done), serverName).get();
       fail("Should have thrown an exception");
     } catch (Exception e) {
       assertTrue(e.getCause() instanceof RetriesExhaustedException);

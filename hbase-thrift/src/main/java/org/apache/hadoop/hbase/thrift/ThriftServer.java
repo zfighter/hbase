@@ -61,6 +61,8 @@ import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_QOP_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SELECTOR_NUM;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SERVER_SOCKET_READ_TIMEOUT_DEFAULT;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SERVER_SOCKET_READ_TIMEOUT_KEY;
+import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SPNEGO_KEYTAB_FILE_KEY;
+import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SPNEGO_PRINCIPAL_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_ENABLED_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_EXCLUDE_CIPHER_SUITES_KEY;
 import static org.apache.hadoop.hbase.thrift.Constants.THRIFT_SSL_EXCLUDE_PROTOCOLS_KEY;
@@ -87,7 +89,6 @@ import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.sasl.AuthorizeCallback;
 import javax.security.sasl.SaslServer;
-
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
@@ -127,21 +128,9 @@ import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.TServerTransport;
 import org.apache.thrift.transport.TTransportFactory;
 import org.apache.yetus.audience.InterfaceAudience;
-import org.eclipse.jetty.http.HttpVersion;
-import org.eclipse.jetty.server.HttpConfiguration;
-import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.SslConnectionFactory;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Joiner;
 import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -150,6 +139,17 @@ import org.apache.hbase.thirdparty.org.apache.commons.cli.CommandLineParser;
 import org.apache.hbase.thirdparty.org.apache.commons.cli.DefaultParser;
 import org.apache.hbase.thirdparty.org.apache.commons.cli.HelpFormatter;
 import org.apache.hbase.thirdparty.org.apache.commons.cli.Options;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.http.HttpVersion;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConfiguration;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.HttpConnectionFactory;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SecureRequestCustomizer;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.Server;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.ServerConnector;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.server.SslConnectionFactory;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletContextHandler;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletHolder;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.util.ssl.SslContextFactory;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.util.thread.QueuedThreadPool;
 
 /**
  * ThriftServer- this class starts up a Thrift server which implements the
@@ -172,6 +172,7 @@ public class ThriftServer  extends Configured implements Tool {
   protected ThriftMetrics metrics;
   protected HBaseServiceHandler hbaseServiceHandler;
   protected UserGroupInformation serviceUGI;
+  protected UserGroupInformation httpUGI;
   protected boolean httpEnabled;
 
   protected SaslUtil.QualityOfProtection qop;
@@ -210,8 +211,19 @@ public class ThriftServer  extends Configured implements Tool {
           conf.get(THRIFT_DNS_INTERFACE_KEY, "default"),
           conf.get(THRIFT_DNS_NAMESERVER_KEY, "default")));
       userProvider.login(THRIFT_KEYTAB_FILE_KEY, THRIFT_KERBEROS_PRINCIPAL_KEY, host);
+
+      // Setup the SPNEGO user for HTTP if configured
+      String spnegoPrincipal = getSpengoPrincipal(conf, host);
+      String spnegoKeytab = getSpnegoKeytab(conf);
+      UserGroupInformation.setConfiguration(conf);
+      // login the SPNEGO principal using UGI to avoid polluting the login user
+      this.httpUGI = UserGroupInformation.loginUserFromKeytabAndReturnUGI(spnegoPrincipal,
+        spnegoKeytab);
     }
     this.serviceUGI = userProvider.getCurrent().getUGI();
+    if (httpUGI == null) {
+      this.httpUGI = serviceUGI;
+    }
 
     this.listenPort = conf.getInt(PORT_CONF_KEY, DEFAULT_LISTEN_PORT);
     this.metrics = createThriftMetrics(conf);
@@ -249,6 +261,37 @@ public class ThriftServer  extends Configured implements Tool {
     pauseMonitor.start();
   }
 
+  private String getSpengoPrincipal(Configuration conf, String host) throws IOException {
+    String principal = conf.get(THRIFT_SPNEGO_PRINCIPAL_KEY);
+    if (principal == null) {
+      // We cannot use the Hadoop configuration deprecation handling here since
+      // the THRIFT_KERBEROS_PRINCIPAL_KEY config is still valid for regular Kerberos
+      // communication. The preference should be to use the THRIFT_SPNEGO_PRINCIPAL_KEY
+      // config so that THRIFT_KERBEROS_PRINCIPAL_KEY doesn't control both backend
+      // Kerberos principal and SPNEGO principal.
+      LOG.info("Using deprecated {} config for SPNEGO principal. Use {} instead.",
+        THRIFT_KERBEROS_PRINCIPAL_KEY, THRIFT_SPNEGO_PRINCIPAL_KEY);
+      principal = conf.get(THRIFT_KERBEROS_PRINCIPAL_KEY);
+    }
+    // Handle _HOST in principal value
+    return org.apache.hadoop.security.SecurityUtil.getServerPrincipal(principal, host);
+  }
+
+  private String getSpnegoKeytab(Configuration conf) {
+    String keytab = conf.get(THRIFT_SPNEGO_KEYTAB_FILE_KEY);
+    if (keytab == null) {
+      // We cannot use the Hadoop configuration deprecation handling here since
+      // the THRIFT_KEYTAB_FILE_KEY config is still valid for regular Kerberos
+      // communication. The preference should be to use the THRIFT_SPNEGO_KEYTAB_FILE_KEY
+      // config so that THRIFT_KEYTAB_FILE_KEY doesn't control both backend
+      // Kerberos keytab and SPNEGO keytab.
+      LOG.info("Using deprecated {} config for SPNEGO keytab. Use {} instead.",
+        THRIFT_KEYTAB_FILE_KEY, THRIFT_SPNEGO_KEYTAB_FILE_KEY);
+      keytab = conf.get(THRIFT_KEYTAB_FILE_KEY);
+    }
+    return keytab;
+  }
+
   protected void startInfoServer() throws IOException {
     // Put up info server.
     int port = conf.getInt(THRIFT_INFO_SERVER_PORT , THRIFT_INFO_SERVER_PORT_DEFAULT);
@@ -259,6 +302,7 @@ public class ThriftServer  extends Configured implements Tool {
           .get(THRIFT_INFO_SERVER_BINDING_ADDRESS, THRIFT_INFO_SERVER_BINDING_ADDRESS_DEFAULT);
       infoServer = new InfoServer("thrift", a, port, false, conf);
       infoServer.setAttribute("hbase.conf", conf);
+      infoServer.setAttribute("hbase.thrift.server.type", metrics.getThriftServerType().name());
       infoServer.start();
     }
   }
@@ -286,7 +330,7 @@ public class ThriftServer  extends Configured implements Tool {
    * the thrift server, not null means the server is started, for test only
    * @return the tServer
    */
-  @VisibleForTesting
+  @InterfaceAudience.Private
   public TServer getTserver() {
     return tserver;
   }
@@ -295,7 +339,7 @@ public class ThriftServer  extends Configured implements Tool {
    * the Jetty server, not null means the HTTP server is started, for test only
    * @return the http server
    */
-  @VisibleForTesting
+  @InterfaceAudience.Private
   public Server getHttpServer() {
     return httpServer;
   }
@@ -316,15 +360,14 @@ public class ThriftServer  extends Configured implements Tool {
    * Create a Servlet for the http server
    * @param protocolFactory protocolFactory
    * @return the servlet
-   * @throws IOException IOException
    */
-  protected TServlet createTServlet(TProtocolFactory protocolFactory) throws IOException {
-    return new ThriftHttpServlet(processor, protocolFactory, serviceUGI,
-        conf, hbaseServiceHandler, securityEnabled, doAsEnabled);
+  protected TServlet createTServlet(TProtocolFactory protocolFactory) {
+    return new ThriftHttpServlet(processor, protocolFactory, serviceUGI, httpUGI,
+        hbaseServiceHandler, securityEnabled, doAsEnabled);
   }
 
   /**
-   * Setup a HTTP Server using Jetty to serve calls from THttpClient
+   * Setup an HTTP Server using Jetty to serve calls from THttpClient
    *
    * @throws IOException IOException
    */
@@ -488,7 +531,7 @@ public class ThriftServer  extends Configured implements Tool {
         SaslServer saslServer = saslServerTransport.getSaslServer();
         String principal = saslServer.getAuthorizationID();
         hbaseServiceHandler.setEffectiveUser(principal);
-        return processor.process(inProt, outProt);
+        processor.process(inProt, outProt);
       };
     }
 

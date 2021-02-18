@@ -30,12 +30,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.filter.BinaryComparator;
 import org.apache.hadoop.hbase.ipc.HBaseRpcController;
 import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
@@ -122,12 +122,8 @@ public class TestMalformedCellFromClient {
       try {
         table.batch(batches, results);
         fail("Where is the exception? We put the malformed cells!!!");
-      } catch (RetriesExhaustedWithDetailsException e) {
-        for (Throwable throwable : e.getCauses()) {
-          assertNotNull(throwable);
-        }
-        assertEquals(1, e.getNumExceptions());
-        exceptionByCaught = e.getCause(0);
+      } catch (RetriesExhaustedException e) {
+        exceptionByCaught = e.getCause();
       }
       for (Object obj : results) {
         assertNotNull(obj);
@@ -238,8 +234,7 @@ public class TestMalformedCellFromClient {
     ClientProtos.Action.Builder actionBuilder = ClientProtos.Action.newBuilder();
     ClientProtos.MutationProto.Builder mutationBuilder = ClientProtos.MutationProto.newBuilder();
     ClientProtos.Condition condition = RequestConverter
-      .buildCondition(rm.getRow(), FAMILY, null, new BinaryComparator(new byte[10]),
-        HBaseProtos.CompareType.EQUAL, null);
+      .buildCondition(rm.getRow(), FAMILY, null, CompareOperator.EQUAL, new byte[10], null, null);
     for (Mutation mutation : rm.getMutations()) {
       ClientProtos.MutationProto.MutationType mutateType = null;
       if (mutation instanceof Put) {
@@ -257,9 +252,8 @@ public class TestMalformedCellFromClient {
       actionBuilder.setMutation(mp);
       builder.addAction(actionBuilder.build());
     }
-    ClientProtos.MultiRequest request =
-      ClientProtos.MultiRequest.newBuilder().addRegionAction(builder.build())
-        .setCondition(condition).build();
+    ClientProtos.MultiRequest request = ClientProtos.MultiRequest.newBuilder()
+        .addRegionAction(builder.setCondition(condition).build()).build();
     return request;
   }
 
@@ -285,12 +279,14 @@ public class TestMalformedCellFromClient {
     try (Table table = TEST_UTIL.getConnection().getTable(TABLE_NAME)) {
       table.batch(batches, objs);
       fail("Where is the exception? We put the malformed cells!!!");
-    } catch (RetriesExhaustedWithDetailsException e) {
-      assertEquals(2, e.getNumExceptions());
-      for (int i = 0; i != e.getNumExceptions(); ++i) {
-        assertNotNull(e.getCause(i));
-        assertEquals(DoNotRetryIOException.class, e.getCause(i).getClass());
-        assertEquals("fail", Bytes.toString(e.getRow(i).getRow()));
+    } catch (RetriesExhaustedException e) {
+      Throwable error = e.getCause();
+      for (;;) {
+        assertNotNull("Can not find a DoNotRetryIOException on stack trace", error);
+        if (error instanceof DoNotRetryIOException) {
+          break;
+        }
+        error = error.getCause();
       }
     } finally {
       assertObjects(objs, batches.size());
@@ -319,12 +315,14 @@ public class TestMalformedCellFromClient {
     try (Table table = TEST_UTIL.getConnection().getTable(TABLE_NAME)) {
       table.batch(batches, objs);
       fail("Where is the exception? We put the malformed cells!!!");
-    } catch (RetriesExhaustedWithDetailsException e) {
-      assertEquals(1, e.getNumExceptions());
-      for (int i = 0; i != e.getNumExceptions(); ++i) {
-        assertNotNull(e.getCause(i));
-        assertTrue(e.getCause(i) instanceof IOException);
-        assertEquals("fail", Bytes.toString(e.getRow(i).getRow()));
+    } catch (RetriesExhaustedException e) {
+      Throwable error = e.getCause();
+      for (;;) {
+        assertNotNull("Can not find a DoNotRetryIOException on stack trace", error);
+        if (error instanceof DoNotRetryIOException) {
+          break;
+        }
+        error = error.getCause();
       }
     } finally {
       assertObjects(objs, batches.size());

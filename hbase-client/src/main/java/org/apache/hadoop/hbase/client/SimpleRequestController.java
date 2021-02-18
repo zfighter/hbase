@@ -18,7 +18,6 @@
  */
 package org.apache.hadoop.hbase.client;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -37,7 +36,6 @@ import java.util.function.Consumer;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -64,7 +62,6 @@ class SimpleRequestController implements RequestController {
   /**
    * Default value of {@link #HBASE_CLIENT_MAX_PERREQUEST_HEAPSIZE}.
    */
-  @VisibleForTesting
   static final long DEFAULT_HBASE_CLIENT_MAX_PERREQUEST_HEAPSIZE = 4194304;
 
   /**
@@ -74,7 +71,6 @@ class SimpleRequestController implements RequestController {
   /**
    * Default value of {@link #HBASE_CLIENT_MAX_PERREQUEST_ROWS}.
    */
-  @VisibleForTesting
   static final long DEFAULT_HBASE_CLIENT_MAX_PERREQUEST_ROWS = 2048;
 
   /**
@@ -84,14 +80,10 @@ class SimpleRequestController implements RequestController {
   /**
    * Default value of {@link #HBASE_CLIENT_MAX_SUBMIT_HEAPSIZE}.
    */
-  @VisibleForTesting
   static final long DEFAULT_HBASE_CLIENT_MAX_SUBMIT_HEAPSIZE = DEFAULT_HBASE_CLIENT_MAX_PERREQUEST_HEAPSIZE;
-  @VisibleForTesting
   final AtomicLong tasksInProgress = new AtomicLong(0);
-  @VisibleForTesting
   final ConcurrentMap<byte[], AtomicInteger> taskCounterPerRegion
           = new ConcurrentSkipListMap<>(Bytes.BYTES_COMPARATOR);
-  @VisibleForTesting
   final ConcurrentMap<ServerName, AtomicInteger> taskCounterPerServer = new ConcurrentHashMap<>();
   /**
    * The number of tasks simultaneously executed on the cluster.
@@ -113,13 +105,11 @@ class SimpleRequestController implements RequestController {
    * don't start a set of operations on a region before the previous one is
    * done. As well, this limits the pressure we put on the region server.
    */
-  @VisibleForTesting
   final int maxConcurrentTasksPerRegion;
 
   /**
    * The number of task simultaneously executed on a single region server.
    */
-  @VisibleForTesting
   final int maxConcurrentTasksPerServer;
   private final int thresholdToLogUndoneTaskDetails;
   public static final String THRESHOLD_TO_LOG_UNDONE_TASK_DETAILS =
@@ -172,7 +162,6 @@ class SimpleRequestController implements RequestController {
     return value;
   }
 
-  @VisibleForTesting
   static Checker newChecker(List<RowChecker> checkers) {
     return new Checker() {
       private boolean isEnd = false;
@@ -332,7 +321,6 @@ class SimpleRequestController implements RequestController {
    * limit the heapsize of total submitted data. Reduce the limit of heapsize
    * for submitting quickly if there is no running task.
    */
-  @VisibleForTesting
   static class SubmittedSizeChecker implements RowChecker {
 
     private final long maxHeapSizeSubmit;
@@ -366,11 +354,10 @@ class SimpleRequestController implements RequestController {
   /**
    * limit the max number of tasks in an AsyncProcess.
    */
-  @VisibleForTesting
   static class TaskCountChecker implements RowChecker {
 
     private static final long MAX_WAITING_TIME = 1000; //ms
-    private final Set<HRegionInfo> regionsIncluded = new HashSet<>();
+    private final Set<RegionInfo> regionsIncluded = new HashSet<>();
     private final Set<ServerName> serversIncluded = new HashSet<>();
     private final int maxConcurrentTasksPerRegion;
     private final int maxTotalConcurrentTasks;
@@ -432,19 +419,19 @@ class SimpleRequestController implements RequestController {
      * regions. 3) check the total concurrent tasks. 4) check the concurrent
      * tasks for server.
      *
-     * @param loc
-     * @param heapSizeOfRow
-     * @return
+     * @param loc the destination of data
+     * @param heapSizeOfRow the data size
+     * @return either Include {@link RequestController.ReturnCode} or skip
+     *         {@link RequestController.ReturnCode}
      */
     @Override
     public ReturnCode canTakeOperation(HRegionLocation loc, long heapSizeOfRow) {
-
-      HRegionInfo regionInfo = loc.getRegionInfo();
+      RegionInfo regionInfo = loc.getRegion();
       if (regionsIncluded.contains(regionInfo)) {
         // We already know what to do with this region.
         return ReturnCode.INCLUDE;
       }
-      AtomicInteger regionCnt = taskCounterPerRegion.get(loc.getRegionInfo().getRegionName());
+      AtomicInteger regionCnt = taskCounterPerRegion.get(loc.getRegion().getRegionName());
       if (regionCnt != null && regionCnt.get() >= maxConcurrentTasksPerRegion) {
         // Too many tasks on this region already.
         return ReturnCode.SKIP;
@@ -466,17 +453,16 @@ class SimpleRequestController implements RequestController {
     @Override
     public void notifyFinal(ReturnCode code, HRegionLocation loc, long heapSizeOfRow) {
       if (code == ReturnCode.INCLUDE) {
-        regionsIncluded.add(loc.getRegionInfo());
+        regionsIncluded.add(loc.getRegion());
         serversIncluded.add(loc.getServerName());
       }
-      busyRegions.add(loc.getRegionInfo().getRegionName());
+      busyRegions.add(loc.getRegion().getRegionName());
     }
   }
 
   /**
    * limit the number of rows for each request.
    */
-  @VisibleForTesting
   static class RequestRowsChecker implements RowChecker {
 
     private final long maxRowsPerRequest;
@@ -515,7 +501,6 @@ class SimpleRequestController implements RequestController {
   /**
    * limit the heap size for each request.
    */
-  @VisibleForTesting
   static class RequestHeapSizeChecker implements RowChecker {
 
     private final long maxHeapSizePerRequest;
@@ -555,7 +540,6 @@ class SimpleRequestController implements RequestController {
   /**
    * Provide a way to control the flow of rows iteration.
    */
-  @VisibleForTesting
   interface RowChecker {
 
     ReturnCode canTakeOperation(HRegionLocation loc, long heapSizeOfRow);

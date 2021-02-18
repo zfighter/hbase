@@ -19,7 +19,6 @@ package org.apache.hadoop.hbase;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,16 +38,20 @@ import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.filter.RowFilter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueExcludeFilter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@Category(MediumTests.class)
+@Category(LargeTests.class)
 public class TestServerSideScanMetricsFromClientSide {
+  private static final Logger LOG =
+    LoggerFactory.getLogger(TestServerSideScanMetricsFromClientSide.class);
 
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
@@ -93,7 +96,7 @@ public class TestServerSideScanMetricsFromClientSide {
     TABLE = createTestTable(TABLE_NAME, ROWS, FAMILIES, QUALIFIERS, VALUE);
   }
 
-  static Table createTestTable(TableName name, byte[][] rows, byte[][] families,
+  private static Table createTestTable(TableName name, byte[][] rows, byte[][] families,
       byte[][] qualifiers, byte[] cellValue) throws IOException {
     Table ht = TEST_UTIL.createTable(name, families);
     List<Put> puts = createPuts(rows, families, qualifiers, cellValue);
@@ -109,14 +112,14 @@ public class TestServerSideScanMetricsFromClientSide {
 
   /**
    * Make puts to put the input value into each combination of row, family, and qualifier
-   * @param rows
-   * @param families
-   * @param qualifiers
-   * @param value
-   * @return
-   * @throws IOException
+   * @param rows the rows to use
+   * @param families the column families to use
+   * @param qualifiers the column qualifiers to use
+   * @param value the value to put
+   * @return the putted input values added in puts
+   * @throws IOException If an IO problem is encountered
    */
-  static ArrayList<Put> createPuts(byte[][] rows, byte[][] families, byte[][] qualifiers,
+  private static ArrayList<Put> createPuts(byte[][] rows, byte[][] families, byte[][] qualifiers,
       byte[] value) throws IOException {
     Put put;
     ArrayList<Put> puts = new ArrayList<>();
@@ -139,7 +142,7 @@ public class TestServerSideScanMetricsFromClientSide {
    * @return The approximate heap size of a cell in the test table. All cells should have
    *         approximately the same heap size, so the value is cached to avoid repeating the
    *         calculation
-   * @throws Exception
+   * @throws Exception on unexpected failure
    */
   private long getCellHeapSize() throws Exception {
     if (CELL_HEAP_SIZE == -1) {
@@ -163,40 +166,35 @@ public class TestServerSideScanMetricsFromClientSide {
   }
 
   @Test
-  public void testRowsSeenMetricWithSync() throws Exception {
-    testRowsSeenMetric(false);
-  }
-
-  @Test
-  public void testRowsSeenMetricWithAsync() throws Exception {
-    testRowsSeenMetric(true);
-  }
-
-  private void testRowsSeenMetric(boolean async) throws Exception {
+  public void testRowsSeenMetric() throws Exception {
     // Base scan configuration
     Scan baseScan;
     baseScan = new Scan();
     baseScan.setScanMetricsEnabled(true);
-    baseScan.setAsyncPrefetch(async);
-    testRowsSeenMetric(baseScan);
+    try {
+      testRowsSeenMetric(baseScan);
 
-    // Test case that only a single result will be returned per RPC to the serer
-    baseScan.setCaching(1);
-    testRowsSeenMetric(baseScan);
+      // Test case that only a single result will be returned per RPC to the serer
+      baseScan.setCaching(1);
+      testRowsSeenMetric(baseScan);
 
-    // Test case that partial results are returned from the server. At most one cell will be
-    // contained in each response
-    baseScan.setMaxResultSize(1);
-    testRowsSeenMetric(baseScan);
+      // Test case that partial results are returned from the server. At most one cell will be
+      // contained in each response
+      baseScan.setMaxResultSize(1);
+      testRowsSeenMetric(baseScan);
 
-    // Test case that size limit is set such that a few cells are returned per partial result from
-    // the server
-    baseScan.setCaching(NUM_ROWS);
-    baseScan.setMaxResultSize(getCellHeapSize() * (NUM_COLS - 1));
-    testRowsSeenMetric(baseScan);
+      // Test case that size limit is set such that a few cells are returned per partial result from
+      // the server
+      baseScan.setCaching(NUM_ROWS);
+      baseScan.setMaxResultSize(getCellHeapSize() * (NUM_COLS - 1));
+      testRowsSeenMetric(baseScan);
+    } catch (Throwable t) {
+      LOG.error("FAIL", t);
+      throw t;
+    }
   }
 
-  public void testRowsSeenMetric(Scan baseScan) throws Exception {
+  private void testRowsSeenMetric(Scan baseScan) throws Exception {
     Scan scan;
     scan = new Scan(baseScan);
     testMetric(scan, ServerSideScanMetrics.COUNT_OF_ROWS_SCANNED_KEY_METRIC_NAME, NUM_ROWS);
@@ -212,7 +210,8 @@ public class TestServerSideScanMetricsFromClientSide {
       scan = new Scan(baseScan);
       scan.withStartRow(ROWS[i - 1]);
       scan.withStopRow(ROWS[ROWS.length - 1]);
-      testMetric(scan, ServerSideScanMetrics.COUNT_OF_ROWS_SCANNED_KEY_METRIC_NAME, ROWS.length - i);
+      testMetric(scan, ServerSideScanMetrics.COUNT_OF_ROWS_SCANNED_KEY_METRIC_NAME,
+        ROWS.length - i);
     }
 
     // The filter should filter out all rows, but we still expect to see every row.
@@ -263,7 +262,7 @@ public class TestServerSideScanMetricsFromClientSide {
     testRowsSeenMetric(baseScan);
   }
 
-  public void testRowsFilteredMetric(Scan baseScan) throws Exception {
+  private void testRowsFilteredMetric(Scan baseScan) throws Exception {
     testRowsFilteredMetric(baseScan, null, 0);
 
     // Row filter doesn't match any row key. All rows should be filtered
@@ -315,34 +314,37 @@ public class TestServerSideScanMetricsFromClientSide {
     testRowsFilteredMetric(baseScan, filter, ROWS.length);
   }
 
-  public void testRowsFilteredMetric(Scan baseScan, Filter filter, int expectedNumFiltered)
+  private void testRowsFilteredMetric(Scan baseScan, Filter filter, int expectedNumFiltered)
       throws Exception {
     Scan scan = new Scan(baseScan);
-    if (filter != null) scan.setFilter(filter);
-    testMetric(scan, ServerSideScanMetrics.COUNT_OF_ROWS_FILTERED_KEY_METRIC_NAME, expectedNumFiltered);
+    if (filter != null) {
+      scan.setFilter(filter);
+    }
+    testMetric(scan, ServerSideScanMetrics.COUNT_OF_ROWS_FILTERED_KEY_METRIC_NAME,
+      expectedNumFiltered);
   }
 
   /**
    * Run the scan to completetion and check the metric against the specified value
-   * @param scan
-   * @param metricKey
-   * @param expectedValue
-   * @throws Exception
+   * @param scan The scan instance to use to record metrics
+   * @param metricKey The metric key name
+   * @param expectedValue The expected value of metric
+   * @throws Exception on unexpected failure
    */
-  public void testMetric(Scan scan, String metricKey, long expectedValue) throws Exception {
+  private void testMetric(Scan scan, String metricKey, long expectedValue) throws Exception {
     assertTrue("Scan should be configured to record metrics", scan.isScanMetricsEnabled());
     ResultScanner scanner = TABLE.getScanner(scan);
     // Iterate through all the results
     while (scanner.next() != null) {
-
+      continue;
     }
     scanner.close();
     ScanMetrics metrics = scanner.getScanMetrics();
     assertTrue("Metrics are null", metrics != null);
     assertTrue("Metric : " + metricKey + " does not exist", metrics.hasCounter(metricKey));
     final long actualMetricValue = metrics.getCounter(metricKey).get();
-    assertEquals("Metric: " + metricKey + " Expected: " + expectedValue + " Actual: "
-        + actualMetricValue, expectedValue, actualMetricValue);
-
+    assertEquals(
+      "Metric: " + metricKey + " Expected: " + expectedValue + " Actual: " + actualMetricValue,
+      expectedValue, actualMetricValue);
   }
 }

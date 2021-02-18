@@ -33,7 +33,7 @@ import org.apache.hadoop.hbase.client.DoNotRetryRegionException;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -48,7 +48,7 @@ import org.junit.rules.TestName;
 /**
  * Test move fails when table disabled
  */
-@Category({LargeTests.class})
+@Category({MediumTests.class})
 public class TestRegionMove {
 
   @ClassRule
@@ -119,8 +119,7 @@ public class TestRegionMove {
     // Offline the region and then try to move it. Should fail.
     admin.unassign(regionToMove.getRegionName(), true);
     try {
-      admin.move(regionToMove.getEncodedNameAsBytes(),
-          Bytes.toBytes(rs2.getServerName().toString()));
+      admin.move(regionToMove.getEncodedNameAsBytes(), rs2.getServerName());
       fail();
     } catch (DoNotRetryRegionException e) {
       // We got expected exception
@@ -133,8 +132,7 @@ public class TestRegionMove {
 
     try {
       // Move the region to the other RS -- should fail
-      admin.move(regionToMove.getEncodedNameAsBytes(),
-        Bytes.toBytes(rs2.getServerName().toString()));
+      admin.move(regionToMove.getEncodedNameAsBytes(), rs2.getServerName());
       fail();
     } catch (DoNotRetryIOException e) {
       // We got expected exception

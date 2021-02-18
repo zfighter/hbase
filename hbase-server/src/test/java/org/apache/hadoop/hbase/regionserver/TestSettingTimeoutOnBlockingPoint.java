@@ -22,18 +22,18 @@ import java.util.Optional;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessor;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.RegionObserver;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
 import org.junit.AfterClass;
@@ -45,7 +45,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 
-@Category({LargeTests.class})
+@Category({MediumTests.class})
 public class TestSettingTimeoutOnBlockingPoint {
 
   @ClassRule
@@ -92,11 +92,10 @@ public class TestSettingTimeoutOnBlockingPoint {
 
   @Test
   public void testRowLock() throws IOException {
-    TableName tableName = TableName.valueOf(testName.getMethodName());
-    HTableDescriptor hdt = TEST_UTIL.createTableDescriptor(tableName);
-    hdt.addCoprocessor(SleepCoprocessor.class.getName());
-    TEST_UTIL.createTable(hdt, new byte[][]{FAM}, TEST_UTIL.getConfiguration());
-
+    TableDescriptor hdt = TEST_UTIL.createModifyableTableDescriptor(testName.getMethodName())
+      .setCoprocessor(SleepCoprocessor.class.getName()).build();
+    TEST_UTIL.createTable(hdt, new byte[][] { FAM }, TEST_UTIL.getConfiguration());
+    TableName tableName = hdt.getTableName();
     Thread incrementThread = new Thread(() -> {
       try {
         try( Table table = TEST_UTIL.getConnection().getTable(tableName)) {
@@ -107,12 +106,10 @@ public class TestSettingTimeoutOnBlockingPoint {
       }
     });
     Thread getThread = new Thread(() -> {
-      try {
-        try( Table table = TEST_UTIL.getConnection().getTable(tableName)) {
-          table.setRpcTimeout(1000);
-          Delete delete = new Delete(ROW1);
-          table.delete(delete);
-        }
+      try (Table table =
+        TEST_UTIL.getConnection().getTableBuilder(tableName, null).setRpcTimeout(1000).build()) {
+        Delete delete = new Delete(ROW1);
+        table.delete(delete);
       } catch (IOException e) {
         Assert.fail(e.getMessage());
       }
@@ -122,12 +119,12 @@ public class TestSettingTimeoutOnBlockingPoint {
     Threads.sleep(1000);
     getThread.start();
     Threads.sleep(2000);
-    try (Table table = TEST_UTIL.getConnection().getTable(tableName)) {
+    try (Table table =
+      TEST_UTIL.getConnection().getTableBuilder(tableName, null).setRpcTimeout(1000).build()) {
       // We have only two handlers. The first thread will get a write lock for row1 and occupy
       // the first handler. The second thread need a read lock for row1, it should quit after 1000
       // ms and give back the handler because it can not get the lock in time.
       // So we can get the value using the second handler.
-      table.setRpcTimeout(1000);
       table.get(new Get(ROW2)); // Will throw exception if the timeout checking is failed
     } finally {
       incrementThread.interrupt();

@@ -18,9 +18,9 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -58,6 +58,7 @@ import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
@@ -273,7 +274,10 @@ public class TestCompactionLifeCycleTracker {
     assertTrue(tracker.afterExecuteStores.isEmpty());
   }
 
-  @Test
+  // This test assumes that compaction wouldn't happen with null user.
+  // But null user means system generated compaction so compaction should happen
+  // even if the space quota is violated. So this test should be removed/ignored.
+  @Ignore @Test
   public void testSpaceQuotaViolation() throws IOException, InterruptedException {
     region.getRegionServerServices().getRegionServerSpaceQuotaManager().enforceViolationPolicy(NAME,
       new SpaceQuotaSnapshot(new SpaceQuotaStatus(SpaceViolationPolicy.NO_WRITES_COMPACTIONS), 10L,
@@ -285,11 +289,6 @@ public class TestCompactionLifeCycleTracker {
     assertEquals(2, tracker.notExecutedStores.size());
     tracker.notExecutedStores.sort((p1, p2) -> p1.getFirst().getColumnFamilyName()
         .compareTo(p2.getFirst().getColumnFamilyName()));
-
-    assertEquals(Bytes.toString(CF1),
-      tracker.notExecutedStores.get(0).getFirst().getColumnFamilyName());
-    assertThat(tracker.notExecutedStores.get(0).getSecond(),
-      containsString("space quota violation"));
 
     assertEquals(Bytes.toString(CF2),
       tracker.notExecutedStores.get(1).getFirst().getColumnFamilyName());

@@ -91,11 +91,25 @@ public class HFilePerformanceEvaluation {
   }
 
   static Cell createCell(final byte [] keyRow) {
-    return CellUtil.createCell(keyRow);
+    return ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY)
+      .setRow(keyRow)
+      .setFamily(HConstants.EMPTY_BYTE_ARRAY)
+      .setQualifier(HConstants.EMPTY_BYTE_ARRAY)
+      .setTimestamp(HConstants.LATEST_TIMESTAMP)
+      .setType(KeyValue.Type.Maximum.getCode())
+      .setValue(HConstants.EMPTY_BYTE_ARRAY)
+      .build();
   }
 
   static Cell createCell(final byte [] keyRow, final byte [] value) {
-    return CellUtil.createCell(keyRow, value);
+    return ExtendedCellBuilderFactory.create(CellBuilderType.DEEP_COPY)
+      .setRow(keyRow)
+      .setFamily(HConstants.EMPTY_BYTE_ARRAY)
+      .setQualifier(HConstants.EMPTY_BYTE_ARRAY)
+      .setTimestamp(HConstants.LATEST_TIMESTAMP)
+      .setType(KeyValue.Type.Maximum.getCode())
+      .setValue(value)
+      .build();
   }
 
   /**
@@ -366,7 +380,6 @@ public class HFilePerformanceEvaluation {
       writer = HFile.getWriterFactoryNoCache(conf)
           .withPath(fs, mf)
           .withFileContext(hFileContext)
-          .withComparator(CellComparator.getInstance())
           .create();
     }
     
@@ -404,7 +417,6 @@ public class HFilePerformanceEvaluation {
     @Override
     void setUp() throws Exception {
       reader = HFile.createReader(this.fs, this.mf, new CacheConfig(this.conf), true, this.conf);
-      this.reader.loadFileInfo();
     }
 
     @Override
@@ -435,7 +447,7 @@ public class HFilePerformanceEvaluation {
         // TODO: Fix. Make Scanner do Cells.
         Cell c = this.scanner.getCell();
         PerformanceEvaluationCommons.assertKey(format(i + 1), c);
-        PerformanceEvaluationCommons.assertValueSize(c.getValueLength(), ROW_LENGTH);
+        PerformanceEvaluationCommons.assertValueSize(ROW_LENGTH, c.getValueLength());
       }
     }
 
@@ -466,7 +478,7 @@ public class HFilePerformanceEvaluation {
       // TODO: Fix scanner so it does Cells
       Cell c = scanner.getCell();
       PerformanceEvaluationCommons.assertKey(b, c);
-      PerformanceEvaluationCommons.assertValueSize(c.getValueLength(), ROW_LENGTH);
+      PerformanceEvaluationCommons.assertValueSize(ROW_LENGTH, c.getValueLength());
     }
 
     private byte [] getRandomRow() {
@@ -503,7 +515,7 @@ public class HFilePerformanceEvaluation {
           return;
         }
         c = scanner.getCell();
-        PerformanceEvaluationCommons.assertValueSize(c.getValueLength(), ROW_LENGTH);
+        PerformanceEvaluationCommons.assertValueSize(ROW_LENGTH, c.getValueLength());
       }
     }
 
